@@ -1,0 +1,413 @@
+name: Native builds
+
+on:
+  push:
+    branches:
+      - "**"
+    tags:
+      - "v*"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  PROTOC_VERSION: "29.3"
+
+jobs:
+  linux:
+    name: Linux ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: x64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: linux-${{ matrix.arch }}
+
+      - name: Install protoc
+        run: |
+          set -euo pipefail
+          case "$(uname -m)" in
+            x86_64)  protoc_arch=x86_64 ;;
+            aarch64) protoc_arch=aarch_64 ;;
+            *)       echo "Unsupported runner architecture: $(uname -m)" >&2; exit 1 ;;
+          esac
+          url="https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-${protoc_arch}.zip"
+          curl -fsSL --retry 3 -o /tmp/protoc.zip "$url"
+          unzip -q -o /tmp/protoc.zip -d "$HOME/protoc"
+          echo "$HOME/protoc/bin" >> "$GITHUB_PATH"
+
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake \
+            libfontconfig1-dev \
+            libssl-dev \
+            libwayland-dev \
+            libx11-dev \
+            libx11-xcb-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxcursor-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            nasm \
+            perl \
+            pkg-config
+
+      - name: Build
+        run: cargo build --release --locked --package friendshub-linux
+
+      - name: Package
+        id: package
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          name="friendshub-linux-${ARCH}"
+          mkdir -p "dist/${name}"
+          cp target/release/friendshub-linux "dist/${name}/"
+          tar -czf "${name}.tar.gz" -C dist "$name"
+          echo "archive=${name}.tar.gz" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.arch }}
+          path: ${{ steps.package.outputs.archive }}
+          if-no-files-found: error
+
+  windows:
+    name: Windows ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            arch: x64
+          - runner: windows-11-arm
+            arch: arm64
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-${{ matrix.arch }}
+
+      - name: Install protoc
+        shell: pwsh
+        run: |
+          $url = "https://github.com/protocolbuffers/protobuf/releases/download/v$env:PROTOC_VERSION/protoc-$env:PROTOC_VERSION-win64.zip"
+          New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\protoc" | Out-Null
+          Invoke-WebRequest -Uri $url -OutFile "$env:TEMP\protoc.zip"
+          Expand-Archive -Path "$env:TEMP\protoc.zip" -DestinationPath "$env:USERPROFILE\protoc" -Force
+          "$env:USERPROFILE\protoc\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Build
+        run: cargo build --release --locked --package friendshub-windows
+
+      - name: Package
+        id: package
+        shell: pwsh
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          $name = "friendshub-windows-$env:ARCH"
+          New-Item -ItemType Directory -Force -Path "dist/$name" | Out-Null
+          Copy-Item target/release/friendshub-windows.exe "dist/$name/"
+          Compress-Archive -Path "dist/$name/*" -DestinationPath "$name.zip"
+          "archive=$name.zip" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-${{ matrix.arch }}
+          path: ${{ steps.package.outputs.archive }}
+          if-no-files-found: error
+
+  apple:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS x64
+            runner: macos-15-intel
+            package: friendshub-macos
+            target: x86_64-apple-darwin
+            arch: macos-x64
+            binary: friendshub-macos
+          - name: macOS arm64
+            runner: macos-26
+            package: friendshub-macos
+            target: aarch64-apple-darwin
+            arch: macos-arm64
+            binary: friendshub-macos
+          - name: iOS simulator arm64
+            runner: macos-26
+            package: friendshub-ios
+            target: aarch64-apple-ios-sim
+            arch: ios-simulator-arm64
+            binary: friendshub-ios
+
+    env:
+      AWS_LC_SYS_CMAKE_BUILDER: "1"
+      IPHONEOS_DEPLOYMENT_TARGET: "14.0"
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: apple-${{ matrix.arch }}
+
+      - name: Install protoc
+        run: brew install protobuf
+
+      - name: Build
+        run: cargo build --release --locked --package ${{ matrix.package }} --target ${{ matrix.target }}
+
+      - name: Package
+        id: package
+        env:
+          ARCH: ${{ matrix.arch }}
+          BINARY: ${{ matrix.binary }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          name="friendshub-${ARCH}"
+          mkdir -p "dist/${name}"
+          cp "target/${TARGET}/release/${BINARY}" "dist/${name}/"
+          tar -czf "${name}.tar.gz" -C dist "$name"
+          echo "archive=${name}.tar.gz" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.arch }}
+          path: ${{ steps.package.outputs.archive }}
+          if-no-files-found: error
+
+  android:
+    name: Android signed APK
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: android-actions/setup-android@v4
+
+      - name: Install Android SDK packages
+        run: |
+          set -euo pipefail
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+          build_tools="$ANDROID_SDK_ROOT/build-tools/35.0.0"
+          test -x "$build_tools/apksigner"
+          echo "$build_tools" >> "$GITHUB_PATH"
+
+      - uses: nttld/setup-ndk@v1
+        id: ndk
+        with:
+          ndk-version: r27d
+          add-to-path: true
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: android
+
+      - name: Install protoc
+        run: |
+          set -euo pipefail
+          url="https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip"
+          curl -fsSL --retry 3 -o /tmp/protoc.zip "$url"
+          unzip -q -o /tmp/protoc.zip -d "$HOME/protoc"
+          echo "$HOME/protoc/bin" >> "$GITHUB_PATH"
+
+      - name: Install native build dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake nasm perl pkg-config
+
+      - name: Install cargo-apk
+        run: cargo install cargo-apk --locked
+
+      - name: Prepare Android release signing
+        id: signing
+        env:
+          ANDROID_RELEASE_KEYSTORE_B64: ${{ secrets.ANDROID_RELEASE_KEYSTORE_B64 }}
+          ANDROID_RELEASE_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEYSTORE_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            echo "profile=debug" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ -z "$ANDROID_RELEASE_KEYSTORE_B64" || -z "$ANDROID_RELEASE_KEYSTORE_PASSWORD" ]]; then
+            if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+              echo "Release APK signing secrets are required for tag builds." >&2
+              exit 1
+            fi
+            echo "Release signing secrets are unavailable; building a debug-signed APK."
+            echo "profile=debug" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          signing_dir="$RUNNER_TEMP/friendshub-android-signing"
+          mkdir -m 700 -p "$signing_dir"
+          printf '%s' "$ANDROID_RELEASE_KEYSTORE_B64" | base64 --decode > "$signing_dir/release.p12"
+          chmod 600 "$signing_dir/release.p12"
+          echo "profile=release" >> "$GITHUB_OUTPUT"
+
+      - name: Build and sign APK
+        run: |
+          set -euo pipefail
+
+          if [[ "$SIGNING_PROFILE" == "release" ]]; then
+            CARGO_APK_RELEASE_KEYSTORE="$RUNNER_TEMP/friendshub-android-signing/release.p12" \
+            CARGO_APK_RELEASE_KEYSTORE_PASSWORD="$ANDROID_RELEASE_KEYSTORE_PASSWORD" \
+              cargo apk build --package friendshub-android --release --locked
+            apk_profile=release
+          else
+            cargo apk build --package friendshub-android --locked
+            apk_profile=debug
+          fi
+
+          mapfile -t apks < <(find "target/$apk_profile/apk" -type f -name 'friendshub.apk' -print)
+          if [[ "${#apks[@]}" -ne 1 ]]; then
+            echo "Expected exactly one APK under target/$apk_profile/apk; found ${#apks[@]}." >&2
+            exit 1
+          fi
+
+          mkdir -p dist
+          cp "${apks[0]}" "dist/friendshub-android-${SIGNING_PROFILE}.apk"
+          apksigner verify --verbose "dist/friendshub-android-${SIGNING_PROFILE}.apk"
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+          ANDROID_RELEASE_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEYSTORE_PASSWORD }}
+          SIGNING_PROFILE: ${{ steps.signing.outputs.profile }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-${{ steps.signing.outputs.profile }}-apk
+          path: dist/friendshub-android-${{ steps.signing.outputs.profile }}.apk
+          if-no-files-found: error
+
+  ios:
+    name: iOS unsigned IPA
+    runs-on: macos-26
+
+    env:
+      AWS_LC_SYS_CMAKE_BUILDER: "1"
+      IPHONEOS_DEPLOYMENT_TARGET: "14.0"
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ios-device-arm64
+
+      - name: Install iOS build tools
+        run: brew install protobuf xcodegen
+
+      - name: Generate Xcode project
+        working-directory: platforms/ios
+        run: xcodegen generate
+
+      - name: Build unsigned iOS app
+        working-directory: platforms/ios
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project FriendshubIOS.xcodeproj \
+            -scheme Friendshub \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath ../../build/ios \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: Package unsigned IPA
+        run: |
+          set -euo pipefail
+          app_path="build/ios/Build/Products/Release-iphoneos/FriendsHub.app"
+          test -d "$app_path"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app_path/Info.plist" | grep -Fx 'com.somuch-system.friendshub'
+          mkdir -p dist/ios-ipa/Payload
+          cp -R "$app_path" dist/ios-ipa/Payload/
+          ditto -c -k --sequesterRsrc --keepParent dist/ios-ipa/Payload friendshub-ios-unsigned.ipa
+
+          if codesign --verify --deep "$app_path" >/dev/null 2>&1; then
+            echo "Expected an unsigned iOS app, but code signing was detected." >&2
+            exit 1
+          fi
+
+          unzip -l friendshub-ios-unsigned.ipa | grep -F 'Payload/FriendsHub.app/Info.plist'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ios-unsigned-ipa
+          path: friendshub-ios-unsigned.ipa
+          if-no-files-found: error
+
+  publish:
+    name: Publish tagged release
+    needs: [linux, windows, apple, android, ios]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List collected artifacts
+        run: ls -la artifacts
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: artifacts/*
+          fail_on_unmatched_files: true

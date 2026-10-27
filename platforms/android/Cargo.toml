@@ -1,0 +1,31 @@
+[package]
+name = "friendshub-android"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[package.metadata.android]
+package = "com.somuchsystem.friendshub"
+build_targets = [
+    "armv7-linux-androideabi",
+    "aarch64-linux-android",
+    "x86_64-linux-android",
+]
+apk_name = "friendshub"
+label = "FriendsHub"
+
+[package.metadata.android.sdk]
+min_sdk_version = 26
+target_sdk_version = 35
+
+[package.metadata.android.application]
+label = "FriendsHub"
+
+[dependencies]
+friendshub-apps = { path = "../.." }
+
+[target.'cfg(target_os = "android")'.dependencies]
+slint = { workspace = true, features = ["backend-android-activity-06"] }

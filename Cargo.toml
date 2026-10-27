@@ -1,0 +1,36 @@
+[package]
+name = "friendshub-apps"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+
+[dependencies]
+friendshub-core.workspace = true
+slint.workspace = true
+
+[build-dependencies]
+slint-build.workspace = true
+
+[target.'cfg(target_os = "ios")'.dependencies]
+slint = { workspace = true, features = ["renderer-skia"] }
+
+[workspace]
+members = [
+    ".",
+    "platforms/windows",
+    "platforms/macos",
+    "platforms/ios",
+    "platforms/android",
+    "platforms/linux",
+]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+
+[workspace.dependencies]
+friendshub-core = { git = "https://github.com/SomSomovich/friendshub-core" }
+slint = "1.18.1"
+slint-build = "1.18.1"
