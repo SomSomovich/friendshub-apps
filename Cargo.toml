@@ -16,7 +16,6 @@ slint = { workspace = true, features = ["renderer-skia"] }
 
 [workspace]
 members = [
-    ".",
     "platforms/windows",
     "platforms/macos",
     "platforms/ios",
@@ -34,3 +33,7 @@ rust-version = "1.98"
 friendshub-core = { git = "https://github.com/SomSomovich/friendshub-core" }
 slint = "1.18.1"
 slint-build = "1.18.1"
+
+[patch.crates-io]
+# nix 0.31.3 gates macOS-only socket constants for all Apple targets; this upstream commit fixes iOS.
+nix = { git = "https://github.com/nix-rust/nix", rev = "f9ba3ed0698255d93240b07ecbf39ecb05a8a5cd" }

@@ -293,16 +293,19 @@ jobs:
       - name: Build and sign APK
         run: |
           set -euo pipefail
+          cargo metadata --no-deps --locked --format-version=1 >/dev/null
 
           if [[ "$SIGNING_PROFILE" == "release" ]]; then
             CARGO_APK_RELEASE_KEYSTORE="$RUNNER_TEMP/friendshub-android-signing/release.p12" \
             CARGO_APK_RELEASE_KEYSTORE_PASSWORD="$ANDROID_RELEASE_KEYSTORE_PASSWORD" \
-              cargo apk build --package friendshub-android --release --locked
+              cargo apk build --package friendshub-android --release
             apk_profile=release
           else
-            cargo apk build --package friendshub-android --locked
+            cargo apk build --package friendshub-android
             apk_profile=debug
           fi
+
+          git diff --exit-code -- Cargo.lock
 
           mapfile -t apks < <(find "target/$apk_profile/apk" -type f -name 'friendshub.apk' -print)
           if [[ "${#apks[@]}" -ne 1 ]]; then
@@ -316,6 +319,9 @@ jobs:
         env:
           ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
           ANDROID_RELEASE_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEYSTORE_PASSWORD }}
+          RANLIB_armv7_linux_androideabi: ${{ steps.ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib
+          RANLIB_aarch64_linux_android: ${{ steps.ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib
+          RANLIB_x86_64_linux_android: ${{ steps.ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib
           SIGNING_PROFILE: ${{ steps.signing.outputs.profile }}
 
       - uses: actions/upload-artifact@v4
