@@ -344,6 +344,21 @@ pub fn handle(
     }
 }
 
+/// Return the peer account ID for a loaded direct conversation.
+///
+/// Group, channel, and saved-message conversations have no peer profile target.
+pub fn peer_account_id(ctx: &AppContext, conversation_id: &str) -> Option<String> {
+    let account_id = ctx.active_session()?.account.id;
+    let state = state_lock();
+    let chat = state
+        .accounts
+        .get(&account_id)?
+        .chats
+        .get(conversation_id)?;
+    (chat.kind == "direct" && !chat.peer_account_id.trim().is_empty())
+        .then(|| chat.peer_account_id.clone())
+}
+
 fn handle_conversations(ctx: &AppContext, action: &str, arg1: &str, arg2: &str) -> bool {
     match action {
         "reload" => {
@@ -1544,6 +1559,7 @@ fn load_conversation(
                     choose_route,
                     expected_route_for_completion.as_deref(),
                 );
+                let mark_as_read = matches!(loaded.detail.kind.as_str(), "direct" | "group");
                 let screen = if loaded.detail.kind == "channel" {
                     "channel"
                 } else {
@@ -1605,6 +1621,9 @@ fn load_conversation(
                     && same_active_session(&context, &session_for_completion)
                 {
                     apply_conversation_list(&context, window, &account_id_for_completion);
+                }
+                if visible && mark_as_read {
+                    mark_conversation_read(&context, &id_for_completion, None);
                 }
             }
             Err(error) => {
@@ -2436,7 +2455,8 @@ fn mark_conversation_read(ctx: &AppContext, conversation_id: &str, up_to: Option
     let Some(session) = ctx.active_session() else {
         return;
     };
-    let id = conversation_id.to_owned();
+    let completion_conversation_id = conversation_id.to_owned();
+    let id = completion_conversation_id.clone();
     let account_id = session.account.id.clone();
     let request_key = format!("mark-read:{conversation_id}");
     let request_generation = begin_account_request(&account_id, &request_key);
@@ -2459,6 +2479,19 @@ fn mark_conversation_read(ctx: &AppContext, conversation_id: &str, up_to: Option
             if let Err(error) = result {
                 window.set_conversations_error(error.user_message().into());
             } else {
+                if let Some(conversation) =
+                    state_lock()
+                        .accounts
+                        .get_mut(&account_id)
+                        .and_then(|account| {
+                            account
+                                .conversations
+                                .iter_mut()
+                                .find(|conversation| conversation.id == completion_conversation_id)
+                        })
+                {
+                    conversation.unread_count = 0;
+                }
                 apply_list_from_context(&context, &account_id);
             }
         },
@@ -3652,7 +3685,7 @@ fn apply_conversation_list(ctx: &AppContext, window: MainWindow, account_id: &st
                 "personal" => conversation.kind == "direct",
                 "groups" => conversation.kind == "group",
                 "channels" => conversation.kind == "channel",
-                "unread" => false,
+                "unread" => conversation.archived_at.is_none() && conversation.unread_count > 0,
                 "archived" => conversation.archived_at.is_some(),
                 _ => conversation.archived_at.is_none(),
             }
@@ -3685,7 +3718,7 @@ fn apply_conversation_list(ctx: &AppContext, window: MainWindow, account_id: &st
                     .map(utc_time_label)
                     .unwrap_or_default()
                     .into(),
-                unread_count: 0,
+                unread_count: conversation.unread_count.clamp(0, i64::from(i32::MAX)) as i32,
                 muted: conversation
                     .muted_until
                     .is_some_and(|until| until > now_unix()),
@@ -3699,31 +3732,31 @@ fn apply_conversation_list(ctx: &AppContext, window: MainWindow, account_id: &st
         FilterTab {
             id: "all".into(),
             label: localized("Все", "All").into(),
-            unread_count: 0,
+            unread_count: unread_count_for_kind(&conversations, None),
             visible: true,
         },
         FilterTab {
             id: "unread".into(),
             label: localized("Непрочитанные", "Unread").into(),
-            unread_count: 0,
+            unread_count: unread_count_for_kind(&conversations, None),
             visible: true,
         },
         FilterTab {
             id: "personal".into(),
             label: localized("Личные", "Personal").into(),
-            unread_count: 0,
+            unread_count: unread_count_for_kind(&conversations, Some("direct")),
             visible: true,
         },
         FilterTab {
             id: "groups".into(),
             label: localized("Группы", "Groups").into(),
-            unread_count: 0,
+            unread_count: unread_count_for_kind(&conversations, Some("group")),
             visible: true,
         },
         FilterTab {
             id: "channels".into(),
             label: localized("Каналы", "Channels").into(),
-            unread_count: 0,
+            unread_count: unread_count_for_kind(&conversations, Some("channel")),
             visible: true,
         },
     ];
@@ -3732,7 +3765,17 @@ fn apply_conversation_list(ctx: &AppContext, window: MainWindow, account_id: &st
         .map(|folder| FolderTab {
             id: folder.id.clone().into(),
             name: folder.name.clone().into(),
-            unread_count: 0,
+            unread_count: conversations
+                .iter()
+                .filter(|conversation| {
+                    conversation.archived_at.is_none()
+                        && conversation.unread_count > 0
+                        && folder.conversation_ids.contains(&conversation.id)
+                })
+                .fold(0_i64, |total, conversation| {
+                    total.saturating_add(conversation.unread_count)
+                })
+                .clamp(0, i64::from(i32::MAX)) as i32,
         })
         .collect::<Vec<_>>();
     window.set_conversations(ModelRc::new(VecModel::from(filtered)));
@@ -3747,6 +3790,23 @@ fn apply_conversation_list(ctx: &AppContext, window: MainWindow, account_id: &st
             .any(|conversation| conversation.archived_at.is_some()),
     );
     let _ = ctx;
+}
+
+fn unread_count_for_kind(
+    conversations: &[conversations_api::Conversation],
+    kind: Option<&str>,
+) -> i32 {
+    conversations
+        .iter()
+        .filter(|conversation| {
+            conversation.archived_at.is_none()
+                && conversation.unread_count > 0
+                && kind.map_or(true, |kind| conversation.kind == kind)
+        })
+        .fold(0_i64, |total, conversation| {
+            total.saturating_add(conversation.unread_count)
+        })
+        .clamp(0, i64::from(i32::MAX)) as i32
 }
 
 fn apply_chat_models(window: MainWindow, chat: &mut ChatState) {

@@ -114,6 +114,14 @@ pub fn initialize(ctx: &AppContext) {
 pub fn load(ctx: &AppContext, route: &str) {
     load_preferences_into_window(ctx);
 
+    if let Some(id) = route
+        .strip_prefix("/app/user/")
+        .filter(|id| !id.trim().is_empty())
+    {
+        load_public_profile(ctx, id);
+        return;
+    }
+
     match settings_screen(route) {
         Some("profile") | Some("settings_account") | Some("settings_twofactor") => {
             load_own_profile(ctx)
@@ -392,6 +400,7 @@ fn load_own_profile(ctx: &AppContext) {
                 ));
                 window.set_settings_account_username_valid(true);
                 window.set_settings_account_username_error(SharedString::default());
+                window.set_settings_account_error_text(SharedString::default());
                 window.set_settings_account_busy(false);
 
                 window.set_security_totp_enabled(current.totp_enabled);
@@ -949,13 +958,22 @@ fn handle_profile(ctx: &AppContext, action: &str, arg1: &str, _arg2: &str, _arg3
     match action {
         "load" => true,
         "open-public" if !arg1.trim().is_empty() => load_public_profile(ctx, arg1),
+        "open-conversation" if !arg1.trim().is_empty() => open_conversation_profile(ctx, arg1),
         "close-modal" => {
+            let deep_linked_profile = ctx
+                .ui
+                .upgrade()
+                .is_some_and(|window| window.get_route().starts_with("/app/user/"));
             set_user_profile_id(None);
             ctx.apply_ui(|window| {
                 window.set_user_profile_open(false);
                 window.set_user_profile_alias_editor_open(false);
                 window.set_user_profile_error_text(SharedString::default());
             });
+            if deep_linked_profile {
+                crate::app::navigate(ctx, "/app");
+                return true;
+            }
             true
         }
         "block-toggle" => toggle_public_profile_block(ctx),
@@ -974,9 +992,24 @@ fn handle_profile(ctx: &AppContext, action: &str, arg1: &str, _arg2: &str, _arg3
         }
         // Avatar viewing/sharing require adapters that are not installed.
         "message" => open_profile_conversation(ctx),
-        "open-conversation" | "share" | "avatar-open" | "alias-save" => false,
+        "share" | "avatar-open" | "alias-save" => false,
         _ => false,
     }
+}
+
+fn open_conversation_profile(ctx: &AppContext, conversation_id: &str) -> bool {
+    let Some(window) = ctx.ui.upgrade() else {
+        return false;
+    };
+    if window.get_selected_conversation_id().as_str() != conversation_id
+        || !matches!(window.get_screen().as_str(), "chat" | "channel")
+    {
+        return false;
+    }
+    let Some(peer_account_id) = crate::app::chat::peer_account_id(ctx, conversation_id) else {
+        return false;
+    };
+    load_public_profile(ctx, &peer_account_id)
 }
 
 fn toggle_public_profile_contact(ctx: &AppContext) -> bool {
@@ -1259,15 +1292,69 @@ fn handle_account_settings(
         "save-username" => update_username(ctx, arg1),
         "save-status" => save_custom_status(ctx, arg1, arg2, arg3),
         "clear-status" => clear_custom_status(ctx),
+        "remove-avatar" => remove_own_avatar(ctx),
         "field-label" | "field-value" | "field-add" | "field-remove" => {
             update_profile_field_draft(ctx, action, arg1, arg2)
         }
         "save-profile-fields" => save_profile_fields(ctx),
-        // No avatar picker, avatar mutation endpoint, clipboard, or duration
-        // selector is wired by the native application yet.
-        "choose-avatar" | "remove-avatar" | "copy-fh-number" | "status-duration" => false,
+        // Avatar choosing, clipboard, and duration selection require platform
+        // adapters that are not wired in this application yet.
+        "choose-avatar" | "copy-fh-number" | "status-duration" => false,
         _ => false,
     }
+}
+
+fn remove_own_avatar(ctx: &AppContext) -> bool {
+    let Some(window) = ctx.ui.upgrade() else {
+        return false;
+    };
+    if window.get_settings_account_busy() {
+        return true;
+    }
+    if window.get_settings_account_avatar_url().trim().is_empty() {
+        return true;
+    }
+    let Some(session) = ctx.active_session() else {
+        return false;
+    };
+
+    let account_id = session.account.id.clone();
+    let completion_account_id = account_id.clone();
+    let context = ctx.clone();
+    ctx.apply_ui(|window| {
+        window.set_settings_account_busy(true);
+        window.set_settings_account_error_text(SharedString::default());
+    });
+    dispatch_core_completion(
+        ctx,
+        "remove own avatar",
+        profile::delete_own_avatar,
+        move |window, result| {
+            if !context
+                .active_session()
+                .is_some_and(|session| session.account.id == completion_account_id)
+            {
+                return;
+            }
+            window.set_settings_account_busy(false);
+            match result {
+                Ok(response) if response.deleted => {
+                    window.set_settings_account_error_text(SharedString::default());
+                    load_own_profile(&context);
+                }
+                Ok(_) => {
+                    window.set_settings_account_error_text(
+                        "Сервер не подтвердил удаление аватара.".into(),
+                    );
+                }
+                Err(error) => {
+                    let message = error.user_message();
+                    window.set_settings_account_error_text(message.into());
+                    report_core_failure("remove own avatar", error);
+                }
+            }
+        },
+    )
 }
 
 fn update_username(ctx: &AppContext, value: &str) -> bool {
@@ -2550,6 +2637,10 @@ where
                 }
                 "save profile fields" | "clear custom status" | "update custom status" => {
                     window.set_settings_account_busy(false);
+                }
+                "remove own avatar" => {
+                    window.set_settings_account_busy(false);
+                    window.set_settings_account_error_text(message.into());
                 }
                 "create managed bot"
                 | "set managed bot handle"

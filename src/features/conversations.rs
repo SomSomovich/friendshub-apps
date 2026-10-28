@@ -21,6 +21,8 @@ pub struct Conversation {
     pub updated_at: i64,
     pub archived_at: Option<i64>,
     pub muted_until: Option<i64>,
+    #[serde(default)]
+    pub unread_count: i64,
 }
 
 /// The result of creating or resolving a direct conversation.

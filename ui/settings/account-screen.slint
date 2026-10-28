@@ -69,6 +69,7 @@ export component AccountSettingsScreen inherits Rectangle {
     in property <[SettingsProfileField]> profile-fields: [];
     in property <bool> username-valid: true;
     in property <string> username-error: "";
+    in property <string> account-error-text: "";
     in property <bool> busy: false;
 
     callback back-requested();
@@ -130,14 +131,23 @@ export component AccountSettingsScreen inherits Rectangle {
 
                     FHTextButton {
                         text: "Сменить аватар";
+                        enabled: !root.busy;
                         clicked => { root.choose-avatar-requested(); }
                     }
 
                     if !root.avatar-url.is-empty : FHTextButton {
                         text: "Удалить аватар";
+                        enabled: !root.busy;
                         clicked => { root.remove-avatar-requested(); }
                     }
                 }
+            }
+
+            if !root.account-error-text.is-empty : Text {
+                text: root.account-error-text;
+                color: Theme.danger;
+                font-size: 12px;
+                wrap: word-wrap;
             }
         }
 

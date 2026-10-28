@@ -19,6 +19,11 @@ pub struct ClearedResponse {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AvatarDeletedResponse {
+    pub deleted: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AddedResponse {
     pub added: bool,
 }
@@ -336,6 +341,10 @@ pub fn update_custom_status(
 
 pub fn clear_custom_status(client: &Client) -> Result<ClearedResponse> {
     client.profile_clear_custom_status()
+}
+
+pub fn delete_own_avatar(client: &Client) -> Result<AvatarDeletedResponse> {
+    client.avatars_delete()
 }
 
 pub fn get_public_profile(
