@@ -1,7 +1,7 @@
 import { Theme } from "theme.slint";
 export { Theme } from "theme.slint";
 import { AppShell } from "app-shell.slint";
-import { ConversationRow, FilterTab, FolderTab } from "conversation-list.slint";
+import { ConversationRow, FilterTab, FolderTab, FolderConversationOption } from "conversation-list.slint";
 import { LandingScreen } from "landing-screen.slint";
 import { LoginScreen } from "login-screen.slint";
 import { RegisterScreen } from "register-screen.slint";
@@ -12,6 +12,7 @@ import { NotFoundScreen } from "not-found-screen.slint";
 import { ChatScreen } from "chat/chat-screen.slint";
 import { ChatMessage } from "chat/message-list.slint";
 import { ChatReaction } from "chat/chat-controls.slint";
+import { FolderEditorDialog } from "chat/folder-editor-dialog.slint";
 import { ChatSearchResult } from "chat/chat-search-panel.slint";
 import { ChatMenuItem } from "chat/message-action-menu.slint";
 import { PollDraftOption } from "chat/create-poll-dialog.slint";
@@ -86,6 +87,12 @@ export component MainWindow inherits Window {
         { id: "channels", label: "Каналы", unread-count: 0, visible: true },
     ];
     in property <[FolderTab]> folders: [];
+    in property <[FolderConversationOption]> folder-editor-options: [];
+    in property <bool> folder-editor-open: false;
+    in property <string> folder-editor-id: "";
+    in-out property <string> folder-editor-name: "";
+    in property <bool> folder-editor-busy: false;
+    in property <string> folder-editor-error: "";
     in property <string> selected-filter: "all";
     in property <string> selected-folder: "";
     in property <string> selected-conversation-id: "";
@@ -935,6 +942,18 @@ export component MainWindow inherits Window {
             alias-editor-requested => { root.ui-action("profile", "alias-editor", "", "", ""); }
             alias-save-requested(value) => { root.ui-action("profile", "alias-save", value, "", ""); }
             alias-cancel-requested => { root.ui-action("profile", "alias-cancel", "", "", ""); }
+        }
+
+        FolderEditorDialog {
+            open: root.folder-editor-open;
+            editing: !root.folder-editor-id.is-empty;
+            busy: root.folder-editor-busy;
+            error-text: root.folder-editor-error;
+            options: root.folder-editor-options;
+            name-draft <=> root.folder-editor-name;
+            conversation-toggle-requested(id) => { root.ui-action("conversations", "folder-toggle", id, "", ""); }
+            save-requested(name) => { root.ui-action("conversations", "folder-save", root.folder-editor-id, name, ""); }
+            close-requested => { root.ui-action("conversations", "folder-cancel", "", "", ""); }
         }
 
         if root.screen == "calls" : CallHistoryScreen {

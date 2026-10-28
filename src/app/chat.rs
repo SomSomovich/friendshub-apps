@@ -14,10 +14,12 @@ use serde_json::{Value, json};
 use slint::{Image, ModelRc, VecModel};
 
 use crate::app::{ActiveSession, AppContext};
+use crate::core::CoreCallFailure;
 use crate::features::{chat as chat_api, conversations as conversations_api, profile_settings};
 use crate::{
     ChatMenuItem, ChatMessage, ChatReaction, ChatSearchResult, ConversationRow, FilterTab,
-    FolderTab, MainWindow, PollDraftOption, PollOptionView, PollViewModel,
+    FolderConversationOption, FolderTab, MainWindow, PollDraftOption, PollOptionView,
+    PollViewModel,
 };
 
 const HISTORY_PAGE_SIZE: i64 = 200;
@@ -45,6 +47,7 @@ struct AccountState {
     request_generations: HashMap<String, u64>,
     selected_filter: String,
     selected_folder: String,
+    folder_editor_selected: HashSet<String>,
     search: String,
     chats: HashMap<String, ChatState>,
 }
@@ -108,6 +111,13 @@ struct PollComposerState {
     duration_minutes: String,
     correct_option_id: Option<String>,
     error: String,
+}
+
+struct FolderSaveOutcome {
+    folder_id: String,
+    name: String,
+    folders: Option<Vec<conversations_api::ChatFolder>>,
+    error: Option<String>,
 }
 
 struct PollDraftOptionEntry {
@@ -392,9 +402,16 @@ fn handle_conversations(ctx: &AppContext, action: &str, arg1: &str, arg2: &str) 
             {
                 let mut state = state_lock();
                 let account = state.accounts.entry(account_id.clone()).or_default();
-                if account.folders.iter().any(|folder| folder.id == arg1) {
-                    account.selected_folder = arg1.to_owned();
+                let requested_folder = arg1.strip_prefix("folder:").unwrap_or(arg1);
+                if account
+                    .folders
+                    .iter()
+                    .any(|folder| folder.id == requested_folder)
+                {
+                    account.selected_folder = requested_folder.to_owned();
                     account.selected_filter.clear();
+                } else if arg1.starts_with("folder:") {
+                    return true;
                 } else {
                     account.selected_filter = arg1.to_owned();
                     account.selected_folder.clear();
@@ -421,11 +438,361 @@ fn handle_conversations(ctx: &AppContext, action: &str, arg1: &str, arg2: &str) 
             }
             true
         }
-        // These UI callbacks contain no folder name, edited name, or ordering.
-        // Consume them without sending an invented request body.
-        "folder-create" | "folder-edit" | "create-temporary" => true,
+        "folder-create" => open_folder_editor(ctx, None),
+        "folder-edit" => open_folder_editor(ctx, Some(arg1)),
+        "folder-toggle" => toggle_folder_editor_conversation(ctx, arg1),
+        "folder-save" => save_folder(ctx, arg1, arg2),
+        "folder-cancel" => close_folder_editor(ctx),
+        "create-temporary" => true,
         _ => false,
     }
+}
+
+fn open_folder_editor(ctx: &AppContext, folder_id: Option<&str>) -> bool {
+    let Some(session) = ctx.active_session() else {
+        return false;
+    };
+    let account_id = session.account.id.clone();
+    let (folder, selected) = {
+        let state = state_lock();
+        let account = state.accounts.get(&account_id);
+        let folders = account
+            .map(|account| account.folders.clone())
+            .unwrap_or_default();
+        let folder =
+            folder_id.and_then(|id| folders.iter().find(|folder| folder.id == id).cloned());
+        if folder_id.is_some() && folder.is_none() {
+            return false;
+        }
+        let selected = folder
+            .as_ref()
+            .map(|folder| folder.conversation_ids.iter().cloned().collect())
+            .unwrap_or_default();
+        (folder, selected)
+    };
+    {
+        let mut state = state_lock();
+        state
+            .accounts
+            .entry(account_id.clone())
+            .or_default()
+            .folder_editor_selected = selected;
+    }
+
+    let context = ctx.clone();
+    let session_for_ui = session.clone();
+    ctx.apply_ui(move |window| {
+        if !same_active_session(&context, &session_for_ui) {
+            return;
+        }
+        window.set_folder_editor_open(true);
+        window.set_folder_editor_id(
+            folder
+                .as_ref()
+                .map_or_else(String::new, |folder| folder.id.clone())
+                .into(),
+        );
+        window.set_folder_editor_name(
+            folder
+                .as_ref()
+                .map_or_else(String::new, |folder| folder.name.clone())
+                .into(),
+        );
+        window.set_folder_editor_busy(false);
+        window.set_folder_editor_error(String::new().into());
+        apply_conversation_list(&context, window, &account_id);
+    });
+    true
+}
+
+fn toggle_folder_editor_conversation(ctx: &AppContext, conversation_id: &str) -> bool {
+    if conversation_id.is_empty() {
+        return false;
+    }
+    let Some(session) = ctx.active_session() else {
+        return false;
+    };
+    let account_id = session.account.id.clone();
+    {
+        let mut state = state_lock();
+        let Some(account) = state.accounts.get_mut(&account_id) else {
+            return false;
+        };
+        if !account
+            .conversations
+            .iter()
+            .any(|conversation| conversation.id == conversation_id)
+        {
+            return false;
+        }
+        if !account.folder_editor_selected.remove(conversation_id) {
+            account
+                .folder_editor_selected
+                .insert(conversation_id.to_owned());
+        }
+    }
+    let context = ctx.clone();
+    let session_for_ui = session;
+    ctx.apply_ui(move |window| {
+        if same_active_session(&context, &session_for_ui) {
+            apply_conversation_list(&context, window, &account_id);
+        }
+    });
+    true
+}
+
+fn close_folder_editor(ctx: &AppContext) -> bool {
+    if ctx
+        .ui
+        .upgrade()
+        .is_some_and(|window| window.get_folder_editor_busy())
+    {
+        return true;
+    }
+    if let Some(account_id) = active_account_id(ctx)
+        && let Some(account) = state_lock().accounts.get_mut(&account_id)
+    {
+        account.folder_editor_selected.clear();
+    }
+    ctx.apply_ui(|window| {
+        window.set_folder_editor_open(false);
+        window.set_folder_editor_id(String::new().into());
+        window.set_folder_editor_name(String::new().into());
+        window.set_folder_editor_error(String::new().into());
+        window.set_folder_editor_options(ModelRc::new(VecModel::from(Vec::<
+            FolderConversationOption,
+        >::new())));
+    });
+    true
+}
+
+fn save_folder(ctx: &AppContext, folder_id: &str, requested_name: &str) -> bool {
+    let Some(session) = ctx.active_session() else {
+        return false;
+    };
+    let account_id = session.account.id.clone();
+    let existing_folder = {
+        let state = state_lock();
+        let Some(account) = state.accounts.get(&account_id) else {
+            return false;
+        };
+        if account.folders.iter().all(|folder| folder.id != folder_id) && !folder_id.is_empty() {
+            None
+        } else {
+            account
+                .folders
+                .iter()
+                .find(|folder| folder.id == folder_id)
+                .cloned()
+        }
+    };
+    if !folder_id.is_empty() && existing_folder.is_none() {
+        ctx.apply_ui(|window| {
+            window
+                .set_folder_editor_error("Папка больше не найдена. Обновите список чатов.".into());
+        });
+        return true;
+    }
+    let trimmed_name = requested_name.trim();
+    let name = if trimmed_name.is_empty() {
+        existing_folder.as_ref().map_or_else(
+            || {
+                let folders = state_lock()
+                    .accounts
+                    .get(&account_id)
+                    .map(|account| account.folders.clone())
+                    .unwrap_or_default();
+                next_default_folder_name(&folders)
+            },
+            |folder| folder.name.clone(),
+        )
+    } else {
+        trimmed_name.to_owned()
+    };
+    if name.chars().count() > 64 {
+        ctx.apply_ui(|window| {
+            window.set_folder_editor_error(
+                "Название папки должно содержать не более 64 символов.".into(),
+            );
+        });
+        return true;
+    }
+    let selected = state_lock()
+        .accounts
+        .get(&account_id)
+        .map(|account| account.folder_editor_selected.clone())
+        .unwrap_or_default();
+    let mut selected_ids = selected.into_iter().collect::<Vec<_>>();
+    selected_ids.sort();
+    let is_busy = ctx
+        .ui
+        .upgrade()
+        .is_some_and(|window| window.get_folder_editor_busy());
+    if is_busy {
+        return true;
+    }
+    ctx.apply_ui(|window| {
+        window.set_folder_editor_busy(true);
+        window.set_folder_editor_error(String::new().into());
+    });
+
+    let existing_for_call = existing_folder.clone();
+    let name_for_call = name.clone();
+    let account_id_for_ui = account_id.clone();
+    let session_for_completion = session.clone();
+    let session_for_error = session.clone();
+    let context = ctx.clone();
+    let result = ctx.call(
+        "friendshub-folder-save",
+        move |client| {
+            let mut folder = match existing_for_call {
+                Some(folder) => folder,
+                None => conversations_api::create_folder(client, name_for_call.clone())?,
+            };
+            let folder_id = folder.id.clone();
+            let mut error = None;
+            let mut folders_snapshot = None;
+            let mut final_refresh_succeeded = false;
+
+            if folder.name != name_for_call
+                && let Err(operation_error) = conversations_api::update_folder(
+                    client,
+                    folder_id.clone(),
+                    conversations_api::FolderChanges {
+                        name: Some(name_for_call.clone()),
+                        position: None,
+                    },
+                )
+            {
+                error = Some(folder_error_message(operation_error));
+            } else {
+                folder.name = name_for_call.clone();
+            }
+
+            if error.is_none() {
+                match conversations_api::list_folders(client) {
+                    Ok(folders) => {
+                        if let Some(updated) = folders.iter().find(|item| item.id == folder_id) {
+                            folder = updated.clone();
+                            folders_snapshot = Some(folders);
+                        } else {
+                            error = Some("Сервер не вернул сохранённую папку.".to_owned());
+                            folders_snapshot = Some(folders);
+                        }
+                    }
+                    Err(operation_error) => {
+                        error = Some(folder_error_message(operation_error));
+                    }
+                }
+            }
+
+            if error.is_none() {
+                for id in &selected_ids {
+                    if !folder.conversation_ids.contains(id) {
+                        match conversations_api::add_conversation_to_folder(
+                            client,
+                            folder_id.clone(),
+                            id.clone(),
+                        ) {
+                            Ok(()) => folder.conversation_ids.push(id.clone()),
+                            Err(operation_error) => {
+                                error = Some(folder_error_message(operation_error));
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if error.is_none() {
+                let existing_ids = folder.conversation_ids.clone();
+                for id in existing_ids {
+                    if !selected_ids.contains(&id) {
+                        match conversations_api::remove_conversation_from_folder(
+                            client,
+                            folder_id.clone(),
+                            id.clone(),
+                        ) {
+                            Ok(()) => folder.conversation_ids.retain(|entry| entry != &id),
+                            Err(operation_error) => {
+                                error = Some(folder_error_message(operation_error));
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            match conversations_api::list_folders(client) {
+                Ok(folders) => {
+                    folders_snapshot = Some(folders);
+                    final_refresh_succeeded = true;
+                }
+                Err(operation_error) if error.is_none() => {
+                    error = Some(folder_error_message(operation_error));
+                }
+                Err(_) => {}
+            }
+            if !final_refresh_succeeded
+                && let Some(folders) = folders_snapshot.as_mut()
+                && let Some(saved) = folders.iter_mut().find(|item| item.id == folder_id)
+            {
+                *saved = folder.clone();
+            }
+            Ok(FolderSaveOutcome {
+                folder_id,
+                name: name_for_call,
+                folders: folders_snapshot,
+                error,
+            })
+        },
+        move |window, result| {
+            if !same_active_session(&context, &session_for_completion) {
+                return;
+            }
+            match result {
+                Ok(outcome) => {
+                    {
+                        let mut state = state_lock();
+                        let account = state.accounts.entry(account_id_for_ui.clone()).or_default();
+                        if let Some(folders) = outcome.folders.clone() {
+                            account.folders = folders;
+                        }
+                        if outcome.error.is_none() {
+                            account.selected_folder = outcome.folder_id.clone();
+                            account.selected_filter.clear();
+                            account.folder_editor_selected.clear();
+                        }
+                    }
+                    window.set_folder_editor_id(outcome.folder_id.into());
+                    window.set_folder_editor_name(outcome.name.into());
+                    window.set_folder_editor_busy(false);
+                    if let Some(error) = outcome.error {
+                        window.set_folder_editor_error(error.into());
+                        apply_conversation_list(&context, window, &account_id_for_ui);
+                    } else {
+                        window.set_folder_editor_open(false);
+                        window.set_folder_editor_error(String::new().into());
+                        apply_conversation_list(&context, window, &account_id_for_ui);
+                    }
+                }
+                Err(error) => {
+                    window.set_folder_editor_busy(false);
+                    window.set_folder_editor_error(error.user_message().into());
+                }
+            }
+        },
+    );
+    if let Err(error) = result {
+        let context = ctx.clone();
+        ctx.apply_ui(move |window| {
+            if same_active_session(&context, &session_for_error) {
+                window.set_folder_editor_busy(false);
+                window.set_folder_editor_error(error.to_string().into());
+            }
+        });
+    }
+    true
 }
 
 fn handle_chat(ctx: &AppContext, action: &str, arg1: &str, arg2: &str) -> bool {
@@ -3632,7 +3999,7 @@ fn merge_poll_pages(existing: &mut Vec<PollState>, incoming: Vec<PollState>) {
 }
 
 fn apply_conversation_list(ctx: &AppContext, window: MainWindow, account_id: &str) {
-    let (conversations, folders, filter, folder_id, search, chats) = {
+    let (conversations, folders, filter, folder_id, search, chats, folder_editor_selected) = {
         let state = state_lock();
         let account = state.accounts.get(account_id);
         (
@@ -3669,6 +4036,9 @@ fn apply_conversation_list(ctx: &AppContext, window: MainWindow, account_id: &st
                         })
                         .collect::<HashMap<_, _>>()
                 })
+                .unwrap_or_default(),
+            account
+                .map(|account| account.folder_editor_selected.clone())
                 .unwrap_or_default(),
         )
     };
@@ -3727,6 +4097,22 @@ fn apply_conversation_list(ctx: &AppContext, window: MainWindow, account_id: &st
             }
         })
         .collect::<Vec<_>>();
+    let folder_options = conversations
+        .iter()
+        .map(|conversation| {
+            let meta = chats.get(&conversation.id);
+            let title = row_title(conversation, meta);
+            FolderConversationOption {
+                id: conversation.id.clone().into(),
+                title: title.into(),
+                preview: meta
+                    .and_then(|(_, _, _, preview)| preview.clone())
+                    .unwrap_or_default()
+                    .into(),
+                selected: folder_editor_selected.contains(&conversation.id),
+            }
+        })
+        .collect::<Vec<_>>();
 
     let filter_tabs = vec![
         FilterTab {
@@ -3781,6 +4167,7 @@ fn apply_conversation_list(ctx: &AppContext, window: MainWindow, account_id: &st
     window.set_conversations(ModelRc::new(VecModel::from(filtered)));
     window.set_conversation_filters(ModelRc::new(VecModel::from(filter_tabs)));
     window.set_folders(ModelRc::new(VecModel::from(folder_tabs)));
+    window.set_folder_editor_options(ModelRc::new(VecModel::from(folder_options)));
     window.set_selected_filter(if filter.is_empty() { "all" } else { &filter }.into());
     window.set_selected_folder(folder_id.into());
     window.set_conversation_search(search.into());
@@ -3807,6 +4194,25 @@ fn unread_count_for_kind(
             total.saturating_add(conversation.unread_count)
         })
         .clamp(0, i64::from(i32::MAX)) as i32
+}
+
+fn next_default_folder_name(folders: &[conversations_api::ChatFolder]) -> String {
+    let existing = folders
+        .iter()
+        .map(|folder| folder.name.to_lowercase())
+        .collect::<HashSet<_>>();
+    let mut count = 1_u64;
+    loop {
+        let name = format!("Новая папка {count}");
+        if !existing.contains(&name.to_lowercase()) {
+            return name;
+        }
+        count = count.saturating_add(1);
+    }
+}
+
+fn folder_error_message(error: CoreError) -> String {
+    CoreCallFailure::from(error).user_message().to_owned()
 }
 
 fn apply_chat_models(window: MainWindow, chat: &mut ChatState) {

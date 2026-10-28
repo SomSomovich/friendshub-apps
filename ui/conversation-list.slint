@@ -29,6 +29,13 @@ export struct FolderTab {
     unread-count: int,
 }
 
+export struct FolderConversationOption {
+    id: string,
+    title: string,
+    preview: string,
+    selected: bool,
+}
+
 component FilterButton inherits Rectangle {
     in property <string> label;
     in property <string> key;

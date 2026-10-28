@@ -1,0 +1,195 @@
+import { Theme } from "../theme.slint";
+import { ScrollView } from "std-widgets.slint";
+import { FHTextButton, FHPrimaryButton } from "../components.slint";
+import { FolderConversationOption } from "../conversation-list.slint";
+
+export component FolderEditorDialog inherits Rectangle {
+    in property <bool> open: false;
+    in property <bool> editing: false;
+    in property <bool> busy: false;
+    in property <string> name-label: "Название папки";
+    in property <string> placeholder: "Например, друзья";
+    in property <string> error-text: "";
+    in property <string> name-limit-hint: "Не более 64 символов";
+    in property <[FolderConversationOption]> options: [];
+    in-out property <string> name-draft: "";
+
+    callback conversation-toggle-requested(string);
+    callback save-requested(string);
+    callback close-requested();
+
+    if root.open : Rectangle {
+        width: 100%;
+        height: 100%;
+        background: #99000000;
+
+        TouchArea {
+            enabled: !root.busy;
+            clicked => { root.close-requested(); }
+        }
+
+        Rectangle {
+            x: (parent.width - min(parent.width - 32px, 480px)) / 2;
+            y: (parent.height - self.height) / 2;
+            width: min(parent.width - 32px, 480px);
+            height: min(parent.height - 32px, 560px);
+            background: Theme.surface;
+            border-width: 1px;
+            border-color: Theme.border;
+            border-radius: 12px;
+            clip: true;
+
+            folder-editor-card := VerticalLayout {
+                width: 100%;
+                height: 100%;
+                padding: 20px;
+                spacing: 12px;
+
+                ScrollView {
+                    vertical-stretch: 1;
+                    content-width: parent.width;
+                    content-height: folder-editor-body.preferred-height;
+
+                    folder-editor-body := VerticalLayout {
+                        width: parent.width;
+                        spacing: 12px;
+
+                        Text {
+                            text: root.editing ? "Настройка папки с чатами" : "Создайте папку с чатами";
+                            color: Theme.foreground;
+                            font-size: 16px;
+                            font-weight: 600;
+                        }
+
+                        VerticalLayout {
+                            spacing: 6px;
+                            Text { text: root.name-label; color: Theme.muted; font-size: 12px; font-weight: 600; }
+                            Rectangle {
+                                width: 100%;
+                                height: 40px;
+                                background: Theme.background;
+                                border-width: 1px;
+                                border-color: name-input.has-focus ? Theme.accent : Theme.border;
+                                border-radius: 8px;
+                                clip: true;
+
+                                if root.name-draft.is-empty : Text {
+                                    x: 12px;
+                                    width: parent.width - 24px;
+                                    height: parent.height;
+                                    text: root.placeholder;
+                                    color: Theme.muted;
+                                    font-size: 14px;
+                                    vertical-alignment: center;
+                                    accessible-role: none;
+                                }
+
+                                name-input := TextInput {
+                                    x: 12px;
+                                    width: parent.width - 24px;
+                                    height: parent.height;
+                                    text <=> root.name-draft;
+                                    font-size: 14px;
+                                    color: Theme.foreground;
+                                    enabled: !root.busy;
+                                    accessible-label: root.name-label;
+                                    accessible-placeholder-text: root.placeholder;
+                                }
+                            }
+                            Text { text: root.name-limit-hint; color: Theme.muted; font-size: 11px; }
+                        }
+
+                        Text { text: "Выберите чаты"; color: Theme.foreground; font-size: 13px; font-weight: 600; }
+
+                        if root.options.length == 0 : Text {
+                            text: "Пока нет чатов, которые можно добавить.";
+                            color: Theme.muted;
+                            font-size: 12px;
+                            wrap: word-wrap;
+                        }
+
+                        if root.options.length > 0 : VerticalLayout {
+                            spacing: 2px;
+
+                            for option in root.options : Rectangle {
+                                width: 100%;
+                                height: 56px;
+                                border-radius: 8px;
+                                background: option.selected || option-row.has-hover ? Theme.hover : transparent;
+                                accessible-role: checkbox;
+                                accessible-label: option.title;
+                                accessible-checked: option.selected;
+                                accessible-enabled: !root.busy;
+                                accessible-action-default => {
+                                    if !root.busy { root.conversation-toggle-requested(option.id); }
+                                }
+
+                                HorizontalLayout {
+                                    padding-left: 10px;
+                                    padding-right: 10px;
+                                    spacing: 10px;
+                                    alignment: center;
+
+                                    VerticalLayout {
+                                        spacing: 2px;
+                                        horizontal-stretch: 1;
+                                        Text { text: option.title; color: Theme.foreground; font-size: 13px; overflow: elide; }
+                                        if !option.preview.is-empty : Text { text: option.preview; color: Theme.muted; font-size: 11px; overflow: elide; }
+                                    }
+
+                                    Rectangle {
+                                        width: 18px;
+                                        height: 18px;
+                                        border-radius: 4px;
+                                        border-width: 1px;
+                                        border-color: option.selected ? Theme.accent : Theme.border;
+                                        background: option.selected ? Theme.accent : transparent;
+                                        Text {
+                                            text: option.selected ? "✓" : "";
+                                            color: Theme.accent-foreground;
+                                            font-size: 12px;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                            width: 100%;
+                                            height: 100%;
+                                        }
+                                    }
+                                }
+
+                                option-row := TouchArea {
+                                    enabled: !root.busy;
+                                    mouse-cursor: pointer;
+                                    clicked => { root.conversation-toggle-requested(option.id); }
+                                }
+                            }
+                        }
+
+                        if !root.error-text.is-empty : Text {
+                            text: root.error-text;
+                            color: Theme.danger;
+                            font-size: 12px;
+                            wrap: word-wrap;
+                            width: 100%;
+                        }
+                    }
+                }
+
+                HorizontalLayout {
+                    alignment: end;
+                    spacing: 8px;
+                    FHTextButton {
+                        text: "Отмена";
+                        enabled: !root.busy;
+                        clicked => { root.close-requested(); }
+                    }
+                    FHPrimaryButton {
+                        text: root.busy ? "Сохраняем…" : "Сохранить";
+                        enabled: !root.busy;
+                        busy: root.busy;
+                        clicked => { root.save-requested(root.name-draft); }
+                    }
+                }
+            }
+        }
+    }
+}
