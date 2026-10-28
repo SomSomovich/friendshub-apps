@@ -12,6 +12,7 @@ import { NotFoundScreen } from "not-found-screen.slint";
 import { ChatScreen } from "chat/chat-screen.slint";
 import { ChatMessage } from "chat/message-list.slint";
 import { ChatReaction } from "chat/chat-controls.slint";
+import { TemporaryRoomDurationDialog } from "chat/temporary-room-duration-dialog.slint";
 import { FolderEditorDialog } from "chat/folder-editor-dialog.slint";
 import { ChatSearchResult } from "chat/chat-search-panel.slint";
 import { ChatMenuItem } from "chat/message-action-menu.slint";
@@ -279,9 +280,13 @@ export component MainWindow inherits Window {
     in property <bool> create-group-contacts-loading: false;
     in property <string> create-group-contact-search: "";
     in property <string> create-group-selected-members-note: "";
-    in property <[CreateSummaryRow]> create-group-summary-rows: [];
     in property <string> create-group-expiry-summary: "";
     in property <bool> create-group-busy: false;
+
+    in property <bool> temporary-room-dialog-open: false;
+    in property <string> temporary-room-hours: "1";
+    in property <string> temporary-room-minutes: "0";
+    in property <bool> temporary-room-duration-valid: true;
 
     in-out property <string> create-channel-title: "";
     in-out property <string> create-channel-description: "";
@@ -988,7 +993,6 @@ export component MainWindow inherits Window {
             contacts-loading: root.create-group-contacts-loading;
             contact-search: root.create-group-contact-search;
             selected-members-note: root.create-group-selected-members-note;
-            summary-rows: root.create-group-summary-rows;
             expiry-summary: root.create-group-expiry-summary;
             busy: root.create-group-busy;
             create-requested => { root.create-group-requested(create-group-view.group-title, create-group-view.description, create-group-view.handle, create-group-view.is-public, create-group-view.selected-contacts); }
@@ -1263,5 +1267,27 @@ export component MainWindow inherits Window {
         speaker-toggle-requested => { root.ui-action("calls", "toggle-speaker", "", "", ""); }
         camera-toggle-requested => { root.ui-action("calls", "toggle-camera", "", "", ""); }
         switch-camera-requested => { root.ui-action("calls", "switch-camera", "", "", ""); }
+    }
+
+    TemporaryRoomDurationDialog {
+        open: root.temporary-room-dialog-open;
+        duration-valid: root.temporary-room-duration-valid;
+        title: root.language == "ru" ? "Создать временную комнату" : "Create temporary room";
+        hint: root.language == "ru"
+            ? "Выберите, через сколько часов и минут группа закроется. Срок — от минуты до 7 дней."
+            : "Choose how many hours and minutes until the group closes. The duration must be from one minute to seven days.";
+        hours-label: root.language == "ru" ? "Часы" : "Hours";
+        minutes-label: root.language == "ru" ? "Минуты" : "Minutes";
+        hours: root.temporary-room-hours;
+        minutes: root.temporary-room-minutes;
+        range-error: root.language == "ru"
+            ? "Срок должен быть от минуты до 7 дней."
+            : "Duration must be from one minute to seven days.";
+        cancel-label: root.language == "ru" ? "Отмена" : "Cancel";
+        continue-label: root.language == "ru" ? "Продолжить" : "Continue";
+        hours-changed(value) => { root.ui-action("conversations", "temporary-hours-changed", value, "", ""); }
+        minutes-changed(value) => { root.ui-action("conversations", "temporary-minutes-changed", value, "", ""); }
+        continue-requested => { root.ui-action("conversations", "temporary-duration-confirmed", root.temporary-room-hours, root.temporary-room-minutes, ""); }
+        close-requested => { root.ui-action("conversations", "temporary-duration-cancelled", "", "", ""); }
     }
 }

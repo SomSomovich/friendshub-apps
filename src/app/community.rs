@@ -19,8 +19,8 @@ use crate::app::AppContext;
 use crate::features::{bots, chat, community as community_api, conversations, discovery_dating};
 use crate::{
     ChannelAnalytic, ChannelPost as UiChannelPost, ChatAttachmentView, ChatReaction,
-    ConversationInvite, ConversationMember, ConversationOption, CreateSummaryRow, DatingCard,
-    DatingProfileDraft, DiscoverEntry, ExistingGroupRow, GroupMemberRow, MainWindow,
+    ConversationInvite, ConversationMember, ConversationOption, DatingCard, DatingProfileDraft,
+    DiscoverEntry, ExistingGroupRow, GroupMemberRow, MainWindow,
 };
 
 const DIRECTORY_LIMIT: i64 = 200;
@@ -1276,34 +1276,17 @@ fn load_create_group_state(ctx: &AppContext) {
 
 fn update_create_group_draft_state(window: &MainWindow) {
     let title = window.get_create_group_title().to_string();
-    let is_public = window.get_create_group_is_public();
     let selected_contacts: Vec<GroupMemberRow> =
         window.get_create_group_selected_contacts().iter().collect();
     let participant_count = selected_contacts.len();
-    let title_summary = if title.trim().is_empty() {
-        "Не указано".to_owned()
-    } else {
-        title.trim().to_owned()
-    };
-    window.set_create_group_summary_rows(model(vec![
-        CreateSummaryRow {
-            label: "Название".into(),
-            value: title_summary.into(),
-        },
-        CreateSummaryRow {
-            label: "Доступ".into(),
-            value: if is_public {
-                "Публичная"
-            } else {
-                "Приватная"
-            }
+    let route = window.get_route().to_string();
+    let expires_in_seconds = temporary_room_expiry_from_route(&route);
+    window.set_create_group_expiry_summary(
+        expires_in_seconds
+            .map(temporary_room_expiry_label)
+            .unwrap_or_default()
             .into(),
-        },
-        CreateSummaryRow {
-            label: "Участники".into(),
-            value: participant_count.to_string().into(),
-        },
-    ]));
+    );
     window.set_create_group_selected_members_note(if participant_count == 0 {
         "Группу можно создать без участников.".into()
     } else {
@@ -1311,6 +1294,23 @@ fn update_create_group_draft_state(window: &MainWindow) {
     });
     window.set_create_group_can_continue(!title.trim().is_empty());
     window.set_create_group_can_create(!title.trim().is_empty());
+}
+
+fn temporary_room_expiry_from_route(route: &str) -> Option<i64> {
+    let query = route.split_once('?')?.1;
+    let value = query.split('&').find_map(|part| {
+        let (key, value) = part.split_once('=')?;
+        (key == "expiresInSeconds").then_some(value)
+    })?;
+    let seconds = value.parse::<i64>().ok()?;
+    (60..=7 * 24 * 60 * 60)
+        .contains(&seconds)
+        .then_some(seconds)
+}
+
+fn temporary_room_expiry_label(seconds: i64) -> String {
+    let total_minutes = seconds / 60;
+    format!("{} ч {} мин", total_minutes / 60, total_minutes % 60)
 }
 
 fn toggle_create_group_member(window: &MainWindow, account_id: &str) {
@@ -2984,6 +2984,12 @@ pub fn create_group_requested(
     }
     let description = description.trim().to_owned();
     let handle = normalize_handle(&handle);
+    let route = ctx
+        .ui
+        .upgrade()
+        .map(|window| window.get_route().to_string())
+        .unwrap_or_default();
+    let expires_in_seconds = temporary_room_expiry_from_route(&route);
     ctx.apply_ui(|window| {
         window.set_create_group_busy(true);
         window.set_create_group_handle_feedback("".into());
@@ -2999,7 +3005,7 @@ pub fn create_group_requested(
                     member_ids: &member_ids,
                     is_public,
                     description: (!description.is_empty()).then_some(description.as_str()),
-                    expires_in_seconds: None,
+                    expires_in_seconds,
                 },
             )?;
             let handle_set = handle.is_empty()

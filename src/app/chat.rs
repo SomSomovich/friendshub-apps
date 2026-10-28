@@ -443,9 +443,70 @@ fn handle_conversations(ctx: &AppContext, action: &str, arg1: &str, arg2: &str) 
         "folder-toggle" => toggle_folder_editor_conversation(ctx, arg1),
         "folder-save" => save_folder(ctx, arg1, arg2),
         "folder-cancel" => close_folder_editor(ctx),
-        "create-temporary" => true,
+        "create-temporary" => {
+            ctx.apply_ui(|window| {
+                window.set_temporary_room_dialog_open(true);
+                window.set_temporary_room_hours("1".into());
+                window.set_temporary_room_minutes("0".into());
+                window.set_temporary_room_duration_valid(true);
+            });
+            true
+        }
+        "temporary-hours-changed" => update_temporary_room_duration(ctx, Some(arg1), None),
+        "temporary-minutes-changed" => update_temporary_room_duration(ctx, None, Some(arg1)),
+        "temporary-duration-cancelled" => {
+            ctx.apply_ui(|window| window.set_temporary_room_dialog_open(false));
+            true
+        }
+        "temporary-duration-confirmed" => {
+            let Some(seconds) = temporary_room_duration_seconds(arg1, arg2) else {
+                update_temporary_room_duration(ctx, Some(arg1), Some(arg2));
+                return true;
+            };
+            ctx.apply_ui(|window| window.set_temporary_room_dialog_open(false));
+            super::navigate(
+                ctx,
+                &format!("/app/create/group?expiresInSeconds={seconds}"),
+            );
+            true
+        }
         _ => false,
     }
+}
+
+fn update_temporary_room_duration(
+    ctx: &AppContext,
+    changed_hours: Option<&str>,
+    changed_minutes: Option<&str>,
+) -> bool {
+    let Some(window) = ctx.ui.upgrade() else {
+        return true;
+    };
+    let next_hours = changed_hours
+        .map(str::to_owned)
+        .unwrap_or_else(|| window.get_temporary_room_hours().to_string());
+    let next_minutes = changed_minutes
+        .map(str::to_owned)
+        .unwrap_or_else(|| window.get_temporary_room_minutes().to_string());
+    let valid = temporary_room_duration_seconds(&next_hours, &next_minutes).is_some();
+    window.set_temporary_room_hours(next_hours.into());
+    window.set_temporary_room_minutes(next_minutes.into());
+    window.set_temporary_room_duration_valid(valid);
+    true
+}
+
+fn temporary_room_duration_seconds(hours: &str, minutes: &str) -> Option<i64> {
+    let hours = hours.trim().parse::<i64>().ok()?;
+    let minutes = minutes.trim().parse::<i64>().ok()?;
+    if !(0..=59).contains(&minutes) {
+        return None;
+    }
+    let seconds = hours
+        .checked_mul(3600)?
+        .checked_add(minutes.checked_mul(60)?)?;
+    (60..=7 * 24 * 60 * 60)
+        .contains(&seconds)
+        .then_some(seconds)
 }
 
 fn open_folder_editor(ctx: &AppContext, folder_id: Option<&str>) -> bool {

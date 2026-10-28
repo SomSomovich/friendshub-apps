@@ -18,7 +18,6 @@ export component CreateGroupScreen inherits Rectangle {
     in property <bool> contacts-loading: false;
     in property <string> contact-search: "";
     in property <string> selected-members-note: "";
-    in property <[CreateSummaryRow]> summary-rows: [];
     in property <string> expiry-summary: "";
     in property <bool> busy: false;
 
@@ -30,6 +29,18 @@ export component CreateGroupScreen inherits Rectangle {
 
     private property <int> current-step: 0;
     private property <bool> title-ready: !root.group-title.replace-all(" ", "").replace-all("\u{9}", "").replace-all("\u{d}", "").replace-all("\n", "").is-empty;
+    private property <[CreateSummaryRow]> current-summary-rows: root.expiry-summary.is-empty
+        ? [
+            { label: "Название", value: root.group-title },
+            { label: "Доступ", value: root.is-public ? "Публичная" : "Приватная" },
+            { label: "Участники", value: "\{root.selected-contacts.length}" }
+        ]
+        : [
+            { label: "Название", value: root.group-title },
+            { label: "Срок действия", value: root.expiry-summary },
+            { label: "Доступ", value: root.is-public ? "Публичная" : "Приватная" },
+            { label: "Участники", value: "\{root.selected-contacts.length}" }
+        ];
 
     background: Theme.background;
 
@@ -94,11 +105,7 @@ export component CreateGroupScreen inherits Rectangle {
         }
         if root.current-step >= 2 : CreateSummary {
             title: "Проверка";
-            rows: [
-                { label: "Название", value: root.group-title },
-                { label: "Доступ", value: root.is-public ? "Публичная" : "Приватная" },
-                { label: "Участники", value: "\{root.selected-contacts.length}" }
-            ];
+            rows: root.current-summary-rows;
             note: root.selected-members-note;
         }
     }
