@@ -1,11 +1,11 @@
 import { Theme } from "../theme.slint";
-import { ChatAction } from "chat-controls.slint";
+import { ChatAction } from "../chat/chat-controls.slint";
 
-export component TemporaryRoomDurationDialog inherits Rectangle {
+export component DurationPickerDialog inherits Rectangle {
     in property <bool> open: false;
     in property <bool> duration-valid: false;
-    in property <string> title: "Создать временную комнату";
-    in property <string> hint: "Выберите, через сколько часов и минут группа закроется.";
+    in property <string> title: "Выберите срок";
+    in property <string> hint: "Укажите, через сколько часов и минут действие закончится.";
     in property <string> hours-label: "Часы";
     in property <string> minutes-label: "Минуты";
     in property <string> hours: "1";

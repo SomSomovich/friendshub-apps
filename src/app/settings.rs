@@ -33,6 +33,7 @@ use crate::{
 const PREFERENCES_FILE: &str = "settings.json";
 const MAX_PREFERENCES_BYTES: u64 = 64 * 1024;
 const MAX_USERNAME_CHARS: usize = 64;
+const MAX_STATUS_TTL_SECONDS: i64 = 7 * 24 * 60 * 60;
 const MAX_MANAGED_BOTS: usize = bots::MAX_MANAGED_BOTS;
 const MAX_PROFILE_AVATAR_BYTES: usize = 5 * 1024 * 1024;
 const MAX_PROFILE_AVATAR_BASE64_BYTES: usize = MAX_PROFILE_AVATAR_BYTES.div_ceil(3) * 4;
@@ -388,6 +389,9 @@ fn load_own_profile(ctx: &AppContext) {
                 window.set_settings_account_status_ttl_seconds(status_ttl(
                     current.custom_status_expires_at,
                 ));
+                window.set_settings_account_status_custom_ttl_seconds(status_custom_ttl(
+                    current.custom_status_expires_at,
+                ));
                 window.set_settings_account_profile_fields(model(
                     fields
                         .fields
@@ -478,13 +482,36 @@ fn initials(name: &str) -> String {
 
 fn status_ttl(expires_at: Option<i64>) -> i32 {
     let Some(expires_at) = expires_at else {
-        return 3600;
+        return 0;
     };
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs().min(i64::MAX as u64) as i64)
         .unwrap_or(0);
-    expires_at.saturating_sub(now).clamp(0, i32::MAX as i64) as i32
+    let remaining = expires_at.saturating_sub(now);
+    if remaining <= 0 {
+        return 0;
+    }
+    let remaining = remaining.clamp(60, MAX_STATUS_TTL_SECONDS);
+    for preset in [3_600_i64, 8 * 3_600, MAX_STATUS_TTL_SECONDS] {
+        if (remaining - preset).abs() <= 120 {
+            return preset as i32;
+        }
+    }
+    remaining as i32
+}
+
+fn status_custom_ttl(expires_at: Option<i64>) -> i32 {
+    let Some(expires_at) = expires_at else {
+        return 3_600;
+    };
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs().min(i64::MAX as u64) as i64)
+        .unwrap_or(0);
+    expires_at
+        .saturating_sub(now)
+        .clamp(60, MAX_STATUS_TTL_SECONDS) as i32
 }
 
 fn load_accounts(ctx: &AppContext) {
@@ -1297,11 +1324,111 @@ fn handle_account_settings(
             update_profile_field_draft(ctx, action, arg1, arg2)
         }
         "save-profile-fields" => save_profile_fields(ctx),
-        // Avatar choosing, clipboard, and duration selection require platform
-        // adapters that are not wired in this application yet.
-        "choose-avatar" | "copy-fh-number" | "status-duration" => false,
+        "status-duration" => open_status_duration_editor(ctx),
+        "status-duration-choice" => choose_status_duration(ctx, arg1),
+        "status-hours-changed" => update_status_duration_fields(ctx, Some(arg1), None),
+        "status-minutes-changed" => update_status_duration_fields(ctx, None, Some(arg1)),
+        "status-duration-selected" => select_custom_status_duration(ctx, arg1, arg2),
+        "status-duration-cancelled" => {
+            if let Some(window) = ctx.ui.upgrade() {
+                window.set_settings_account_status_duration_open(false);
+            }
+            true
+        }
+        // Avatar choosing and clipboard access require platform adapters that
+        // are not wired in this application yet.
+        "choose-avatar" | "copy-fh-number" => false,
         _ => false,
     }
+}
+
+fn open_status_duration_editor(ctx: &AppContext) -> bool {
+    let Some(window) = ctx.ui.upgrade() else {
+        return false;
+    };
+    if window.get_settings_account_busy() {
+        return true;
+    }
+    let seconds = i64::from(window.get_settings_account_status_custom_ttl_seconds())
+        .clamp(60, MAX_STATUS_TTL_SECONDS);
+    window.set_settings_account_status_duration_hours((seconds / 3_600).to_string().into());
+    window
+        .set_settings_account_status_duration_minutes(((seconds % 3_600) / 60).to_string().into());
+    window.set_settings_account_status_duration_valid(true);
+    window.set_settings_account_status_duration_open(true);
+    true
+}
+
+fn choose_status_duration(ctx: &AppContext, choice: &str) -> bool {
+    let Some(window) = ctx.ui.upgrade() else {
+        return false;
+    };
+    if window.get_settings_account_busy() {
+        return true;
+    }
+    let seconds = match choice {
+        "hour" => 3_600,
+        "eight-hours" => 8 * 3_600,
+        "week" => MAX_STATUS_TTL_SECONDS,
+        "forever" => 0,
+        "custom" => return open_status_duration_editor(ctx),
+        _ => return false,
+    };
+    window.set_settings_account_status_ttl_seconds(seconds as i32);
+    true
+}
+
+fn update_status_duration_fields(
+    ctx: &AppContext,
+    changed_hours: Option<&str>,
+    changed_minutes: Option<&str>,
+) -> bool {
+    let Some(window) = ctx.ui.upgrade() else {
+        return true;
+    };
+    let hours = changed_hours.map(str::to_owned).unwrap_or_else(|| {
+        window
+            .get_settings_account_status_duration_hours()
+            .to_string()
+    });
+    let minutes = changed_minutes.map(str::to_owned).unwrap_or_else(|| {
+        window
+            .get_settings_account_status_duration_minutes()
+            .to_string()
+    });
+    let valid = status_duration_seconds(&hours, &minutes).is_some();
+    window.set_settings_account_status_duration_hours(hours.into());
+    window.set_settings_account_status_duration_minutes(minutes.into());
+    window.set_settings_account_status_duration_valid(valid);
+    true
+}
+
+fn select_custom_status_duration(ctx: &AppContext, hours: &str, minutes: &str) -> bool {
+    let Some(seconds) = status_duration_seconds(hours, minutes) else {
+        update_status_duration_fields(ctx, Some(hours), Some(minutes));
+        return true;
+    };
+    let Some(window) = ctx.ui.upgrade() else {
+        return true;
+    };
+    window.set_settings_account_status_ttl_seconds(seconds);
+    window.set_settings_account_status_custom_ttl_seconds(seconds);
+    window.set_settings_account_status_duration_open(false);
+    true
+}
+
+fn status_duration_seconds(hours: &str, minutes: &str) -> Option<i32> {
+    let hours = hours.trim().parse::<i64>().ok()?;
+    let minutes = minutes.trim().parse::<i64>().ok()?;
+    if !(0..=59).contains(&minutes) {
+        return None;
+    }
+    let seconds = hours
+        .checked_mul(3_600)?
+        .checked_add(minutes.checked_mul(60)?)?;
+    (60..=MAX_STATUS_TTL_SECONDS)
+        .contains(&seconds)
+        .then_some(seconds as i32)
 }
 
 fn remove_own_avatar(ctx: &AppContext) -> bool {
@@ -1593,13 +1720,13 @@ fn save_custom_status(ctx: &AppContext, text: &str, emoji: &str, ttl_seconds: &s
     let Ok(ttl_seconds) = ttl_seconds.parse::<i64>() else {
         return false;
     };
-    if ttl_seconds <= 0 {
+    if ttl_seconds != 0 && !(60..=MAX_STATUS_TTL_SECONDS).contains(&ttl_seconds) {
         return false;
     }
     let request = profile::UpdateCustomStatusRequest {
         text: Some(text.to_owned()),
         emoji: Some(emoji.to_owned()),
-        ttl_seconds: Some(ttl_seconds),
+        ttl_seconds: (ttl_seconds > 0).then_some(ttl_seconds),
     };
     ctx.apply_ui(|window| window.set_settings_account_busy(true));
     let context = ctx.clone();

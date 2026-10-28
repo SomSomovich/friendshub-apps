@@ -1,6 +1,6 @@
 import { Theme } from "../theme.slint";
 import { FHInput, FHPrimaryButton, FHTextButton } from "../components.slint";
-import { SettingsCard, SettingsDivider, SettingsFrame } from "common.slint";
+import { SettingsCard, SettingsChoice, SettingsDivider, SettingsFrame } from "common.slint";
 
 export struct SettingsProfileField {
     label: string,
@@ -80,6 +80,7 @@ export component AccountSettingsScreen inherits Rectangle {
     callback save-status-requested(string, string, int);
     callback clear-status-requested();
     callback status-duration-requested();
+    callback status-duration-choice-requested(string);
     callback profile-field-label-edited(int, string);
     callback profile-field-value-edited(int, string);
     callback add-profile-field-requested();
@@ -209,21 +210,31 @@ export component AccountSettingsScreen inherits Rectangle {
                 helper: "До 8 символов — обычно один эмодзи.";
             }
 
-            HorizontalLayout {
-                spacing: 8px;
-                alignment: start;
+            SettingsChoice {
+                label: "Срок";
+                enabled: !root.busy;
+                value: root.status-ttl-seconds == 0 ? "forever"
+                    : root.status-ttl-seconds == 3600 ? "hour"
+                    : root.status-ttl-seconds == 28800 ? "eight-hours"
+                    : root.status-ttl-seconds == 604800 ? "week"
+                    : "custom";
+                options: [
+                    { value: "hour", label: "На час" },
+                    { value: "eight-hours", label: "На 8 часов" },
+                    { value: "week", label: "На неделю" },
+                    { value: "custom", label: "Кастомный срок" },
+                    { value: "forever", label: "Навсегда" },
+                ];
+                changed(value) => { root.status-duration-choice-requested(value); }
+            }
 
-                Text {
-                    text: "Срок: \{root.status-ttl-seconds / 3600} ч";
-                    color: Theme.muted;
-                    font-size: 12px;
-                    vertical-alignment: center;
-                }
-
-                FHTextButton {
-                    text: "Изменить срок";
-                    clicked => { root.status-duration-requested(); }
-                }
+            if root.status-ttl-seconds != 0
+                && root.status-ttl-seconds != 3600
+                && root.status-ttl-seconds != 28800
+                && root.status-ttl-seconds != 604800 : FHTextButton {
+                text: "Изменить срок";
+                enabled: !root.busy;
+                clicked => { root.status-duration-requested(); }
             }
 
             HorizontalLayout {

@@ -12,7 +12,7 @@ import { NotFoundScreen } from "not-found-screen.slint";
 import { ChatScreen } from "chat/chat-screen.slint";
 import { ChatMessage } from "chat/message-list.slint";
 import { ChatReaction } from "chat/chat-controls.slint";
-import { TemporaryRoomDurationDialog } from "chat/temporary-room-duration-dialog.slint";
+import { DurationPickerDialog } from "components/duration-picker-dialog.slint";
 import { FolderEditorDialog } from "chat/folder-editor-dialog.slint";
 import { ChatSearchResult } from "chat/chat-search-panel.slint";
 import { ChatMenuItem } from "chat/message-action-menu.slint";
@@ -358,7 +358,12 @@ export component MainWindow inherits Window {
     in property <bool> settings-account-has-avatar: false;
     in-out property <string> settings-account-status-text: "";
     in-out property <string> settings-account-status-emoji: "";
-    in property <int> settings-account-status-ttl-seconds: 3600;
+    in property <int> settings-account-status-ttl-seconds: 0;
+    in property <int> settings-account-status-custom-ttl-seconds: 3600;
+    in property <bool> settings-account-status-duration-open: false;
+    in property <string> settings-account-status-duration-hours: "1";
+    in property <string> settings-account-status-duration-minutes: "0";
+    in property <bool> settings-account-status-duration-valid: true;
     in property <[SettingsProfileField]> settings-account-profile-fields: [];
     in property <bool> settings-account-username-valid: true;
     in property <string> settings-account-username-error: "";
@@ -1055,6 +1060,7 @@ export component MainWindow inherits Window {
             save-status-requested(text, emoji, ttl) => { root.ui-action("account-settings", "save-status", text, emoji, "\{ttl}"); }
             clear-status-requested => { root.ui-action("account-settings", "clear-status", "", "", ""); }
             status-duration-requested => { root.ui-action("account-settings", "status-duration", "", "", ""); }
+            status-duration-choice-requested(value) => { root.ui-action("account-settings", "status-duration-choice", value, "", ""); }
             profile-field-label-edited(index, value) => { root.ui-action("account-settings", "field-label", "\{index}", value, ""); }
             profile-field-value-edited(index, value) => { root.ui-action("account-settings", "field-value", "\{index}", value, ""); }
             add-profile-field-requested => { root.ui-action("account-settings", "field-add", "", "", ""); }
@@ -1269,7 +1275,7 @@ export component MainWindow inherits Window {
         switch-camera-requested => { root.ui-action("calls", "switch-camera", "", "", ""); }
     }
 
-    TemporaryRoomDurationDialog {
+    DurationPickerDialog {
         open: root.temporary-room-dialog-open;
         duration-valid: root.temporary-room-duration-valid;
         title: root.language == "ru" ? "Создать временную комнату" : "Create temporary room";
@@ -1289,5 +1295,27 @@ export component MainWindow inherits Window {
         minutes-changed(value) => { root.ui-action("conversations", "temporary-minutes-changed", value, "", ""); }
         continue-requested => { root.ui-action("conversations", "temporary-duration-confirmed", root.temporary-room-hours, root.temporary-room-minutes, ""); }
         close-requested => { root.ui-action("conversations", "temporary-duration-cancelled", "", "", ""); }
+    }
+
+    DurationPickerDialog {
+        open: root.settings-account-status-duration-open;
+        duration-valid: root.settings-account-status-duration-valid;
+        title: root.language == "ru" ? "Срок статуса" : "Status duration";
+        hint: root.language == "ru"
+            ? "Выберите срок от минуты до 7 дней."
+            : "Choose a duration from one minute to seven days.";
+        hours-label: root.language == "ru" ? "Часы" : "Hours";
+        minutes-label: root.language == "ru" ? "Минуты" : "Minutes";
+        hours: root.settings-account-status-duration-hours;
+        minutes: root.settings-account-status-duration-minutes;
+        range-error: root.language == "ru"
+            ? "Срок должен быть от минуты до 7 дней."
+            : "Duration must be from one minute to seven days.";
+        cancel-label: root.language == "ru" ? "Отмена" : "Cancel";
+        continue-label: root.language == "ru" ? "Сохранить срок" : "Save duration";
+        hours-changed(value) => { root.ui-action("account-settings", "status-hours-changed", value, "", ""); }
+        minutes-changed(value) => { root.ui-action("account-settings", "status-minutes-changed", value, "", ""); }
+        continue-requested => { root.ui-action("account-settings", "status-duration-selected", root.settings-account-status-duration-hours, root.settings-account-status-duration-minutes, ""); }
+        close-requested => { root.ui-action("account-settings", "status-duration-cancelled", "", "", ""); }
     }
 }
