@@ -1,0 +1,203 @@
+import { Theme } from "../theme.slint";
+import { FHPrimaryButton, FHTextButton } from "../components.slint";
+import { SettingsCard, SettingsFrame } from "common.slint";
+
+export struct SettingsAccount {
+    id: string,
+    username: string,
+    fh-number: string,
+    avatar: image,
+    has-avatar: bool,
+}
+
+component AccountRow inherits Rectangle {
+    in property <string> account-id;
+    in property <string> username;
+    in property <string> fh-number;
+    in property <image> avatar;
+    in property <bool> has-avatar: false;
+    in property <bool> active: false;
+    in property <bool> enabled: true;
+    callback switch-account(string);
+    callback remove-account(string);
+
+    width: 100%;
+    height: max(64px, content.preferred-height);
+    background: Theme.background;
+    border-width: 1px;
+    border-color: root.active ? Theme.accent : Theme.border;
+    border-radius: 8px;
+
+    content := HorizontalLayout {
+        padding: 10px;
+        spacing: 8px;
+        alignment: center;
+
+        Rectangle {
+            width: 40px;
+            height: 40px;
+            border-radius: 20px;
+            background: Theme.hover;
+            clip: true;
+
+            if root.has-avatar : Image {
+                width: 100%;
+                height: 100%;
+                source: root.avatar;
+            }
+            if !root.has-avatar : Text {
+                text: "FH";
+                color: Theme.muted;
+                font-size: 12px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                width: 100%;
+                height: 100%;
+            }
+        }
+
+        VerticalLayout {
+            spacing: 3px;
+            horizontal-stretch: 1;
+            vertical-stretch: 0;
+
+            Text {
+                text: root.username;
+                color: Theme.foreground;
+                font-size: 13px;
+                width: 100%;
+                wrap: word-wrap;
+            }
+            Text {
+                text: root.fh-number;
+                color: Theme.muted;
+                font-size: 11px;
+                width: 100%;
+                wrap: word-wrap;
+            }
+        }
+
+        if root.active : Text {
+            text: "активный";
+            color: Theme.accent;
+            font-size: 11px;
+            font-weight: 600;
+        }
+        if !root.active : FHTextButton {
+            text: "Переключить";
+            enabled: root.enabled;
+            clicked => { root.switch-account(root.account-id); }
+        }
+
+        FHTextButton {
+            text: "Удалить";
+            enabled: root.enabled;
+            clicked => { root.remove-account(root.account-id); }
+        }
+    }
+}
+
+export component AccountsSettingsScreen inherits Rectangle {
+    in property <[SettingsAccount]> accounts: [];
+    in property <string> active-account-id: "";
+    in property <string> busy-account-id: "";
+    in property <bool> busy: false;
+    in property <string> error-text: "";
+
+    callback back-requested();
+    callback switch-account-requested(string);
+    callback add-account-requested();
+    callback remove-account-requested(string);
+    callback retry-requested();
+
+    private property <string> pending-remove-id: "";
+
+    width: 100%;
+    height: 100%;
+    background: Theme.background;
+
+    SettingsFrame {
+        title: "Аккаунты";
+        back-requested => { root.back-requested(); }
+
+        SettingsCard {
+            title: "Аккаунты";
+            description: "До пяти аккаунтов на этом устройстве, полностью изолированных.";
+
+            if !root.error-text.is-empty : Text {
+                text: root.error-text;
+                color: Theme.danger;
+                font-size: 12px;
+                wrap: word-wrap;
+                width: 100%;
+            }
+
+            if root.accounts.length == 0 && root.error-text.is-empty : Text {
+                text: "Пока ни одного аккаунта.";
+                color: Theme.muted;
+                font-size: 12px;
+            }
+
+            for account in root.accounts : AccountRow {
+                account-id: account.id;
+                username: account.username;
+                fh-number: account.fh-number;
+                avatar: account.avatar;
+                has-avatar: account.has-avatar;
+                active: account.id == root.active-account-id;
+                enabled: !root.busy && (root.busy-account-id.is-empty || root.busy-account-id == account.id);
+                switch-account(id) => { root.switch-account-requested(id); }
+                remove-account(id) => { root.pending-remove-id = id; }
+            }
+
+            if !root.pending-remove-id.is-empty : Rectangle {
+                width: 100%;
+                height: confirm-content.preferred-height;
+                background: Theme.hover;
+                border-radius: 8px;
+
+                confirm-content := VerticalLayout {
+                    padding: 12px;
+                    spacing: 8px;
+
+                    Text {
+                        text: "Аккаунт выйдет из приложения, а его сообщения и ключи будут удалены с устройства. На сервере аккаунт останется.";
+                        color: Theme.foreground;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                        width: 100%;
+                    }
+
+                    HorizontalLayout {
+                        spacing: 8px;
+                        FHPrimaryButton {
+                            text: "Удалить аккаунт";
+                            enabled: !root.busy;
+                            busy: root.busy;
+                            clicked => {
+                                root.remove-account-requested(root.pending-remove-id);
+                                root.pending-remove-id = "";
+                            }
+                        }
+                        FHTextButton {
+                            text: "Отмена";
+                            enabled: !root.busy;
+                            clicked => { root.pending-remove-id = ""; }
+                        }
+                    }
+                }
+            }
+
+            if root.accounts.length < 5 : FHPrimaryButton {
+                text: "Добавить аккаунт";
+                enabled: !root.busy;
+                clicked => { root.add-account-requested(); }
+            }
+
+            if !root.error-text.is-empty : FHTextButton {
+                text: "Повторить загрузку";
+                clicked => { root.retry-requested(); }
+            }
+        }
+    }
+}

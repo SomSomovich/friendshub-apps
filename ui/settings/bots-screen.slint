@@ -1,0 +1,259 @@
+import { Theme } from "../theme.slint";
+import { FHInput, FHPrimaryButton, FHTextButton } from "../components.slint";
+import { SettingsCard, SettingsFrame } from "common.slint";
+
+export struct SettingsBot {
+    id: string,
+    handle: string,
+    token-prefix: string,
+}
+
+component ManagedBotRow inherits Rectangle {
+    in property <string> bot-id;
+    in property <string> handle;
+    in property <string> token-prefix;
+    in property <bool> busy: false;
+    private property <string> draft-handle: "";
+    private property <bool> confirm-rotate: false;
+    private property <bool> confirm-delete: false;
+
+    callback set-handle-requested(string, string);
+    callback rotate-token-requested(string);
+    callback delete-requested(string);
+
+    width: 100%;
+    height: content.preferred-height;
+    background: Theme.background;
+    border-width: 1px;
+    border-color: Theme.border;
+    border-radius: 8px;
+
+    init => { root.draft-handle = root.handle; }
+
+    content := VerticalLayout {
+        padding: 12px;
+        spacing: 10px;
+
+        HorizontalLayout {
+            spacing: 8px;
+            alignment: center;
+
+            Text {
+                text: root.handle.is-empty ? "Бот без адреса" : "@\{root.handle}";
+                color: Theme.foreground;
+                font-size: 14px;
+                font-weight: 500;
+                horizontal-stretch: 1;
+                wrap: word-wrap;
+            }
+
+            FHTextButton {
+                text: "Перевыпустить токен";
+                enabled: !root.busy;
+                clicked => { root.confirm-rotate = true; }
+            }
+
+            FHTextButton {
+                text: "Удалить";
+                enabled: !root.busy;
+                clicked => { root.confirm-delete = true; }
+            }
+        }
+
+        Text {
+            text: "Префикс токена: \{root.token-prefix}";
+            color: Theme.muted;
+            font-size: 12px;
+            wrap: word-wrap;
+            width: 100%;
+        }
+
+        HorizontalLayout {
+            spacing: 8px;
+            FHInput {
+                label: "Адрес бота";
+                placeholder: "my_example_bot";
+                value <=> root.draft-handle;
+            }
+            FHPrimaryButton {
+                text: "Сохранить";
+                enabled: !root.busy;
+                busy: root.busy;
+                clicked => { root.set-handle-requested(root.bot-id, root.draft-handle); }
+            }
+        }
+
+        if root.confirm-rotate : Rectangle {
+            width: 100%;
+            height: rotate-content.preferred-height;
+            background: Theme.hover;
+            border-radius: 8px;
+            rotate-content := VerticalLayout {
+                padding: 10px;
+                spacing: 8px;
+                Text {
+                    text: "Прежний токен перестанет работать. Подключённое приложение нужно будет обновить новым токеном.";
+                    color: Theme.foreground;
+                    font-size: 12px;
+                    wrap: word-wrap;
+                    width: 100%;
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    FHPrimaryButton {
+                        text: "Перевыпустить токен";
+                        enabled: !root.busy;
+                        busy: root.busy;
+                        clicked => {
+                            root.rotate-token-requested(root.bot-id);
+                            root.confirm-rotate = false;
+                        }
+                    }
+                    FHTextButton {
+                        text: "Отмена";
+                        enabled: !root.busy;
+                        clicked => { root.confirm-rotate = false; }
+                    }
+                }
+            }
+        }
+
+        if root.confirm-delete : Rectangle {
+            width: 100%;
+            height: delete-content.preferred-height;
+            background: Theme.hover;
+            border-radius: 8px;
+            delete-content := VerticalLayout {
+                padding: 10px;
+                spacing: 8px;
+                Text {
+                    text: "Бот будет удалён и перестанет работать. Это действие нельзя отменить.";
+                    color: Theme.foreground;
+                    font-size: 12px;
+                    wrap: word-wrap;
+                    width: 100%;
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    FHPrimaryButton {
+                        text: "Удалить бота";
+                        enabled: !root.busy;
+                        busy: root.busy;
+                        clicked => {
+                            root.delete-requested(root.bot-id);
+                            root.confirm-delete = false;
+                        }
+                    }
+                    FHTextButton {
+                        text: "Отмена";
+                        enabled: !root.busy;
+                        clicked => { root.confirm-delete = false; }
+                    }
+                }
+            }
+        }
+    }
+}
+
+export component BotsSettingsScreen inherits Rectangle {
+    in property <[SettingsBot]> bots: [];
+    in property <bool> loading: false;
+    in property <bool> can-create: true;
+    in property <bool> busy: false;
+    in property <string> error-text: "";
+    in-out property <string> token-secret: "";
+
+    callback back-requested();
+    callback create-bot-requested();
+    callback set-bot-handle-requested(string, string);
+    callback rotate-bot-token-requested(string);
+    callback delete-bot-requested(string);
+    callback copy-token-requested(string);
+    callback close-token-requested();
+    callback retry-requested();
+
+    private property <bool> token-revealed: false;
+
+    width: 100%;
+    height: 100%;
+    background: Theme.background;
+
+    SettingsFrame {
+        title: "Мои боты";
+        back-requested => { root.back-requested(); }
+
+        SettingsCard {
+            title: "Мои боты";
+            description: "До 20 ботов на аккаунт. Для работы бота подключите его токен в своём приложении.";
+
+            if !root.error-text.is-empty : Text {
+                text: root.error-text;
+                color: Theme.danger;
+                font-size: 12px;
+                wrap: word-wrap;
+                width: 100%;
+            }
+
+            FHPrimaryButton {
+                text: "Создать бота";
+                enabled: root.can-create && !root.loading && !root.busy;
+                busy: root.busy;
+                clicked => { root.create-bot-requested(); }
+            }
+
+            if root.loading : Text {
+                text: "Загрузка ботов…";
+                color: Theme.muted;
+                font-size: 12px;
+            }
+            if !root.loading && root.bots.length == 0 && root.error-text.is-empty : Text {
+                text: "У вас пока нет ботов.";
+                color: Theme.muted;
+                font-size: 12px;
+            }
+
+            for bot in root.bots : ManagedBotRow {
+                bot-id: bot.id;
+                handle: bot.handle;
+                token-prefix: bot.token-prefix;
+                busy: root.busy;
+                set-handle-requested(id, value) => { root.set-bot-handle-requested(id, value); }
+                rotate-token-requested(id) => { root.rotate-bot-token-requested(id); }
+                delete-requested(id) => { root.delete-bot-requested(id); }
+            }
+
+            if !root.error-text.is-empty : FHTextButton {
+                text: "Повторить загрузку";
+                clicked => { root.retry-requested(); }
+            }
+        }
+
+        if !root.token-secret.is-empty : SettingsCard {
+            title: "Токен бота";
+            description: "Скопируйте токен сейчас: после закрытия его нельзя будет посмотреть снова. Не передавайте его посторонним.";
+
+            FHInput {
+                label: "Токен бота";
+                value <=> root.token-secret;
+                password: true;
+                password-visible <=> root.token-revealed;
+            }
+
+            HorizontalLayout {
+                spacing: 8px;
+                FHTextButton {
+                    text: "Копировать";
+                    clicked => { root.copy-token-requested(root.token-secret); }
+                }
+                FHPrimaryButton {
+                    text: "Закрыть";
+                    clicked => {
+                        root.token-secret = "";
+                        root.token-revealed = false;
+                        root.close-token-requested();
+                    }
+                }
+            }
+        }
+    }
+}

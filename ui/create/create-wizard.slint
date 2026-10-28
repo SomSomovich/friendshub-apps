@@ -1,0 +1,150 @@
+import { Theme } from "../theme.slint";
+import { FHPrimaryButton, FHTextButton } from "../components.slint";
+import { ScrollView } from "std-widgets.slint";
+
+export component CreateWizard inherits Rectangle {
+    in property <string> title;
+    in property <string> first-step-label: "Описание";
+    in property <string> second-step-label;
+    in property <string> final-step-label: "Проверка";
+    in property <int> current-step: 0;
+    in property <string> submit-label;
+    in property <bool> primary-enabled: false;
+    in property <bool> busy: false;
+
+    callback back-requested();
+    callback cancel-requested();
+    callback primary-requested();
+
+    background: Theme.background;
+
+    VerticalLayout {
+        spacing: 0px;
+
+        HorizontalLayout {
+            height: 52px;
+            padding-left: 12px;
+            padding-right: 16px;
+            spacing: 8px;
+            alignment: center;
+
+            FHTextButton {
+                text: "‹";
+                enabled: true;
+                clicked => { root.back-requested(); }
+            }
+
+            Text {
+                text: root.title;
+                color: Theme.foreground;
+                font-size: 14px;
+                font-weight: 600;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+                overflow: elide;
+            }
+        }
+
+        Rectangle {
+            height: 1px;
+            background: Theme.border;
+        }
+
+        HorizontalLayout {
+            padding-left: 16px;
+            padding-right: 16px;
+            padding-top: 16px;
+            spacing: 8px;
+            alignment: start;
+
+            for step[index] in [root.first-step-label, root.second-step-label, root.final-step-label]: Rectangle {
+                height: 28px;
+                width: step-text.preferred-width + 42px;
+                border-radius: 14px;
+                border-width: 1px;
+                border-color: index == root.current-step ? Theme.accent : Theme.border;
+                background: index == root.current-step ? Theme.surface : transparent;
+
+                HorizontalLayout {
+                    padding-left: 8px;
+                    padding-right: 10px;
+                    spacing: 6px;
+                    alignment: center;
+
+                    Rectangle {
+                        width: 16px;
+                        height: 16px;
+                        border-radius: 8px;
+                        background: index == root.current-step ? Theme.accent : Theme.hover;
+                        Text {
+                            text: "\{index + 1}";
+                            color: index == root.current-step ? Theme.accent-foreground : Theme.muted;
+                            font-size: 10px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                            width: 100%;
+                            height: 100%;
+                        }
+                    }
+
+                    step-text := Text {
+                        text: step;
+                        color: index == root.current-step ? Theme.foreground : Theme.muted;
+                        font-size: 12px;
+                        font-weight: index == root.current-step ? 600 : 400;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+
+        ScrollView {
+            vertical-stretch: 1;
+            content-width: parent.width;
+            content-height: page-content.preferred-height + 32px;
+
+            VerticalLayout {
+                x: 0px;
+                y: 0px;
+                width: parent.width;
+                padding: 16px;
+                spacing: 16px;
+                page-content := VerticalLayout {
+                    width: parent.width - 32px;
+                    spacing: 16px;
+                    @children
+                }
+            }
+        }
+
+        Rectangle {
+            height: 1px;
+            background: Theme.border;
+        }
+
+        HorizontalLayout {
+            padding: 12px;
+            spacing: 8px;
+            alignment: end;
+
+            FHTextButton {
+                text: "Отмена";
+                enabled: !root.busy;
+                clicked => { root.cancel-requested(); }
+            }
+
+            if root.current-step > 0: FHTextButton {
+                text: "Назад";
+                enabled: !root.busy;
+                clicked => { root.back-requested(); }
+            }
+
+            FHPrimaryButton {
+                text: root.current-step == 2 ? root.submit-label : "Далее";
+                enabled: root.primary-enabled && !root.busy;
+                busy: root.busy;
+                clicked => { root.primary-requested(); }
+            }
+        }
+    }
+}

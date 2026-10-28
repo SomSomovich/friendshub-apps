@@ -1,0 +1,270 @@
+import { Theme } from "theme.slint";
+import { FHPrimaryButton } from "components.slint";
+import { ScrollView } from "std-widgets.slint";
+
+export enum ConnectStepState { pending, active, done }
+
+component ConnectSpinner inherits Path {
+    in property <color> tint: Theme.accent;
+    private property <angle> start-angle: 360deg * mod(animation-tick(), 1s) / 1s;
+
+    width: 14px;
+    height: 14px;
+    viewbox-width: 16;
+    viewbox-height: 16;
+    stroke: root.tint;
+    stroke-width: 1.5px;
+    fill: transparent;
+    accessible-role: none;
+
+    MoveTo {
+        x: 8 + 6 * cos(root.start-angle);
+        y: 8 + 6 * sin(root.start-angle);
+    }
+    ArcTo {
+        radius-x: 6;
+        radius-y: 6;
+        x: 8 + 6 * cos(root.start-angle + 270deg);
+        y: 8 + 6 * sin(root.start-angle + 270deg);
+        sweep: true;
+        large-arc: true;
+    }
+}
+
+component ConnectStep inherits HorizontalLayout {
+    in property <string> label;
+    in property <ConnectStepState> state: pending;
+    private property <color> done-color: Theme.light-mode ? #16a34a : #22c55e;
+
+    spacing: 12px;
+
+    Rectangle {
+        width: 24px;
+        height: 24px;
+        border-width: 1px;
+        border-color: root.state == ConnectStepState.done
+            ? root.done-color
+            : root.state == ConnectStepState.active ? Theme.accent : Theme.border;
+        border-radius: 12px;
+        background: transparent;
+
+        if root.state == ConnectStepState.done : Text {
+            text: "✓";
+            color: root.done-color;
+            font-size: 14px;
+            width: 100%;
+            height: 100%;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            accessible-role: none;
+        }
+        if root.state == ConnectStepState.active : ConnectSpinner {
+            x: 5px;
+            y: 5px;
+        }
+        if root.state == ConnectStepState.pending : Rectangle {
+            x: 9px;
+            y: 9px;
+            width: 6px;
+            height: 6px;
+            border-radius: 3px;
+            background: Theme.muted;
+        }
+    }
+
+    Text {
+        text: root.label;
+        color: root.state == ConnectStepState.pending ? Theme.muted : Theme.foreground;
+        font-size: 14px;
+        vertical-alignment: center;
+        horizontal-stretch: 1;
+        wrap: word-wrap;
+        accessible-label: root.label + (root.state == ConnectStepState.done
+            ? ": готово"
+            : root.state == ConnectStepState.active ? ": выполняется" : ": ожидает");
+    }
+}
+
+component ConnectSecondaryButton inherits Rectangle {
+    in property <bool> enabled: true;
+    callback clicked();
+
+    height: 40px;
+    horizontal-stretch: 1;
+    background: mouse.has-hover && root.enabled ? Theme.hover : Theme.surface;
+    border-width: 1px;
+    border-color: Theme.border;
+    border-radius: 8px;
+    opacity: root.enabled ? 1 : 0.5;
+    accessible-role: button;
+    accessible-label: "Продолжить без сети";
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.clicked(); } }
+    forward-focus: key-scope;
+
+    states [
+        focused when key-scope.has-focus && root.enabled : {
+            root.border-width: 2px;
+            root.border-color: Theme.foreground;
+        }
+    ]
+
+    Text {
+        text: "Продолжить без сети";
+        color: Theme.foreground;
+        font-size: 14px;
+        font-weight: 600;
+        width: 100%;
+        height: 100%;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        accessible-role: none;
+    }
+
+    mouse := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    key-scope := FocusScope {
+        x: 0;
+        width: 0;
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+}
+
+export component ConnectScreen inherits Rectangle {
+    in property <string> username: "";
+    in property <ConnectStepState> keys-state: pending;
+    in property <ConnectStepState> socket-state: pending;
+    in property <string> error-text: "";
+    in property <bool> busy: false;
+
+    callback retry-requested();
+    callback continue-offline-requested();
+
+    background: Theme.background;
+
+    ScrollView {
+        vertical-scrollbar-policy: as-needed;
+
+        VerticalLayout {
+            width: 100%;
+            min-height: root.height;
+            padding-left: 20px;
+            padding-right: 20px;
+            padding-top: 40px;
+            padding-bottom: 40px;
+            alignment: center;
+            cross-axis-alignment: center;
+
+            card := Rectangle {
+                width: max(0px, min(root.width - 40px, 384px));
+                height: card-content.preferred-height;
+                background: Theme.surface;
+                border-width: 1px;
+                border-color: Theme.border;
+                border-radius: 16px;
+
+                card-content := VerticalLayout {
+                    padding: 24px;
+                    spacing: 20px;
+
+                    VerticalLayout {
+                        spacing: 4px;
+
+                        Text {
+                            text: "Подготовка устройства";
+                            color: Theme.foreground;
+                            font-size: 18px;
+                            font-weight: 600;
+                            wrap: word-wrap;
+                            width: 100%;
+                        }
+                        Text {
+                            text: root.username.is-empty
+                                ? "Аккаунт подключается к этому устройству."
+                                : "Аккаунт \{root.username} подключается к этому устройству.";
+                            color: Theme.muted;
+                            font-size: 12px;
+                            wrap: word-wrap;
+                            width: 100%;
+                        }
+                    }
+
+                    VerticalLayout {
+                        spacing: 12px;
+                        ConnectStep { label: "Ключи устройства"; state: root.keys-state; }
+                        ConnectStep { label: "Соединение"; state: root.socket-state; }
+                    }
+
+                    if root.error-text.is-empty : HorizontalLayout {
+                        spacing: 8px;
+                        ConnectSpinner { tint: Theme.muted; }
+                        Text {
+                            text: "Это может занять до минуты при первом входе.";
+                            color: Theme.muted;
+                            font-size: 12px;
+                            wrap: word-wrap;
+                            horizontal-stretch: 1;
+                            vertical-alignment: center;
+                        }
+                    }
+                    if !root.error-text.is-empty : VerticalLayout {
+                        spacing: 12px;
+
+                        Text {
+                            text: "Не удалось подготовить устройство.";
+                            color: Theme.danger;
+                            font-size: 12px;
+                            width: 100%;
+                            wrap: word-wrap;
+                        }
+                        Text {
+                            text: root.error-text;
+                            color: Theme.muted;
+                            font-size: 12px;
+                            width: 100%;
+                            wrap: word-wrap;
+                        }
+
+                        if card.width >= 360px : HorizontalLayout {
+                            spacing: 8px;
+                            FHPrimaryButton {
+                                text: "Повторить";
+                                enabled: !root.busy;
+                                busy: root.busy;
+                                clicked => { root.retry-requested(); }
+                            }
+                            ConnectSecondaryButton {
+                                min-width: 178px;
+                                enabled: !root.busy;
+                                clicked => { root.continue-offline-requested(); }
+                            }
+                        }
+                        if card.width < 360px : VerticalLayout {
+                            spacing: 8px;
+                            FHPrimaryButton {
+                                text: "Повторить";
+                                enabled: !root.busy;
+                                busy: root.busy;
+                                clicked => { root.retry-requested(); }
+                            }
+                            ConnectSecondaryButton {
+                                enabled: !root.busy;
+                                clicked => { root.continue-offline-requested(); }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

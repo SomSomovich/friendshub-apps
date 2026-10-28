@@ -1,0 +1,146 @@
+import { Theme } from "../theme.slint";
+import { SettingsFrame } from "common.slint";
+
+component SettingsNavigationRow inherits Rectangle {
+    in property <string> title;
+    in property <string> description;
+    in property <string> section;
+    callback open-section(string);
+
+    width: 100%;
+    height: max(56px, content.preferred-height);
+    background: nav-area.has-hover ? Theme.hover : Theme.surface;
+    border-width: 1px;
+    border-color: Theme.border;
+    border-radius: 12px;
+    accessible-role: button;
+    accessible-label: root.title;
+    accessible-action-default => { root.open-section(root.section); }
+    forward-focus: keyboard-scope;
+
+    states [
+        focus when keyboard-scope.has-focus : {
+            root.border-width: 2px;
+            root.border-color: Theme.accent;
+        }
+    ]
+
+    content := HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        padding-top: 10px;
+        padding-bottom: 10px;
+        spacing: 12px;
+        alignment: center;
+
+        VerticalLayout {
+            spacing: 2px;
+            horizontal-stretch: 1;
+            vertical-stretch: 0;
+
+            Text {
+                text: root.title;
+                color: Theme.foreground;
+                font-size: 14px;
+                font-weight: 500;
+                width: 100%;
+                wrap: word-wrap;
+            }
+
+            Text {
+                text: root.description;
+                color: Theme.muted;
+                font-size: 12px;
+                width: 100%;
+                wrap: word-wrap;
+            }
+        }
+
+        Text {
+            text: "›";
+            color: Theme.muted;
+            font-size: 20px;
+            vertical-alignment: center;
+        }
+    }
+
+    nav-area := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.open-section(root.section); }
+    }
+
+    keyboard-scope := FocusScope {
+        x: 0;
+        width: 0;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.open-section(root.section);
+                return accept;
+            }
+            return reject;
+        }
+    }
+}
+
+export component SettingsIndexScreen inherits Rectangle {
+    callback back-requested();
+    callback open-section(string);
+
+    width: 100%;
+    height: 100%;
+    background: Theme.background;
+
+    SettingsFrame {
+        title: "Настройки";
+        back-requested => { root.back-requested(); }
+
+        SettingsNavigationRow {
+            title: "Аккаунт";
+            description: "Аватар, имя и статус";
+            section: "account";
+            open-section(section) => { root.open-section(section); }
+        }
+        SettingsNavigationRow {
+            title: "Оформление";
+            description: "Тема и язык";
+            section: "appearance";
+            open-section(section) => { root.open-section(section); }
+        }
+        SettingsNavigationRow {
+            title: "Приватность";
+            description: "Невидимка, исключения и блокировки";
+            section: "privacy";
+            open-section(section) => { root.open-section(section); }
+        }
+        SettingsNavigationRow {
+            title: "Безопасность";
+            description: "2FA, сессии и устройства";
+            section: "security";
+            open-section(section) => { root.open-section(section); }
+        }
+        SettingsNavigationRow {
+            title: "Уведомления";
+            description: "Звук и разрешение на уведомления";
+            section: "notifications";
+            open-section(section) => { root.open-section(section); }
+        }
+        SettingsNavigationRow {
+            title: "Аккаунты";
+            description: "Аккаунты на этом устройстве";
+            section: "accounts";
+            open-section(section) => { root.open-section(section); }
+        }
+        SettingsNavigationRow {
+            title: "Мои боты";
+            description: "Создание, адреса и токены ботов.";
+            section: "bots";
+            open-section(section) => { root.open-section(section); }
+        }
+        SettingsNavigationRow {
+            title: "О приложении";
+            description: "Версия, лицензия и выход";
+            section: "about";
+            open-section(section) => { root.open-section(section); }
+        }
+    }
+}

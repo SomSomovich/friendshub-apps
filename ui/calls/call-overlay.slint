@@ -1,0 +1,245 @@
+import { Theme } from "../theme.slint";
+
+component CallControl inherits Rectangle {
+    in property <string> label;
+    in property <string> symbol;
+    in property <string> tone: "neutral";
+    in property <bool> active: false;
+    in property <bool> wide: false;
+    callback clicked();
+
+    width: wide ? 144px : 56px;
+    height: 56px;
+    border-radius: 28px;
+    background: tone == "danger" ? Theme.danger : (tone == "accept" ? #22c55e : (active ? Theme.foreground : Theme.hover));
+    accessible-role: button;
+    accessible-label: label;
+    accessible-action-default => { root.clicked(); }
+    forward-focus: keyboard-scope;
+
+    HorizontalLayout {
+        alignment: center;
+        spacing: 8px;
+        Text {
+            text: root.symbol;
+            color: root.active ? Theme.background : #ffffff;
+            font-size: 22px;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+        if root.wide : Text {
+            text: root.label;
+            color: #ffffff;
+            font-size: 14px;
+            font-weight: 600;
+            vertical-alignment: center;
+        }
+    }
+
+    mouse-area := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+
+    keyboard-scope := FocusScope {
+        x: 0px;
+        width: 0px;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+}
+
+export component CallOverlay inherits Rectangle {
+    in property <string> call-state: "idle";
+    in property <string> peer-name: "Неизвестный абонент";
+    in property <string> peer-initial: "?";
+    in property <bool> with-video: false;
+    in property <string> status-text: "";
+    in property <string> error-text: "";
+    in property <bool> has-remote-video: false;
+    in property <image> remote-video-frame;
+    in property <bool> has-local-video: false;
+    in property <image> local-video-frame;
+    in property <bool> speaker-on: false;
+    in property <bool> camera-off: false;
+
+    callback accept-requested();
+    callback decline-requested();
+    callback hang-up-requested();
+    callback speaker-toggle-requested();
+    callback camera-toggle-requested();
+    callback switch-camera-requested();
+
+    background: transparent;
+
+    if root.visible && root.call-state != "idle" : Rectangle {
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: parent.height;
+        background: Theme.background;
+        accessible-role: none;
+        accessible-label: root.call-state == "incoming" ? "Входящий звонок от \{root.peer-name}" : "Звонок с \{root.peer-name}";
+
+        if root.call-state == "incoming" : VerticalLayout {
+            padding: 24px;
+            alignment: center;
+            cross-axis-alignment: center;
+            spacing: 28px;
+
+            Rectangle {
+                width: 96px;
+                height: 96px;
+                border-radius: 48px;
+                background: Theme.surface;
+                Text { text: root.peer-initial; color: Theme.foreground; font-size: 36px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; width: 100%; height: 100%; }
+            }
+
+            VerticalLayout {
+                spacing: 4px;
+                Text { text: root.peer-name; color: Theme.foreground; font-size: 20px; font-weight: 600; horizontal-alignment: center; wrap: word-wrap; }
+                Text { text: root.with-video ? "Видеозвонок" : "Аудиозвонок"; color: Theme.muted; font-size: 14px; horizontal-alignment: center; }
+            }
+
+            HorizontalLayout {
+                alignment: center;
+                spacing: 40px;
+                CallControl {
+                    label: "Отклонить";
+                    symbol: "☎";
+                    tone: "danger";
+                    clicked => { root.decline-requested(); }
+                }
+                CallControl {
+                    label: "Принять";
+                    symbol: "☎";
+                    tone: "accept";
+                    clicked => { root.accept-requested(); }
+                }
+            }
+        }
+        if root.call-state != "incoming" : VerticalLayout {
+            spacing: 0px;
+
+            Rectangle {
+                vertical-stretch: 1;
+                background: Theme.background;
+
+                if root.has-remote-video : Image {
+                    width: parent.width;
+                    height: parent.height;
+                    source: root.remote-video-frame;
+                    image-fit: cover;
+                }
+                if !root.has-remote-video : VerticalLayout {
+                    alignment: center;
+                    cross-axis-alignment: center;
+                    spacing: 12px;
+                    Rectangle {
+                        width: 96px;
+                        height: 96px;
+                        border-radius: 48px;
+                        background: Theme.surface;
+                        Text { text: root.peer-initial; color: Theme.foreground; font-size: 36px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; width: 100%; height: 100%; }
+                    }
+                    Text { text: root.peer-name; color: Theme.foreground; font-size: 20px; font-weight: 600; horizontal-alignment: center; wrap: word-wrap; }
+                    Text { text: root.status-text; color: Theme.muted; font-size: 14px; horizontal-alignment: center; }
+                }
+
+                if root.has-remote-video : Rectangle {
+                    x: 0px;
+                    y: 0px;
+                    width: parent.width;
+                    height: 48px;
+                    background: #00000080;
+                    HorizontalLayout {
+                        padding: 12px;
+                        alignment: center;
+                        spacing: 8px;
+                        Text { text: root.peer-name; color: #ffffff; font-size: 14px; font-weight: 600; overflow: elide; horizontal-stretch: 1; }
+                        Text { text: root.status-text; color: #cccccc; font-size: 14px; }
+                    }
+                }
+
+                if !root.error-text.is-empty : Rectangle {
+                    x: 16px;
+                    y: 16px;
+                    width: parent.width - 32px;
+                    height: error-label.preferred-height + 24px;
+                    border-radius: 8px;
+                    border-width: 1px;
+                    border-color: Theme.danger;
+                    background: Theme.surface;
+                    error-label := Text {
+                        x: 12px;
+                        y: 12px;
+                        width: parent.width - 24px;
+                        text: root.error-text;
+                        color: Theme.danger;
+                        font-size: 14px;
+                        wrap: word-wrap;
+                    }
+                }
+
+                if root.with-video && root.has-local-video : Rectangle {
+                    x: parent.width - 136px;
+                    y: parent.height - 176px;
+                    width: 120px;
+                    height: 160px;
+                    border-radius: 12px;
+                    border-width: 1px;
+                    border-color: Theme.border;
+                    clip: true;
+                    background: Theme.surface;
+                    Image {
+                        width: parent.width;
+                        height: parent.height;
+                        source: root.local-video-frame;
+                        image-fit: cover;
+                        opacity: root.camera-off ? 0.3 : 1;
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                height: 104px;
+                padding: 24px;
+                alignment: center;
+                spacing: 16px;
+
+                if root.with-video : CallControl {
+                    label: "Сменить камеру";
+                    symbol: "↻";
+                    clicked => { root.switch-camera-requested(); }
+                }
+
+                CallControl {
+                    label: root.speaker-on ? "Динамик включён" : "Динамик выключен";
+                    symbol: "◖";
+                    active: root.speaker-on;
+                    clicked => { root.speaker-toggle-requested(); }
+                }
+
+                if root.with-video : CallControl {
+                    label: root.camera-off ? "Включить видео" : "Выключить видео";
+                    symbol: root.camera-off ? "◉" : "◎";
+                    active: !root.camera-off;
+                    clicked => { root.camera-toggle-requested(); }
+                }
+
+                CallControl {
+                    label: "Завершить";
+                    symbol: "☎";
+                    tone: "danger";
+                    wide: true;
+                    clicked => { root.hang-up-requested(); }
+                }
+            }
+        }
+    }
+}

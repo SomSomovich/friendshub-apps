@@ -1,0 +1,628 @@
+import { Theme } from "../theme.slint";
+import { FHInput, FHPrimaryButton, FHTextButton } from "../components.slint";
+import { SettingsCard, SettingsChoice, SettingsDivider, SettingsFrame, SettingsOption } from "common.slint";
+
+export struct SecuritySession {
+    id: string,
+    ip-address: string,
+    user-agent: string,
+    signed-in-at: string,
+    is-current: bool,
+}
+
+export struct SecurityDevice {
+    id: string,
+    name: string,
+    number: int,
+    added-at: string,
+    is-current: bool,
+    can-revoke: bool,
+}
+
+export struct SecurityEvent {
+    id: string,
+    event-type: string,
+    created-at: string,
+    detail: string,
+}
+
+component SecurityInfoRow inherits Rectangle {
+    in property <string> title;
+    in property <string> detail;
+    in property <string> badge: "";
+    in property <string> action-label: "";
+    in property <string> item-id;
+    in property <bool> action-enabled: true;
+    callback action(string);
+
+    width: 100%;
+    height: max(56px, content.preferred-height);
+    background: Theme.background;
+    border-width: 1px;
+    border-color: Theme.border;
+    border-radius: 8px;
+
+    content := HorizontalLayout {
+        padding: 10px;
+        spacing: 8px;
+        alignment: center;
+
+        VerticalLayout {
+            spacing: 3px;
+            horizontal-stretch: 1;
+            vertical-stretch: 0;
+
+            HorizontalLayout {
+                spacing: 8px;
+
+                Text {
+                    text: root.title;
+                    color: Theme.foreground;
+                    font-size: 13px;
+                    font-weight: 500;
+                    horizontal-stretch: 1;
+                    wrap: word-wrap;
+                }
+
+                if !root.badge.is-empty : Text {
+                    text: root.badge;
+                    color: Theme.accent;
+                    font-size: 10px;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                }
+            }
+
+            Text {
+                text: root.detail;
+                color: Theme.muted;
+                font-size: 11px;
+                width: 100%;
+                wrap: word-wrap;
+            }
+        }
+
+        if !root.action-label.is-empty : FHTextButton {
+            text: root.action-label;
+            enabled: root.action-enabled;
+            clicked => { root.action(root.item-id); }
+        }
+    }
+}
+
+export component SecuritySettingsScreen inherits Rectangle {
+    in property <bool> totp-enabled: false;
+    in property <[SecuritySession]> sessions: [];
+    in property <[SecurityDevice]> devices: [];
+    in property <[SettingsOption]> history-source-options: [];
+    in property <string> history-source-device: "";
+    in property <string> history-progress: "";
+    in property <[SettingsOption]> history-conversation-options: [];
+    in property <string> history-conversation-id: "";
+    in property <string> history-page-result: "";
+    in property <bool> has-older-history: false;
+    in property <string> device-policy-hint: "";
+    in property <[SecurityEvent]> events: [];
+    in property <string> session-error: "";
+    in property <string> device-error: "";
+    in property <string> history-error: "";
+    in property <string> events-error: "";
+    in property <bool> busy: false;
+
+    callback back-requested();
+    callback open-two-factor-requested();
+    callback revoke-session-requested(string);
+    callback revoke-all-sessions-requested();
+    callback revoke-device-requested(string);
+    callback request-history-sync-requested(string);
+    callback load-device-history-requested(string, bool);
+    callback refresh-sessions-requested();
+    callback refresh-devices-requested();
+    callback refresh-events-requested();
+    callback select-history-source(string);
+    callback select-history-conversation(string);
+
+    private property <string> pending-session-id: "";
+    private property <string> pending-device-id: "";
+    private property <bool> confirm-all-open: false;
+
+    width: 100%;
+    height: 100%;
+    background: Theme.background;
+
+    SettingsFrame {
+        title: "Безопасность";
+        back-requested => { root.back-requested(); }
+
+        SettingsCard { title: "Вход в аккаунт";
+            SecurityInfoRow {
+                title: "Двухфакторная аутентификация";
+                detail: root.totp-enabled ? "2FA включена" : "2FA выключена";
+                badge: root.totp-enabled ? "Включена" : "Выключена";
+                action-label: "Настроить";
+                item-id: "totp";
+                action(id) => { root.open-two-factor-requested(); }
+            }
+        }
+
+        SettingsCard {
+            title: "Активные сессии";
+            description: "Каждое устройство, вошедшее в аккаунт, держит сессию.";
+
+            if !root.session-error.is-empty : Text {
+                text: root.session-error;
+                color: Theme.danger;
+                font-size: 12px;
+                wrap: word-wrap;
+                width: 100%;
+            }
+
+            if root.sessions.length == 0 && root.session-error.is-empty : Text {
+                text: "Нет загруженных сессий.";
+                color: Theme.muted;
+                font-size: 12px;
+            }
+
+            for session in root.sessions : SecurityInfoRow {
+                title: session.ip-address;
+                detail: "\{session.user-agent} · Вход: \{session.signed-in-at}";
+                badge: session.is-current ? "текущая" : "";
+                action-label: "Завершить";
+                item-id: session.id;
+                action-enabled: !root.busy;
+                action(id) => { root.pending-session-id = id; }
+            }
+
+            if !root.pending-session-id.is-empty : Rectangle {
+                width: 100%;
+                height: confirm-session-content.preferred-height;
+                background: Theme.hover;
+                border-radius: 8px;
+                confirm-session-content := VerticalLayout {
+                    padding: 12px;
+                    spacing: 8px;
+                    Text {
+                        text: "Завершить выбранную сессию? При выборе текущей сессии потребуется повторный вход.";
+                        color: Theme.foreground;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                        width: 100%;
+                    }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        FHPrimaryButton {
+                            text: "Завершить";
+                            enabled: !root.busy;
+                            busy: root.busy;
+                            clicked => {
+                                root.revoke-session-requested(root.pending-session-id);
+                                root.pending-session-id = "";
+                            }
+                        }
+                        FHTextButton {
+                            text: "Отмена";
+                            enabled: !root.busy;
+                            clicked => { root.pending-session-id = ""; }
+                        }
+                    }
+                }
+            }
+
+            SettingsDivider {}
+
+            if !root.confirm-all-open : FHTextButton {
+                text: "Завершить все сессии";
+                enabled: !root.busy;
+                clicked => { root.confirm-all-open = true; }
+            }
+            if root.confirm-all-open : Rectangle {
+                width: 100%;
+                height: confirm-all-content.preferred-height;
+                background: Theme.hover;
+                border-radius: 8px;
+                confirm-all-content := VerticalLayout {
+                    padding: 12px;
+                    spacing: 8px;
+                    Text {
+                        text: "Все сессии будут завершены, включая текущую: придётся войти заново.";
+                        color: Theme.foreground;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                        width: 100%;
+                    }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        FHPrimaryButton {
+                            text: "Завершить все";
+                            enabled: !root.busy;
+                            busy: root.busy;
+                            clicked => {
+                                root.revoke-all-sessions-requested();
+                                root.confirm-all-open = false;
+                            }
+                        }
+                        FHTextButton {
+                            text: "Отмена";
+                            enabled: !root.busy;
+                            clicked => { root.confirm-all-open = false; }
+                        }
+                    }
+                }
+            }
+
+            if !root.session-error.is-empty : FHTextButton {
+                text: "Повторить загрузку";
+                clicked => { root.refresh-sessions-requested(); }
+            }
+        }
+
+        SettingsCard {
+            title: "Устройства";
+            description: "Устройства аккаунта, которые получают ваши сообщения.";
+
+            if !root.device-error.is-empty : Text {
+                text: root.device-error;
+                color: Theme.danger;
+                font-size: 12px;
+                wrap: word-wrap;
+                width: 100%;
+            }
+
+            if root.devices.length == 0 && root.device-error.is-empty : Text {
+                text: "Нет загруженных устройств.";
+                color: Theme.muted;
+                font-size: 12px;
+            }
+
+            for device in root.devices : SecurityInfoRow {
+                title: "\{device.name} · №\{device.number}";
+                detail: "Добавлено: \{device.added-at}";
+                badge: device.is-current ? "это устройство" : "";
+                action-label: "Отозвать";
+                item-id: device.id;
+                action-enabled: device.can-revoke && !root.busy;
+                action(id) => { root.pending-device-id = id; }
+            }
+
+            if !root.device-policy-hint.is-empty : Text {
+                text: root.device-policy-hint;
+                color: Theme.muted;
+                font-size: 12px;
+                wrap: word-wrap;
+                width: 100%;
+            }
+
+            if !root.pending-device-id.is-empty : Rectangle {
+                width: 100%;
+                height: confirm-device-content.preferred-height;
+                background: Theme.hover;
+                border-radius: 8px;
+                confirm-device-content := VerticalLayout {
+                    padding: 12px;
+                    spacing: 8px;
+                    Text {
+                        text: "Устройство перестанет получать сообщения, а его сессии станут недействительны. Отзыв текущего устройства потребует повторного входа.";
+                        color: Theme.foreground;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                        width: 100%;
+                    }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        FHPrimaryButton {
+                            text: "Отозвать устройство";
+                            enabled: !root.busy;
+                            busy: root.busy;
+                            clicked => {
+                                root.revoke-device-requested(root.pending-device-id);
+                                root.pending-device-id = "";
+                            }
+                        }
+                        FHTextButton {
+                            text: "Отмена";
+                            enabled: !root.busy;
+                            clicked => { root.pending-device-id = ""; }
+                        }
+                    }
+                }
+            }
+
+            if !root.device-error.is-empty : FHTextButton {
+                text: "Повторить загрузку";
+                clicked => { root.refresh-devices-requested(); }
+            }
+        }
+
+        SettingsCard {
+            title: "Синхронизация истории";
+            description: "Выберите другое своё устройство, на котором сохранилась история, и оставьте его онлайн. Сообщения и ключи вложений будут переданы с шифрованием. Публикации каналов и боты загружаются с сервера отдельно.";
+
+            SettingsChoice {
+                label: "Устройство-источник";
+                value: root.history-source-device;
+                options: root.history-source-options;
+                enabled: !root.busy;
+                changed(value) => {
+                    root.select-history-source(value);
+                }
+            }
+
+            FHPrimaryButton {
+                text: "Запросить историю";
+                enabled: !root.busy && !root.history-source-device.is-empty && root.history-error.is-empty;
+                busy: root.busy;
+                clicked => { root.request-history-sync-requested(root.history-source-device); }
+            }
+
+            if !root.history-error.is-empty : Text {
+                text: root.history-error;
+                color: Theme.danger;
+                font-size: 12px;
+                wrap: word-wrap;
+                width: 100%;
+            }
+
+            if !root.history-progress.is-empty : Text {
+                text: root.history-progress;
+                color: Theme.muted;
+                font-size: 12px;
+                wrap: word-wrap;
+                width: 100%;
+            }
+        }
+
+        SettingsCard {
+            title: "История на этом устройстве";
+            description: "Загрузить с сервера доступные сообщения для этого устройства, если сохранились подходящие ключи. Основной способ переноса истории — с другого своего устройства.";
+
+            Text {
+                text: "Новое устройство не расшифрует старую сессию. История старше серверного TTL доступна только на прежнем устройстве. После потери всех устройств и ключей полное восстановление без резервной копии невозможно. Здесь загружаются тексты и ключи вложений; актуальные правки и удаления переносите с другого устройства.";
+                color: Theme.muted;
+                font-size: 12px;
+                wrap: word-wrap;
+                width: 100%;
+            }
+
+            SettingsChoice {
+                label: "Беседа";
+                value: root.history-conversation-id;
+                options: root.history-conversation-options;
+                enabled: !root.busy;
+                changed(value) => { root.select-history-conversation(value); }
+            }
+
+            HorizontalLayout {
+                spacing: 8px;
+                FHPrimaryButton {
+                    text: "Загрузить историю";
+                    enabled: !root.busy && !root.history-conversation-id.is-empty;
+                    busy: root.busy;
+                    clicked => { root.load-device-history-requested(root.history-conversation-id, false); }
+                }
+                FHTextButton {
+                    text: "Загрузить более ранние";
+                    enabled: !root.busy && !root.history-conversation-id.is-empty && root.has-older-history;
+                    clicked => { root.load-device-history-requested(root.history-conversation-id, true); }
+                }
+            }
+
+            if !root.history-page-result.is-empty : Text {
+                text: root.history-page-result;
+                color: Theme.muted;
+                font-size: 12px;
+                wrap: word-wrap;
+                width: 100%;
+            }
+        }
+
+        SettingsCard {
+            title: "Журнал безопасности";
+            description: "Последние 100 событий аккаунта.";
+
+            if !root.events-error.is-empty : Text {
+                text: root.events-error;
+                color: Theme.danger;
+                font-size: 12px;
+                wrap: word-wrap;
+                width: 100%;
+            }
+
+            if root.events.length == 0 && root.events-error.is-empty : Text {
+                text: "Событий пока нет.";
+                color: Theme.muted;
+                font-size: 12px;
+            }
+
+            for event in root.events : SecurityInfoRow {
+                title: event.event-type;
+                detail: "\{event.created-at}\n\{event.detail}";
+            }
+
+            FHTextButton {
+                text: root.events-error.is-empty ? "Обновить журнал" : "Повторить загрузку";
+                enabled: !root.busy;
+                clicked => { root.refresh-events-requested(); }
+            }
+        }
+    }
+}
+
+export component TwoFactorSetupScreen inherits Rectangle {
+    in property <bool> enabled: false;
+    in property <bool> enrollment-started: false;
+    in property <bool> has-qr-image: false;
+    in property <image> qr-image;
+    in property <string> secret-base32: "";
+    in property <string> otpauth-uri: "";
+    in property <string> error-text: "";
+    in property <[string]> backup-codes: [];
+    in property <bool> show-backup-codes: false;
+    in property <bool> busy: false;
+    in-out property <string> verify-code: "";
+    in-out property <string> disable-password: "";
+    in-out property <string> disable-code: "";
+
+    callback back-requested();
+    callback start-enrollment-requested();
+    callback copy-otpauth-uri-requested(string);
+    callback verify-enrollment-requested(string);
+    callback copy-backup-codes-requested([string]);
+    callback dismiss-backup-codes-requested();
+    callback disable-requested(string, string);
+
+    width: 100%;
+    height: 100%;
+    background: Theme.background;
+
+    SettingsFrame {
+        title: "Двухфакторная аутентификация";
+        back-requested => { root.back-requested(); }
+
+        SettingsCard {
+            title: "Двухфакторная аутентификация";
+            description: root.enabled
+                ? "2FA включена. Для отключения нужны пароль и текущий код."
+                : "Дополнительный код из приложения-аутентификатора при входе.";
+
+            if !root.error-text.is-empty : Text {
+                text: root.error-text;
+                color: Theme.danger;
+                font-size: 12px;
+                wrap: word-wrap;
+                width: 100%;
+            }
+
+            if root.show-backup-codes : VerticalLayout {
+                spacing: 10px;
+
+                Text {
+                    text: "Резервные коды показываются один раз — сохраните их сразу.";
+                    color: Theme.danger;
+                    font-size: 12px;
+                    wrap: word-wrap;
+                    width: 100%;
+                }
+
+                for code in root.backup-codes : Rectangle {
+                    width: 100%;
+                    height: 36px;
+                    background: Theme.background;
+                    border-width: 1px;
+                    border-color: Theme.border;
+                    border-radius: 6px;
+                    Text {
+                        text: code;
+                        color: Theme.foreground;
+                        font-size: 14px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        width: 100%;
+                        height: 100%;
+                    }
+                }
+
+                FHTextButton {
+                    text: "Скопировать все коды";
+                    clicked => { root.copy-backup-codes-requested(root.backup-codes); }
+                }
+
+                FHPrimaryButton {
+                    text: "Я сохранил коды";
+                    enabled: !root.busy;
+                    clicked => { root.dismiss-backup-codes-requested(); }
+                }
+            }
+            if !root.show-backup-codes && root.enabled : VerticalLayout {
+                spacing: 10px;
+
+                Text {
+                    text: "2FA включена";
+                    color: Theme.accent;
+                    font-size: 14px;
+                    font-weight: 600;
+                }
+
+                FHInput {
+                    label: "Пароль";
+                    password: true;
+                    value <=> root.disable-password;
+                }
+                FHInput {
+                    label: "Код из приложения или резервный код";
+                    placeholder: "Код";
+                    value <=> root.disable-code;
+                }
+
+                FHPrimaryButton {
+                    text: "Выключить 2FA";
+                    enabled: !root.busy && !root.disable-password.is-empty && !root.disable-code.is-empty;
+                    busy: root.busy;
+                    clicked => { root.disable-requested(root.disable-password, root.disable-code); }
+                }
+            }
+            if !root.show-backup-codes && !root.enabled && root.enrollment-started : VerticalLayout {
+                spacing: 10px;
+
+                Text {
+                    text: "Отсканируйте код или введите ключ вручную, затем подтвердите кодом из приложения.";
+                    color: Theme.muted;
+                    font-size: 12px;
+                    wrap: word-wrap;
+                    width: 100%;
+                }
+
+                if root.has-qr-image : Rectangle {
+                    width: 196px;
+                    height: 196px;
+                    background: #ffffff;
+                    border-radius: 8px;
+                    Image {
+                        x: 10px;
+                        y: 10px;
+                        width: 176px;
+                        height: 176px;
+                        source: root.qr-image;
+                    }
+                }
+
+                Text {
+                    text: "Ключ для ручного ввода";
+                    color: Theme.muted;
+                    font-size: 12px;
+                }
+                Text {
+                    text: root.secret-base32;
+                    color: Theme.foreground;
+                    font-size: 14px;
+                    font-weight: 600;
+                    wrap: word-wrap;
+                    width: 100%;
+                }
+                FHTextButton {
+                    text: "Скопировать ссылку otpauth";
+                    clicked => { root.copy-otpauth-uri-requested(root.otpauth-uri); }
+                }
+
+                FHInput {
+                    label: "Код из приложения";
+                    placeholder: "123456";
+                    value <=> root.verify-code;
+                    helper: "Код из приложения после добавления ключа.";
+                }
+
+                FHPrimaryButton {
+                    text: "Подтвердить и включить";
+                    enabled: !root.busy && !root.verify-code.is-empty;
+                    busy: root.busy;
+                    clicked => { root.verify-enrollment-requested(root.verify-code); }
+                }
+            }
+            if !root.show-backup-codes && !root.enabled && !root.enrollment-started : FHPrimaryButton {
+                text: "Включить 2FA";
+                enabled: !root.busy;
+                busy: root.busy;
+                clicked => { root.start-enrollment-requested(); }
+            }
+        }
+    }
+}

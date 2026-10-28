@@ -1,0 +1,92 @@
+import { Theme } from "../theme.slint";
+import { ChatAction } from "chat-controls.slint";
+import { ScrollView } from "std-widgets.slint";
+
+export struct EmojiCategoryView {
+    id: string,
+    label: string,
+    glyph: string,
+    emojis: [string],
+}
+
+export component EmojiPickerPanel inherits Rectangle {
+    in property <bool> open: false;
+    in property <bool> enabled: true;
+    in property <length> anchor-x: 0px;
+    in property <length> anchor-y: 0px;
+    in property <string> selected-category-id: "smileys";
+    in property <string> title: "Эмодзи";
+    in property <[EmojiCategoryView]> categories;
+
+    callback category-requested(string);
+    callback emoji-selected(string);
+    callback close-requested();
+
+    if root.open : Rectangle {
+        x: 0px;
+        y: 0px;
+        width: 100%;
+        height: 100%;
+        background: transparent;
+        TouchArea { clicked => { root.close-requested(); } }
+        Rectangle {
+            width: min(parent.width - 16px, 288px);
+            height: min(parent.height - 16px, 340px);
+            x: max(8px, min(root.anchor-x - self.width + 40px, parent.width - self.width - 8px));
+            y: max(8px, root.anchor-y - self.height - 8px);
+            background: Theme.surface;
+            border-width: 1px;
+            border-color: Theme.border;
+            border-radius: 12px;
+
+            VerticalLayout {
+                padding: 8px;
+                spacing: 6px;
+                Text { text: root.title; color: Theme.muted; font-size: 11px; font-weight: 600; }
+                ScrollView {
+                    width: 100%;
+                    vertical-stretch: 1;
+                    vertical-scrollbar-policy: as-needed;
+                    VerticalLayout {
+                        width: 100%;
+                        spacing: 4px;
+                        HorizontalLayout {
+                            spacing: 3px;
+                            for category[index] in root.categories : ChatAction {
+                                label: category.glyph;
+                                accessible-name: category.label;
+                                active: root.selected-category-id == category.id;
+                                enabled: root.enabled;
+                                clicked => { root.category-requested(category.id); }
+                            }
+                        }
+                        for category[index] in root.categories : GridLayout {
+                            visible: root.selected-category-id == category.id;
+                            width: 100%;
+                            spacing: 2px;
+                            for emoji[emoji-index] in category.emojis : Rectangle {
+                                row: emoji-index / 8;
+                                col: emoji-index % 8;
+                                width: 32px;
+                                height: 32px;
+                                background: touch.has-hover ? Theme.hover : transparent;
+                                border-radius: 6px;
+                                Text { text: emoji; color: Theme.foreground; font-size: 20px; horizontal-alignment: center; vertical-alignment: center; width: 100%; height: 100%; accessible-role: none; }
+                                touch := TouchArea {
+                                    enabled: root.enabled;
+                                    mouse-cursor: pointer;
+                                    accessible-role: button;
+                                    accessible-label: emoji;
+                                    clicked => {
+                                        root.emoji-selected(emoji);
+                                        root.close-requested();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

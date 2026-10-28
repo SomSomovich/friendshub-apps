@@ -1,0 +1,156 @@
+import { Theme } from "../theme.slint";
+import { FHInput } from "../components.slint";
+import { TextEdit } from "std-widgets.slint";
+
+export component CreateInfoStep inherits Rectangle {
+    in property <string> card-title;
+    in property <string> title-label: "Название";
+    in property <string> description-hint: "Необязательно, до 512 символов.";
+    in property <string> handle-hint: "Необязательно: 5–32 символа, начинается с буквы, латиница, цифры и «_».";
+    in property <string> handle-feedback: "";
+    in property <bool> handle-feedback-error: false;
+    in-out property <string> title-value: "";
+    in-out property <string> description-value: "";
+    in-out property <string> handle-value: "";
+    in-out property <bool> is-public: false;
+
+    background: transparent;
+
+    VerticalLayout {
+        padding: 12px;
+        spacing: 12px;
+
+        Rectangle {
+            border-radius: 12px;
+            border-width: 1px;
+            border-color: Theme.border;
+            background: Theme.surface;
+
+            VerticalLayout {
+                padding: 12px;
+                spacing: 12px;
+
+                Text {
+                    text: root.card-title;
+                    color: Theme.foreground;
+                    font-size: 14px;
+                    font-weight: 600;
+                }
+
+                FHInput {
+                    label: root.title-label;
+                    placeholder: "";
+                    value <=> root.title-value;
+                    password: false;
+                    helper: "";
+                    error: "";
+                }
+
+                VerticalLayout {
+                    spacing: 6px;
+                    Text {
+                        text: "Описание";
+                        color: Theme.foreground;
+                        font-size: 14px;
+                    }
+                    Text {
+                        text: root.description-hint;
+                        color: Theme.muted;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                    }
+                    Rectangle {
+                        height: 96px;
+                        border-radius: 8px;
+                        border-width: 1px;
+                        border-color: description-input.has-focus ? Theme.accent : Theme.border;
+                        background: Theme.background;
+                        clip: true;
+
+                        description-input := TextEdit {
+                            x: 10px;
+                            y: 8px;
+                            width: parent.width - 20px;
+                            height: parent.height - 16px;
+                            text <=> root.description-value;
+                            placeholder-text: "";
+                            wrap: word-wrap;
+                            font-size: 14px;
+                        }
+                    }
+                }
+
+                FHInput {
+                    label: "Ссылка-имя (handle)";
+                    placeholder: "my_name";
+                    value <=> root.handle-value;
+                    password: false;
+                    helper: root.handle-feedback-error ? "" : root.handle-feedback;
+                    error: root.handle-feedback-error ? root.handle-feedback : "";
+                }
+
+                VerticalLayout {
+                    spacing: 4px;
+                    Text {
+                        text: "Доступ";
+                        color: Theme.foreground;
+                        font-size: 14px;
+                    }
+
+                    for visibility[index] in [false, true]: Rectangle {
+                        height: 48px;
+                        border-radius: 8px;
+                        background: visibility-area.has-hover ? Theme.hover : transparent;
+                        accessible-role: radio-button;
+                        accessible-label: visibility ? "Публичный. Находится по ссылке-имени, присоединиться может любой." : "Приватный. Внутрь попадают только по приглашению.";
+                        accessible-checked: root.is-public == visibility;
+                        accessible-action-default => { root.is-public = visibility; }
+
+                        HorizontalLayout {
+                            padding-left: 8px;
+                            spacing: 10px;
+                            alignment: center;
+
+                            Rectangle {
+                                width: 16px;
+                                height: 16px;
+                                border-radius: 8px;
+                                border-width: 1px;
+                                border-color: root.is-public == visibility ? Theme.accent : Theme.border;
+                                background: transparent;
+                                Rectangle {
+                                    x: 4px;
+                                    y: 4px;
+                                    width: 8px;
+                                    height: 8px;
+                                    border-radius: 4px;
+                                    background: root.is-public == visibility ? Theme.accent : transparent;
+                                }
+                            }
+
+                            VerticalLayout {
+                                spacing: 2px;
+                                Text {
+                                    text: visibility ? "Публичный" : "Приватный";
+                                    color: Theme.foreground;
+                                    font-size: 14px;
+                                }
+                                Text {
+                                    text: visibility ? "Находится по ссылке-имени, присоединиться может любой." : "Внутрь попадают только по приглашению.";
+                                    color: Theme.muted;
+                                    font-size: 12px;
+                                    wrap: word-wrap;
+                                }
+                            }
+                        }
+
+                        visibility-area := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.is-public = visibility; }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,247 @@
+import { Theme } from "theme.slint";
+
+component FHPasswordReveal inherits Rectangle {
+    in-out property <bool> revealed;
+
+    width: 64px;
+    height: 40px;
+    background: transparent;
+    accessible-role: button;
+    accessible-label: revealed ? "Скрыть пароль" : "Показать пароль";
+    accessible-action-default => { root.revealed = !root.revealed; }
+    forward-focus: keyboard-scope;
+
+    Text {
+        text: root.revealed ? "Скрыть" : "Показать";
+        color: mouse-area.has-hover ? Theme.foreground : Theme.muted;
+        font-size: 10px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        width: 100%;
+        height: 100%;
+        accessible-role: none;
+    }
+
+    mouse-area := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.revealed = !root.revealed; }
+    }
+
+    keyboard-scope := FocusScope {
+        x: 0;
+        width: 0;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.revealed = !root.revealed;
+                return accept;
+            }
+            return reject;
+        }
+    }
+}
+
+export component FHInput inherits VerticalLayout {
+    in property <string> label;
+    in property <string> placeholder;
+    in-out property <string> value;
+    in property <bool> password: false;
+    in-out property <bool> password-visible: false;
+    in property <string> helper: "";
+    in property <string> error: "";
+
+    spacing: 6px;
+    horizontal-stretch: 1;
+
+    Text {
+        text: root.label;
+        color: Theme.muted;
+        font-size: 12px;
+        font-weight: 600;
+    }
+
+    field := Rectangle {
+        width: 100%;
+        height: 40px;
+        background: Theme.surface;
+        border-width: 1px;
+        border-radius: 8px;
+        border-color: root.error.is-empty ? (text-input.has-focus ? Theme.accent : Theme.border) : Theme.danger;
+        clip: true;
+
+        if root.value.is-empty : Text {
+            x: 12px;
+            width: parent.width - 24px - (root.password ? 64px : 0px);
+            height: parent.height;
+            text: root.placeholder;
+            color: Theme.muted;
+            font-size: 14px;
+            vertical-alignment: center;
+            accessible-role: none;
+        }
+
+        text-input := TextInput {
+            x: 12px;
+            width: max(parent.width - 24px - (root.password ? 64px : 0px), self.preferred-width);
+            height: parent.height;
+            text <=> root.value;
+            input-type: root.password && !root.password-visible ? InputType.password : InputType.text;
+            font-size: 14px;
+            color: Theme.foreground;
+            vertical-alignment: center;
+            accessible-label: root.label;
+            accessible-placeholder-text: root.placeholder;
+
+            cursor-position-changed(position) => {
+                if position.x + self.x < 12px {
+                    self.x = 12px - position.x;
+                } else if position.x + self.x > parent.width - 12px - (root.password ? 64px : 0px) - self.text-cursor-width {
+                    self.x = parent.width - position.x - 12px - (root.password ? 64px : 0px) - self.text-cursor-width;
+                }
+            }
+        }
+
+        if root.password : FHPasswordReveal {
+            x: parent.width - self.width;
+            revealed <=> root.password-visible;
+        }
+    }
+
+    if !root.error.is-empty : Text {
+        text: root.error;
+        color: Theme.danger;
+        font-size: 12px;
+        wrap: word-wrap;
+        width: 100%;
+    }
+    if root.error.is-empty && !root.helper.is-empty : Text {
+        text: root.helper;
+        color: Theme.muted;
+        font-size: 12px;
+        wrap: word-wrap;
+        width: 100%;
+    }
+}
+
+export component FHPrimaryButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> enabled: true;
+    in property <bool> busy: false;
+    callback clicked();
+
+    height: 40px;
+    horizontal-stretch: 1;
+    background: Theme.accent;
+    border-radius: 8px;
+    opacity: enabled && !busy ? 1 : 0.5;
+    accessible-role: button;
+    accessible-label: text;
+    accessible-enabled: enabled && !busy;
+    accessible-action-default => {
+        if root.enabled && !root.busy { root.clicked(); }
+    }
+    forward-focus: keyboard-scope;
+
+    states [
+        hover when mouse-area.has-hover && root.enabled && !root.busy : {
+            root.background: Theme.accent-hover;
+        }
+        focus when keyboard-scope.has-focus && root.enabled && !root.busy : {
+            root.border-width: 2px;
+            root.border-color: Theme.foreground;
+        }
+    ]
+
+    HorizontalLayout {
+        alignment: center;
+        spacing: 8px;
+
+        if root.busy : Text {
+            text: "…";
+            color: Theme.accent-foreground;
+            font-size: 14px;
+            font-weight: 600;
+            accessible-role: none;
+        }
+
+        Text {
+            text: root.text;
+            color: Theme.accent-foreground;
+            font-size: 14px;
+            font-weight: 600;
+            horizontal-alignment: center;
+            accessible-role: none;
+        }
+    }
+
+    mouse-area := TouchArea {
+        enabled: root.enabled && !root.busy;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+
+    keyboard-scope := FocusScope {
+        x: 0;
+        width: 0;
+        enabled: root.enabled && !root.busy;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+}
+
+export component FHTextButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    width: label.preferred-width + 12px;
+    height: 24px;
+    background: transparent;
+    accessible-role: button;
+    accessible-label: text;
+    accessible-enabled: root.enabled;
+    accessible-action-default => {
+        if root.enabled { root.clicked(); }
+    }
+    forward-focus: keyboard-scope;
+
+    Text {
+        text: root.text;
+        color: root.enabled ? (mouse-area.has-hover ? Theme.foreground : Theme.accent) : Theme.muted;
+        font-size: 12px;
+        font-weight: 500;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        width: 100%;
+        height: 100%;
+        accessible-role: none;
+    }
+
+    label := Text {
+        text: root.text;
+        visible: false;
+    }
+
+    mouse-area := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+
+    keyboard-scope := FocusScope {
+        x: 0;
+        width: 0;
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+}

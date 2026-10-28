@@ -1,0 +1,121 @@
+import { Theme } from "../theme.slint";
+import { ChatAction } from "chat-controls.slint";
+import { ScrollView } from "std-widgets.slint";
+
+export struct ChatSearchResult {
+    sender: string,
+    timestamp: string,
+    excerpt: string,
+}
+
+export component ChatSearchPanel inherits Rectangle {
+    in-out property <string> query: "";
+    in property <[ChatSearchResult]> results;
+    in property <bool> searching: false;
+    in property <int> selected-index: -1;
+    in property <string> position-label: "";
+    in property <string> empty-text: "";
+    callback query-changed(string);
+    callback previous-requested();
+    callback next-requested();
+    callback result-selected(int);
+    callback close-requested();
+
+    background: Theme.surface;
+    border-width: 1px;
+    border-color: Theme.border;
+    border-radius: 0px;
+
+    VerticalLayout {
+        spacing: 0px;
+        Rectangle {
+            height: 48px;
+            background: Theme.surface;
+            HorizontalLayout {
+                padding: 6px;
+                spacing: 4px;
+                Rectangle {
+                    height: 36px;
+                    horizontal-stretch: 1;
+                    background: Theme.background;
+                    border-width: 1px;
+                    border-color: input.has-focus ? Theme.accent : Theme.border;
+                    border-radius: 8px;
+                    input := TextInput {
+                        x: 10px;
+                        width: parent.width - 20px;
+                        height: 100%;
+                        text <=> root.query;
+                        font-size: 13px;
+                        color: Theme.foreground;
+                        vertical-alignment: center;
+                        edited => { root.query-changed(self.text); }
+                    }
+                }
+                if !root.query.is-empty : Text {
+                    text: root.position-label;
+                    color: Theme.muted;
+                    font-size: 11px;
+                    vertical-alignment: center;
+                }
+                ChatAction { label: "↑"; accessible-label: "Предыдущий результат"; enabled: root.results.length > 0; clicked => { root.previous-requested(); } }
+                ChatAction { label: "↓"; accessible-label: "Следующий результат"; enabled: root.results.length > 0; clicked => { root.next-requested(); } }
+                ChatAction { label: "×"; accessible-label: "Закрыть поиск"; clicked => { root.close-requested(); } }
+            }
+        }
+
+        if root.query.is-empty : Text {
+            text: "Введите текст сообщения для поиска.";
+            color: Theme.muted;
+            font-size: 12px;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            vertical-stretch: 1;
+        }
+        if root.searching : Text {
+            text: "Ищем сообщения…";
+            color: Theme.muted;
+            font-size: 12px;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            vertical-stretch: 1;
+        }
+        if !root.query.is-empty && !root.searching && root.results.length == 0 : Text {
+            text: root.empty-text.is-empty ? "Ничего не найдено." : root.empty-text;
+            color: Theme.muted;
+            font-size: 12px;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            vertical-stretch: 1;
+        }
+
+        if root.results.length > 0 : ScrollView {
+            width: 100%;
+            vertical-stretch: 1;
+            vertical-scrollbar-policy: as-needed;
+            VerticalLayout {
+                width: 100%;
+                spacing: 0px;
+                for result[index] in root.results : Rectangle {
+                    width: 100%;
+                    height: 66px;
+                    background: root.selected-index == index ? Theme.hover : Theme.surface;
+                    border-width: 0px;
+                    VerticalLayout {
+                        x: 12px; y: 8px; width: parent.width - 24px; spacing: 4px;
+                        HorizontalLayout {
+                            Text { text: result.sender; color: Theme.muted; font-size: 11px; horizontal-stretch: 1; overflow: elide; }
+                            Text { text: result.timestamp; color: Theme.muted; font-size: 10px; }
+                        }
+                        Text { text: result.excerpt; color: Theme.foreground; font-size: 13px; wrap: word-wrap; overflow: elide; }
+                    }
+                    TouchArea {
+                        accessible-role: button;
+                        accessible-label: result.sender + " · " + result.excerpt;
+                        clicked => { root.result-selected(index); }
+                    }
+                }
+            }
+        }
+    }
+}

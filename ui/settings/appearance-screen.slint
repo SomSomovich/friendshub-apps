@@ -1,0 +1,245 @@
+import { Theme } from "../theme.slint";
+import { FHPrimaryButton, FHTextButton } from "../components.slint";
+import { SettingsCard, SettingsDivider, SettingsFrame, SettingsChoice } from "common.slint";
+
+component RgbColorField inherits VerticalLayout {
+    in property <string> id;
+    in property <string> label;
+    in property <color> preview;
+    in-out property <string> red;
+    in-out property <string> green;
+    in-out property <string> blue;
+    in property <bool> enabled: true;
+    callback channel-edited(string, string);
+    callback choose-color(string);
+
+    spacing: 8px;
+    horizontal-stretch: 1;
+
+    HorizontalLayout {
+        spacing: 8px;
+        alignment: center;
+
+        Rectangle {
+            width: 28px;
+            height: 28px;
+            border-radius: 6px;
+            border-width: 1px;
+            border-color: Theme.border;
+            background: root.preview;
+        }
+
+        Text {
+            text: root.label;
+            color: Theme.foreground;
+            font-size: 13px;
+            horizontal-stretch: 1;
+            vertical-alignment: center;
+        }
+
+        FHTextButton {
+            text: "Выбрать цвет";
+            enabled: root.enabled;
+            clicked => { root.choose-color(root.id); }
+        }
+    }
+
+    HorizontalLayout {
+        spacing: 8px;
+
+        TextInput {
+            height: 36px;
+            horizontal-stretch: 1;
+            text <=> root.red;
+            font-size: 13px;
+            color: Theme.foreground;
+            accessible-label: "\{root.label} RGB красный";
+            edited => { root.channel-edited("\{root.id}.r", self.text); }
+        }
+        TextInput {
+            height: 36px;
+            horizontal-stretch: 1;
+            text <=> root.green;
+            font-size: 13px;
+            color: Theme.foreground;
+            accessible-label: "\{root.label} RGB зелёный";
+            edited => { root.channel-edited("\{root.id}.g", self.text); }
+        }
+        TextInput {
+            height: 36px;
+            horizontal-stretch: 1;
+            text <=> root.blue;
+            font-size: 13px;
+            color: Theme.foreground;
+            accessible-label: "\{root.label} RGB синий";
+            edited => { root.channel-edited("\{root.id}.b", self.text); }
+        }
+    }
+}
+
+export component AppearanceSettingsScreen inherits Rectangle {
+    in property <string> theme-value: "dark";
+    in property <string> language-value: "ru";
+    in property <bool> has-custom-colors: false;
+    in-out property <string> background-r: "26";
+    in-out property <string> background-g: "26";
+    in-out property <string> background-b: "58";
+    in-out property <string> button-r: "252";
+    in-out property <string> button-g: "144";
+    in-out property <string> button-b: "3";
+    in-out property <string> bubble-r: "36";
+    in-out property <string> bubble-g: "36";
+    in-out property <string> bubble-b: "77";
+    in-out property <string> text-r: "244";
+    in-out property <string> text-g: "244";
+    in-out property <string> text-b: "251";
+    in property <color> background-preview: Theme.background;
+    in property <color> button-preview: Theme.accent;
+    in property <color> bubble-preview: Theme.surface;
+    in property <color> text-preview: Theme.foreground;
+    in property <int> contrast-score: 218;
+    in property <bool> busy: false;
+
+    callback back-requested();
+    callback theme-changed(string);
+    callback language-changed(string);
+    callback rgb-channel-edited(string, string);
+    callback choose-color-requested(string);
+    callback apply-colors-requested();
+    callback reset-colors-requested();
+
+    width: 100%;
+    height: 100%;
+    background: Theme.background;
+
+    SettingsFrame {
+        title: "Оформление";
+        back-requested => { root.back-requested(); }
+
+        SettingsCard { title: "Тема";
+            SettingsChoice {
+                label: "Тема";
+                value: root.theme-value;
+                options: [
+                    { value: "dark", label: "Тёмная" },
+                    { value: "light", label: "Светлая" },
+                ];
+                changed(value) => {
+                    root.theme-changed(value);
+                }
+            }
+        }
+
+        SettingsCard { title: "Язык";
+            SettingsChoice {
+                label: "Язык";
+                value: root.language-value;
+                options: [
+                    { value: "ru", label: "Русский" },
+                    { value: "en", label: "English" },
+                ];
+                changed(value) => {
+                    root.language-changed(value);
+                }
+            }
+        }
+
+        SettingsCard {
+            title: "Цвета интерфейса";
+            description: "Настройте основные цвета интерфейса в формате RGB.";
+
+            Text {
+                text: "Выберите цвет на сайте-генераторе RGB и введите значения каналов от 0 до 255.";
+                color: Theme.muted;
+                font-size: 12px;
+                wrap: word-wrap;
+                width: 100%;
+            }
+
+            SettingsDivider {}
+
+            RgbColorField {
+                id: "background";
+                label: "Фон";
+                preview: root.background-preview;
+                red: root.background-r;
+                green: root.background-g;
+                blue: root.background-b;
+                channel-edited(id, value) => { root.rgb-channel-edited(id, value); }
+                choose-color(id) => { root.choose-color-requested(id); }
+            }
+
+            SettingsDivider {}
+
+            RgbColorField {
+                id: "button";
+                label: "Кнопки";
+                preview: root.button-preview;
+                red: root.button-r;
+                green: root.button-g;
+                blue: root.button-b;
+                channel-edited(id, value) => { root.rgb-channel-edited(id, value); }
+                choose-color(id) => { root.choose-color-requested(id); }
+            }
+
+            SettingsDivider {}
+
+            RgbColorField {
+                id: "bubble";
+                label: "Пузыри сообщений";
+                preview: root.bubble-preview;
+                red: root.bubble-r;
+                green: root.bubble-g;
+                blue: root.bubble-b;
+                channel-edited(id, value) => { root.rgb-channel-edited(id, value); }
+                choose-color(id) => { root.choose-color-requested(id); }
+            }
+
+            SettingsDivider {}
+
+            RgbColorField {
+                id: "text";
+                label: "Текст";
+                preview: root.text-preview;
+                red: root.text-r;
+                green: root.text-g;
+                blue: root.text-b;
+                channel-edited(id, value) => { root.rgb-channel-edited(id, value); }
+                choose-color(id) => { root.choose-color-requested(id); }
+            }
+
+            Text {
+                text: "Разница между фоном и текстом: \{root.contrast-score} из 765.";
+                color: root.contrast-score >= 20 ? Theme.muted : Theme.danger;
+                font-size: 12px;
+                wrap: word-wrap;
+                width: 100%;
+            }
+
+            if root.contrast-score < 20 : Text {
+                text: "Цвет текста слишком близок к фону: нужно минимум 20.";
+                color: Theme.danger;
+                font-size: 12px;
+                wrap: word-wrap;
+                width: 100%;
+            }
+
+            HorizontalLayout {
+                spacing: 8px;
+
+                FHPrimaryButton {
+                    text: "Применить";
+                    enabled: root.contrast-score >= 20 && !root.busy;
+                    busy: root.busy;
+                    clicked => { root.apply-colors-requested(); }
+                }
+
+                FHTextButton {
+                    text: "Сбросить цвета";
+                    enabled: root.has-custom-colors && !root.busy;
+                    clicked => { root.reset-colors-requested(); }
+                }
+            }
+        }
+    }
+}

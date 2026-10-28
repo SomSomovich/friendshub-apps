@@ -1,0 +1,357 @@
+import { Theme } from "../theme.slint";
+import { ScrollView } from "std-widgets.slint";
+
+export struct SettingsOption {
+    value: string,
+    label: string,
+}
+
+export component SettingsFrame inherits Rectangle {
+    in property <string> title;
+    callback back-requested();
+
+    width: 100%;
+    height: 100%;
+    background: Theme.background;
+
+    VerticalLayout {
+        spacing: 0px;
+
+        HorizontalLayout {
+            height: 48px;
+            padding-left: 12px;
+            padding-right: 12px;
+            spacing: 8px;
+            alignment: start;
+
+            Rectangle {
+                width: 36px;
+                height: 36px;
+                border-radius: 8px;
+                background: back-area.has-hover ? Theme.hover : transparent;
+                forward-focus: back-keyboard-scope;
+                accessible-role: button;
+                accessible-label: "Назад";
+                accessible-action-default => { root.back-requested(); }
+
+                states [
+                    focus when back-keyboard-scope.has-focus : {
+                        border-width: 2px;
+                        border-color: Theme.accent;
+                    }
+                ]
+
+                Text {
+                    text: "←";
+                    color: back-area.has-hover ? Theme.foreground : Theme.muted;
+                    font-size: 18px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    width: 100%;
+                    height: 100%;
+                }
+
+                back-area := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { root.back-requested(); }
+                }
+
+                back-keyboard-scope := FocusScope {
+                    x: 0;
+                    width: 0;
+                    key-pressed(event) => {
+                        if event.text == Key.Space || event.text == Key.Return {
+                            root.back-requested();
+                            return accept;
+                        }
+                        return reject;
+                    }
+                }
+            }
+
+            Text {
+                text: root.title;
+                color: Theme.foreground;
+                font-size: 14px;
+                font-weight: 600;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+        }
+
+        Rectangle {
+            height: 1px;
+            background: Theme.border;
+        }
+
+        ScrollView {
+            horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
+            content-width: parent.width;
+
+            HorizontalLayout {
+                width: 100%;
+                alignment: center;
+
+                VerticalLayout {
+                    max-width: 608px;
+                    horizontal-stretch: 1;
+                    padding: 16px;
+                    spacing: 16px;
+                    alignment: start;
+
+                    @children
+                }
+            }
+        }
+    }
+}
+
+export component SettingsCard inherits Rectangle {
+    in property <string> title;
+    in property <string> description: "";
+
+    width: 100%;
+    height: content.preferred-height;
+    background: Theme.surface;
+    border-width: 1px;
+    border-color: Theme.border;
+    border-radius: 12px;
+
+    content := VerticalLayout {
+        padding: 12px;
+        spacing: 8px;
+        alignment: start;
+
+        Text {
+            text: root.title;
+            color: Theme.foreground;
+            font-size: 14px;
+            font-weight: 600;
+            wrap: word-wrap;
+            width: 100%;
+        }
+
+        if !root.description.is-empty : Text {
+            text: root.description;
+            color: Theme.muted;
+            font-size: 12px;
+            wrap: word-wrap;
+            width: 100%;
+        }
+
+        @children
+    }
+}
+
+export component SettingsToggle inherits Rectangle {
+    in property <string> label;
+    in property <string> description: "";
+    in property <bool> enabled: true;
+    in property <bool> checked;
+    callback changed(bool);
+
+    width: 100%;
+    height: max(40px, content.preferred-height);
+    background: transparent;
+    accessible-role: switch;
+    accessible-label: root.label;
+    accessible-enabled: root.enabled;
+    accessible-checkable: true;
+    accessible-checked: root.checked;
+    accessible-action-default => {
+        if root.enabled {
+            root.changed(!root.checked);
+        }
+    }
+    forward-focus: keyboard-scope;
+
+    states [
+        focus when keyboard-scope.has-focus : {
+            root.border-width: 2px;
+            root.border-color: Theme.accent;
+        }
+    ]
+
+    content := HorizontalLayout {
+        spacing: 12px;
+        alignment: center;
+
+        VerticalLayout {
+            spacing: 3px;
+            horizontal-stretch: 1;
+            vertical-stretch: 0;
+
+            Text {
+                text: root.label;
+                color: root.enabled ? Theme.foreground : Theme.muted;
+                font-size: 13px;
+                font-weight: 500;
+                wrap: word-wrap;
+                width: 100%;
+            }
+
+            if !root.description.is-empty : Text {
+                text: root.description;
+                color: Theme.muted;
+                font-size: 12px;
+                wrap: word-wrap;
+                width: 100%;
+            }
+        }
+
+        Rectangle {
+            width: 42px;
+            height: 24px;
+            border-radius: 12px;
+            background: root.checked ? Theme.accent : Theme.hover;
+            border-width: 1px;
+            border-color: root.checked ? Theme.accent : Theme.border;
+            opacity: root.enabled ? 1 : 0.5;
+
+            Rectangle {
+                x: root.checked ? parent.width - self.width - 3px : 3px;
+                y: 3px;
+                width: 18px;
+                height: 18px;
+                border-radius: 9px;
+                background: root.checked ? Theme.accent-foreground : Theme.muted;
+                animate x { duration: 120ms; }
+            }
+        }
+    }
+
+    TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => {
+            root.changed(!root.checked);
+        }
+    }
+
+    keyboard-scope := FocusScope {
+        x: 0;
+        width: 0;
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.changed(!root.checked);
+                return accept;
+            }
+            return reject;
+        }
+    }
+}
+
+export component SettingsChoice inherits VerticalLayout {
+    in property <string> label;
+    in property <string> description: "";
+    in property <[SettingsOption]> options: [];
+    in property <string> value;
+    in property <bool> enabled: true;
+    callback changed(string);
+
+    spacing: 8px;
+    horizontal-stretch: 1;
+
+    Text {
+        text: root.label;
+        color: Theme.foreground;
+        font-size: 13px;
+        font-weight: 500;
+        wrap: word-wrap;
+        width: 100%;
+    }
+
+    if !root.description.is-empty : Text {
+        text: root.description;
+        color: Theme.muted;
+        font-size: 12px;
+        wrap: word-wrap;
+        width: 100%;
+    }
+
+    for option in root.options : Rectangle {
+        width: 100%;
+        height: max(32px, label-text.preferred-height + 12px);
+        border-radius: 8px;
+        background: option-area.has-hover ? Theme.hover : transparent;
+        opacity: root.enabled ? 1 : 0.5;
+        accessible-role: radio-button;
+        accessible-label: option.label;
+        accessible-checkable: true;
+        accessible-checked: option.value == root.value;
+        accessible-enabled: root.enabled;
+        accessible-action-default => {
+            if root.enabled { root.changed(option.value); }
+        }
+        forward-focus: keyboard-scope;
+
+        states [
+            focus when keyboard-scope.has-focus : {
+                border-width: 2px;
+                border-color: Theme.accent;
+            }
+        ]
+
+        HorizontalLayout {
+            x: 8px;
+            width: parent.width - 16px;
+            height: parent.height;
+            spacing: 12px;
+            alignment: center;
+
+            Rectangle {
+                width: 18px;
+                height: 18px;
+                border-radius: 9px;
+                border-width: 1px;
+                border-color: option.value == root.value ? Theme.accent : Theme.border;
+                background: option.value == root.value ? Theme.accent : Theme.surface;
+
+                if option.value == root.value : Rectangle {
+                    x: 5px;
+                    y: 5px;
+                    width: 8px;
+                    height: 8px;
+                    border-radius: 4px;
+                    background: Theme.accent-foreground;
+                }
+            }
+
+            label-text := Text {
+                text: option.label;
+                color: Theme.foreground;
+                font-size: 13px;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+                wrap: word-wrap;
+                accessible-role: none;
+            }
+        }
+
+        option-area := TouchArea {
+            enabled: root.enabled;
+            mouse-cursor: pointer;
+            clicked => { root.changed(option.value); }
+        }
+
+        keyboard-scope := FocusScope {
+            x: 0;
+            width: 0;
+            enabled: root.enabled;
+            key-pressed(event) => {
+                if event.text == Key.Space || event.text == Key.Return {
+                    root.changed(option.value);
+                    return accept;
+                }
+                return reject;
+            }
+        }
+    }
+}
+
+export component SettingsDivider inherits Rectangle {
+    width: 100%;
+    height: 1px;
+    background: Theme.border;
+}

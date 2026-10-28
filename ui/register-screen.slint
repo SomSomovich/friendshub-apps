@@ -1,0 +1,90 @@
+import { Theme } from "theme.slint";
+import { FHInput, FHPrimaryButton, FHTextButton } from "components.slint";
+
+export component RegisterScreen inherits Rectangle {
+    in-out property <string> password: "";
+    in property <string> error-text: "";
+    in property <bool> busy: false;
+
+    callback register-requested(string);
+    callback login-requested();
+    callback back-requested();
+
+    background: Theme.background;
+
+    VerticalLayout {
+        padding: 16px;
+        alignment: center;
+
+        HorizontalLayout {
+            alignment: center;
+
+            Rectangle {
+                width: parent.width < 384px ? parent.width : 384px;
+                border-radius: 16px;
+                border-width: 1px;
+                border-color: Theme.border;
+                background: Theme.surface;
+
+                VerticalLayout {
+                    padding: 24px;
+                    spacing: 16px;
+
+                    Text {
+                        text: "Регистрация";
+                        color: Theme.foreground;
+                        font-size: 18px;
+                        font-weight: 600;
+                    }
+
+                    Text {
+                        text: "Номер вида FH1234567 выдаётся сразу после создания аккаунта.";
+                        color: Theme.muted;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                    }
+
+                    FHInput {
+                        width: parent.width;
+                        label: "Пароль";
+                        placeholder: "";
+                        value <=> root.password;
+                        password: true;
+                        helper: "Минимум 8 символов.";
+                        error: root.error-text;
+                    }
+
+                    FHPrimaryButton {
+                        width: parent.width;
+                        text: "Создать аккаунт";
+                        enabled: !root.busy;
+                        busy: root.busy;
+                        clicked => {
+                            root.register-requested(root.password);
+                        }
+                    }
+
+                    VerticalLayout {
+                        spacing: 8px;
+
+                        HorizontalLayout {
+                            alignment: center;
+                            FHTextButton {
+                                text: "Вернуться ко входу";
+                                clicked => { root.login-requested(); }
+                            }
+                        }
+
+                        HorizontalLayout {
+                            alignment: center;
+                            FHTextButton {
+                                text: "Назад";
+                                clicked => { root.back-requested(); }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

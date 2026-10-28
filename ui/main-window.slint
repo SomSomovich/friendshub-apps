@@ -1,3 +1,1246 @@
+import { Theme } from "theme.slint";
+export { Theme } from "theme.slint";
+import { AppShell } from "app-shell.slint";
+import { ConversationRow, FilterTab, FolderTab } from "conversation-list.slint";
+import { LandingScreen } from "landing-screen.slint";
+import { LoginScreen } from "login-screen.slint";
+import { RegisterScreen } from "register-screen.slint";
+import { TwoFactorScreen } from "two-factor-screen.slint";
+import { ConnectScreen, ConnectStepState } from "connect-screen.slint";
+import { InviteScreen } from "invite-screen.slint";
+import { NotFoundScreen } from "not-found-screen.slint";
+import { ChatScreen } from "chat/chat-screen.slint";
+import { ChatMessage } from "chat/message-list.slint";
+import { ChatReaction } from "chat/chat-controls.slint";
+import { ChatSearchResult } from "chat/chat-search-panel.slint";
+import { ChatMenuItem } from "chat/message-action-menu.slint";
+import { PollDraftOption } from "chat/create-poll-dialog.slint";
+import { PollViewModel } from "chat/poll-card.slint";
+import { ChannelScreen, ChannelPost } from "channel/channel-screen.slint";
+import { ConversationSettingsScreen, ConversationMember, ConversationInvite, ConversationOption, ChannelAnalytic } from "channel/conversation-settings.slint";
+import { BotChatScreen, BotMessage } from "bot/bot-chat-screen.slint";
+import { DiscoverScreen, DiscoverEntry } from "discover/discover-screen.slint";
+import { DatingScreen, DatingProfileDraft, DatingSearchFilters, DatingCard } from "dating/dating-screen.slint";
+import { ProfileScreen, OwnProfileField } from "profile/profile-screen.slint";
+import { UserProfileModal, PublicProfileField } from "profile/user-profile-modal.slint";
+import { CallHistoryScreen, CallHistoryRow } from "calls/call-history-screen.slint";
+import { CallOverlay } from "calls/call-overlay.slint";
+import { CreateGroupScreen } from "create/create-group-screen.slint";
+import { CreateChannelScreen, ExistingGroupRow } from "create/create-channel-screen.slint";
+import { GroupMemberRow } from "create/member-picker.slint";
+import { CreateSummaryRow } from "create/create-summary.slint";
+import { SettingsIndexScreen } from "settings/index-screen.slint";
+import { AccountSettingsScreen, SettingsProfileField } from "settings/account-screen.slint";
+import { AppearanceSettingsScreen } from "settings/appearance-screen.slint";
+import { PrivacySettingsScreen, SettingsContact, SettingsPrivacyException } from "settings/privacy-screen.slint";
+import { SecuritySettingsScreen, TwoFactorSetupScreen, SecuritySession, SecurityDevice, SecurityEvent } from "settings/security-screen.slint";
+import { NotificationsSettingsScreen } from "settings/notifications-screen.slint";
+import { AccountsSettingsScreen, SettingsAccount } from "settings/accounts-screen.slint";
+import { BotsSettingsScreen, SettingsBot } from "settings/bots-screen.slint";
+import { SettingsOption } from "settings/common.slint";
+import { AboutSettingsScreen } from "settings/about-screen.slint";
+
 export component MainWindow inherits Window {
     title: "FriendsHub";
+    preferred-width: 1120px;
+    preferred-height: 760px;
+    min-width: 320px;
+    min-height: 480px;
+    background: Theme.background;
+    in property <string> route: "/";
+    in property <string> screen: "landing";
+    in property <bool> authenticated: false;
+    in property <bool> light-mode: false;
+    in property <string> language: "ru";
+    in property <string> invite-token: "";
+
+    in-out property <string> login-fh-number: "";
+    in-out property <string> login-password: "";
+    in property <string> login-error: "";
+    in property <bool> login-busy: false;
+    in-out property <string> register-password: "";
+    in property <string> register-error: "";
+    in property <bool> register-busy: false;
+    in-out property <string> twofactor-code: "";
+    in-out property <bool> twofactor-backup-mode: false;
+    in property <bool> twofactor-device-setup: false;
+    in property <string> twofactor-error: "";
+    in property <bool> auth-busy: false;
+    in property <string> connect-username: "";
+    in property <ConnectStepState> connect-keys-state: ConnectStepState.pending;
+    in property <ConnectStepState> connect-socket-state: ConnectStepState.pending;
+    in property <string> connect-error: "";
+    in property <bool> connect-busy: false;
+
+    in-out property <string> account-username: "";
+    in property <string> account-fh-number: "";
+    in property <image> account-avatar;
+    in property <string> account-avatar-label: "";
+    in property <bool> has-account-avatar: false;
+    in property <[ConversationRow]> conversations: [];
+    in property <[FilterTab]> conversation-filters: [
+        { id: "all", label: "Все", unread-count: 0, visible: true },
+        { id: "unread", label: "Непрочитанные", unread-count: 0, visible: true },
+        { id: "personal", label: "Личные", unread-count: 0, visible: true },
+        { id: "groups", label: "Группы", unread-count: 0, visible: true },
+        { id: "channels", label: "Каналы", unread-count: 0, visible: true },
+    ];
+    in property <[FolderTab]> folders: [];
+    in property <string> selected-filter: "all";
+    in property <string> selected-folder: "";
+    in property <string> selected-conversation-id: "";
+    in property <bool> has-archived: false;
+    in property <bool> conversations-loading: false;
+    in property <string> conversations-error: "";
+    in property <string> conversation-search: "";
+    in property <bool> offline: false;
+    in property <string> conversations-empty-title: "Чатов пока нет";
+    in property <string> conversations-empty-description: "Начните с поиска собеседника или создайте группу.";
+
+    in property <string> conversation-title: "";
+    in property <string> conversation-subtitle: "";
+    in property <string> conversation-kind: "direct";
+    in property <string> chat-banner-text: "";
+    in property <string> chat-pinned-text: "";
+    in property <string> chat-pin-counter: "";
+    in property <int> chat-pin-count: 0;
+    in property <string> chat-error-text: "";
+    in property <[ChatMessage]> messages: [];
+    in property <[PollViewModel]> polls: [];
+    in property <bool> chat-loading: false;
+    in property <bool> polls-loading: false;
+    in property <bool> polls-has-older: false;
+    in property <bool> polls-loading-older: false;
+    in property <string> polls-error-text: "";
+    in property <bool> chat-has-older: false;
+    in property <bool> chat-search-open: false;
+    in property <bool> chat-can-call: false;
+    in property <bool> chat-can-poll: true;
+    in property <bool> chat-can-schedule: true;
+    in property <bool> chat-composer-enabled: true;
+    in property <bool> chat-busy: false;
+    in-out property <string> chat-draft: "";
+    in-out property <string> chat-search-query: "";
+    in property <[ChatSearchResult]> chat-search-results: [];
+    in property <bool> chat-searching: false;
+    in property <int> chat-search-selected-index: -1;
+    in property <string> chat-search-position: "";
+    in property <string> chat-composer-error: "";
+    in property <bool> chat-editing: false;
+    in property <bool> chat-poll-create-open: false;
+    in property <bool> chat-poll-create-busy: false;
+    in property <bool> chat-poll-create-can-create: false;
+    in property <bool> chat-poll-create-is-quiz: false;
+    in property <bool> chat-poll-create-allows-multiple: false;
+    in property <bool> chat-poll-create-allows-revoting: true;
+    in property <bool> chat-poll-create-allows-user-options: false;
+    in property <bool> chat-poll-create-closes-automatically: false;
+    in property <bool> chat-poll-create-can-add-option: false;
+    in property <bool> chat-poll-create-duration-open: false;
+    in property <bool> chat-poll-create-duration-valid: false;
+    in property <string> chat-poll-create-duration-label: "";
+    in property <string> chat-poll-create-title-count-label: "";
+    in property <string> chat-poll-create-description-count-label: "";
+    in property <string> chat-poll-create-error-text: "";
+    in property <[PollDraftOption]> chat-poll-create-options: [];
+    in-out property <string> chat-poll-create-title: "";
+    in-out property <string> chat-poll-create-description: "";
+    in-out property <string> chat-poll-create-duration-hours: "1";
+    in-out property <string> chat-poll-create-duration-minutes: "0";
+    in property <bool> chat-message-menu-open: false;
+    in property <int> chat-message-menu-index: -1;
+    in property <[ChatMenuItem]> chat-message-menu-items: [];
+    in property <[ChatReaction]> chat-message-menu-reactions: [];
+    in property <bool> chat-delete-confirm-open: false;
+    in property <bool> chat-delete-confirm-busy: false;
+    in property <string> chat-delete-confirm-title: "";
+    in property <string> chat-delete-confirm-hint: "";
+    in property <string> chat-delete-confirm-cancel-label: "";
+    in property <string> chat-delete-confirm-delete-label: "";
+    in property <string> chat-delete-confirm-busy-label: "";
+    in property <string> chat-delete-confirm-error-text: "";
+    in property <[ChannelPost]> channel-posts: [];
+    in property <[ChannelPost]> pinned-channel-posts: [];
+    in property <[ChatReaction]> channel-reaction-options: [];
+    in property <bool> channel-loading: false;
+    in property <bool> channel-has-older: false;
+    in property <bool> channel-can-publish: false;
+    in property <bool> channel-busy: false;
+    in property <string> channel-error-text: "";
+    in-out property <string> channel-draft: "";
+    in property <bool> channel-editing: false;
+    in-out property <int> channel-open-post-menu-index: -1;
+    in property <[BotMessage]> bot-messages: [];
+    in property <string> bot-error-text: "";
+    in property <bool> bot-loading: false;
+    in property <bool> bot-loading-older: false;
+    in property <bool> bot-has-older: false;
+    in property <bool> bot-busy: false;
+    in-out property <string> bot-draft: "";
+    in property <[DiscoverEntry]> discover-entries: [];
+    in property <bool> discover-channel-mode: false;
+    in-out property <string> discover-query: "";
+    in property <bool> discover-busy: false;
+    in property <bool> discover-loading: false;
+    in property <bool> discover-has-error: false;
+    in property <string> discover-error-text: "";
+    in property <bool> discover-lookup-mode: false;
+    in property <bool> dating-has-profile: false;
+    in property <bool> dating-busy: false;
+    in property <bool> dating-loading: false;
+    in property <bool> dating-profile-loading: false;
+    in property <bool> dating-profile-error: false;
+    in property <string> dating-profile-error-text: "";
+    in property <bool> dating-profile-not-found: false;
+    in property <string> dating-profile-age-label: "";
+    in property <string> dating-validation-error: "";
+    in property <string> dating-search-error: "";
+    in property <bool> dating-editing: false;
+    in-out property <DatingProfileDraft> dating-profile-draft: {
+        display-name: "", city: "", birth-year: "", gender: "", looking-for: "", bio: "", interests: "", is-listed: false
+    };
+    in-out property <DatingSearchFilters> dating-filters: {
+        query: "", city: "", gender: "", looking-for: "", min-age: "", max-age: "", interests: ""
+    };
+    in property <[DatingCard]> dating-results: [];
+    in property <bool> dating-search-started: false;
+    in property <bool> dating-has-more: false;
+    in property <bool> dating-details-open: false;
+    in property <bool> dating-details-loading: false;
+    in property <DatingCard> dating-details;
+    in property <string> dating-details-fh-number: "";
+    in property <string> dating-details-error: "";
+    in property <string> profile-status-text: "";
+    in property <string> profile-status-emoji: "";
+    in property <bool> profile-has-avatar: false;
+    in property <image> profile-avatar-image;
+    in property <string> profile-avatar-initials: "";
+    in property <[OwnProfileField]> profile-fields: [];
+    in property <bool> user-profile-open: true;
+    in property <bool> user-profile-loading: false;
+    in property <bool> user-profile-unavailable: false;
+    in property <bool> user-profile-busy: false;
+    in property <string> user-profile-error-text: "";
+    in property <string> user-profile-username: "";
+    in property <string> user-profile-alias: "";
+    in property <string> user-profile-fh-number: "";
+    in property <string> user-profile-status-text: "";
+    in property <string> user-profile-status-emoji: "";
+    in property <bool> user-profile-is-contact: false;
+    in property <bool> user-profile-is-blocked: false;
+    in property <bool> user-profile-has-avatar: false;
+    in property <image> user-profile-avatar-image;
+    in property <string> user-profile-avatar-initials: "";
+    in property <[PublicProfileField]> user-profile-fields: [];
+    in property <bool> user-profile-alias-editor-open: false;
+    in-out property <string> user-profile-alias-draft: "";
+    in property <[CallHistoryRow]> calls: [];
+    in property <bool> calls-loading: false;
+    in property <string> calls-error-text: "";
+    in property <bool> calls-busy: false;
+    in property <bool> calls-has-calls: false;
+    in-out property <bool> calls-confirmation-open: false;
+    in-out property <bool> calls-confirm-clear-all: false;
+    in-out property <string> calls-confirm-call-id: "";
+
+    in property <bool> call-overlay-visible: false;
+    in property <string> call-state: "idle";
+    in property <string> call-peer-name: "Неизвестный абонент";
+    in property <string> call-peer-initial: "?";
+    in property <bool> call-with-video: false;
+    in property <string> call-status: "";
+    in property <string> call-error: "";
+    in property <bool> call-has-remote-video: false;
+    in property <image> call-remote-video-frame;
+    in property <bool> call-has-local-video: false;
+    in property <image> call-local-video-frame;
+    in property <bool> call-speaker-on: false;
+    in property <bool> call-camera-off: false;
+    in property <bool> invite-failed: false;
+    in property <bool> invite-sync-failed: false;
+
+    in-out property <string> create-group-title: "";
+    in-out property <string> create-group-description: "";
+    in-out property <string> create-group-handle: "";
+    in-out property <bool> create-group-is-public: false;
+    in property <string> create-group-handle-feedback: "";
+    in property <bool> create-group-handle-feedback-error: false;
+    in property <bool> create-group-can-continue: false;
+    in property <bool> create-group-can-create: false;
+    in property <[GroupMemberRow]> create-group-contacts: [];
+    in property <[GroupMemberRow]> create-group-selected-contacts: [];
+    in property <bool> create-group-contacts-loading: false;
+    in property <string> create-group-contact-search: "";
+    in property <string> create-group-selected-members-note: "";
+    in property <[CreateSummaryRow]> create-group-summary-rows: [];
+    in property <string> create-group-expiry-summary: "";
+    in property <bool> create-group-busy: false;
+
+    in-out property <string> create-channel-title: "";
+    in-out property <string> create-channel-description: "";
+    in-out property <string> create-channel-handle: "";
+    in-out property <bool> create-channel-is-public: false;
+    in property <string> create-channel-handle-feedback: "";
+    in property <bool> create-channel-handle-feedback-error: false;
+    in property <bool> create-channel-can-continue: false;
+    in property <bool> create-channel-can-create: false;
+    in-out property <string> create-channel-discussion-kind: "none";
+    in-out property <string> create-channel-discussion-title: "";
+    in-out property <string> create-channel-discussion-handle: "";
+    in property <string> create-channel-discussion-handle-feedback: "";
+    in property <bool> create-channel-discussion-handle-feedback-error: false;
+    in property <bool> create-channel-discussion-ready: true;
+    in property <bool> create-channel-groups-loading: false;
+    in property <[ExistingGroupRow]> create-channel-existing-groups: [];
+    in-out property <string> create-channel-selected-group-id: "";
+    in property <string> create-channel-discussion-summary: "Нет";
+    in property <bool> create-channel-busy: false;
+
+    in property <string> conversation-settings-kind: "group";
+    in property <string> conversation-settings-title: "Настройки группы";
+    in property <string> conversation-settings-description: "";
+    in property <string> conversation-settings-handle: "";
+    in property <string> conversation-settings-error-text: "";
+    in property <string> conversation-settings-profile-error-text: "";
+    in property <string> conversation-settings-linked-group-id: "";
+    in property <bool> conversation-settings-linked-group-state-known: false;
+    in property <[ConversationMember]> conversation-settings-members: [];
+    in property <[ConversationMember]> conversation-settings-banned-members: [];
+    in property <[ConversationOption]> conversation-settings-available-members: [];
+    in property <[ConversationInvite]> conversation-settings-invites: [];
+    in property <[ConversationOption]> conversation-settings-linked-groups: [];
+    in property <[ConversationOption]> conversation-settings-available-bots: [];
+    in property <[ChannelAnalytic]> conversation-settings-analytics: [];
+    in property <bool> conversation-settings-loading: false;
+    in property <bool> conversation-settings-no-access: false;
+    in property <bool> conversation-settings-members-unavailable: false;
+    in property <bool> conversation-settings-can-edit-profile: false;
+    in property <bool> conversation-settings-can-manage-members: false;
+    in property <bool> conversation-settings-can-manage-roles: false;
+    in property <bool> conversation-settings-can-mute-members: false;
+    in property <bool> conversation-settings-can-change-tags: false;
+    in property <bool> conversation-settings-can-remove-members: false;
+    in property <bool> conversation-settings-can-ban-members: false;
+    in property <bool> conversation-settings-can-manage-invites: false;
+    in property <bool> conversation-settings-can-view-analytics: false;
+    in property <bool> conversation-settings-is-owner: false;
+    in property <bool> conversation-settings-is-public: false;
+    in property <bool> conversation-settings-public-state-known: false;
+    in property <bool> conversation-settings-has-photo: false;
+    in property <bool> conversation-settings-profile-save-enabled: true;
+    in property <image> conversation-settings-photo-image;
+    in property <bool> conversation-settings-busy: false;
+    in property <bool> conversation-settings-confirmation-visible: false;
+    in property <string> conversation-settings-confirmation-title: "";
+    in property <string> conversation-settings-confirmation-description: "";
+    in-out property <string> conversation-settings-title-draft: "";
+    in-out property <string> conversation-settings-description-draft: "";
+    in-out property <string> conversation-settings-handle-draft: "";
+    in-out property <string> conversation-settings-linked-group-draft: "";
+    in-out property <string> conversation-settings-selected-member-id: "";
+    in-out property <int> conversation-settings-selected-owner-index: -1;
+    in-out property <bool> conversation-settings-public-state-draft: false;
+
+    in property <string> settings-account-avatar-url: "";
+    in property <image> settings-account-avatar-image;
+    in property <bool> settings-account-has-avatar: false;
+    in-out property <string> settings-account-status-text: "";
+    in-out property <string> settings-account-status-emoji: "";
+    in property <int> settings-account-status-ttl-seconds: 3600;
+    in property <[SettingsProfileField]> settings-account-profile-fields: [];
+    in property <bool> settings-account-username-valid: true;
+    in property <string> settings-account-username-error: "";
+    in property <bool> settings-account-busy: false;
+
+    in property <bool> appearance-has-custom-colors: false;
+    in-out property <string> appearance-background-r: "26";
+    in-out property <string> appearance-background-g: "26";
+    in-out property <string> appearance-background-b: "58";
+    in-out property <string> appearance-button-r: "252";
+    in-out property <string> appearance-button-g: "144";
+    in-out property <string> appearance-button-b: "3";
+    in-out property <string> appearance-bubble-r: "36";
+    in-out property <string> appearance-bubble-g: "36";
+    in-out property <string> appearance-bubble-b: "77";
+    in-out property <string> appearance-text-r: "244";
+    in-out property <string> appearance-text-g: "244";
+    in-out property <string> appearance-text-b: "251";
+    in property <color> appearance-background-preview: Theme.background;
+    in property <color> appearance-button-preview: Theme.accent;
+    in property <color> appearance-bubble-preview: Theme.surface;
+    in property <color> appearance-text-preview: Theme.foreground;
+    in property <int> appearance-contrast-score: 218;
+    in property <bool> appearance-busy: false;
+
+    in property <string> privacy-dm-policy: "everyone";
+    in property <string> privacy-group-add-policy: "everyone";
+    in property <bool> privacy-invisible: false;
+    in property <bool> privacy-allow-nudges: true;
+    in property <bool> privacy-profile-hidden: false;
+    in property <bool> privacy-hidden-from-search: false;
+    in property <[SettingsContact]> privacy-contacts: [];
+    in property <[SettingsPrivacyException]> privacy-presence-exceptions: [];
+    in property <[SettingsPrivacyException]> privacy-profile-exceptions: [];
+    in property <[SettingsPrivacyException]> privacy-group-add-exceptions: [];
+    in property <[SettingsContact]> privacy-blocked-accounts: [];
+    in-out property <string> privacy-presence-contact-id: "";
+    in-out property <string> privacy-presence-kind: "always_visible";
+    in-out property <string> privacy-profile-contact-id: "";
+    in-out property <string> privacy-group-contact-id: "";
+    in-out property <string> privacy-block-contact-id: "";
+    in property <bool> privacy-busy: false;
+
+    in property <bool> security-totp-enabled: false;
+    in property <[SecuritySession]> security-sessions: [];
+    in property <[SecurityDevice]> security-devices: [];
+    in property <[SettingsOption]> security-history-source-options: [];
+    in property <string> security-history-source-device: "";
+    in property <string> security-history-progress: "";
+    in property <[SettingsOption]> security-history-conversation-options: [];
+    in property <string> security-history-conversation-id: "";
+    in property <string> security-history-page-result: "";
+    in property <bool> security-history-has-older-history: false;
+    in property <string> security-device-policy-hint: "";
+    in property <[SecurityEvent]> security-events: [];
+    in property <string> security-session-error: "";
+    in property <string> security-device-error: "";
+    in property <string> security-history-error: "";
+    in property <string> security-events-error: "";
+    in property <bool> security-busy: false;
+
+    in property <bool> twofactor-setup-enabled: false;
+    in property <bool> twofactor-setup-enrollment-started: false;
+    in property <bool> twofactor-setup-has-qr-image: false;
+    in property <image> twofactor-setup-qr-image;
+    in property <string> twofactor-setup-secret-base32: "";
+    in property <string> twofactor-setup-otpauth-uri: "";
+    in property <string> twofactor-setup-error-text: "";
+    in property <[string]> twofactor-setup-backup-codes: [];
+    in property <bool> twofactor-setup-show-backup-codes: false;
+    in property <bool> twofactor-setup-busy: false;
+    in-out property <string> twofactor-setup-verify-code: "";
+    in-out property <string> twofactor-setup-disable-password: "";
+    in-out property <string> twofactor-setup-disable-code: "";
+
+    in property <bool> notifications-sound-enabled: true;
+    in property <string> notifications-sound-value: "chime";
+    in property <[SettingsOption]> notifications-sound-options: [
+        { value: "chime", label: "Перезвон" },
+        { value: "ping", label: "Сигнал" },
+        { value: "pop", label: "Щелчок" },
+        { value: "none", label: "Без звука" },
+    ];
+    in property <string> notifications-os-permission: "prompt";
+    in property <string> notifications-push-status: "";
+    in property <bool> notifications-permission-request-supported: true;
+    in property <bool> notifications-busy: false;
+
+    in property <[SettingsAccount]> settings-accounts: [];
+    in property <string> settings-active-account-id: "";
+    in property <string> settings-busy-account-id: "";
+    in property <bool> settings-accounts-busy: false;
+    in property <string> settings-accounts-error-text: "";
+
+    in property <[SettingsBot]> settings-bots: [];
+    in property <bool> settings-bots-loading: false;
+    in property <bool> settings-bots-can-create: true;
+    in property <bool> settings-bots-busy: false;
+    in property <string> settings-bots-error-text: "";
+    in-out property <string> settings-bots-token-secret: "";
+
+    in property <string> about-app-version: "";
+    in property <string> about-repository-url: "https://github.com/SomSomovich/friendshubWEB";
+    in property <string> about-native-releases-url: "https://github.com/SomSomovich/friendshub-apps/releases";
+    in property <string> about-core-repository-url: "https://github.com/SomSomovich/friendshub-core";
+    in property <bool> about-updater-supported: false;
+    in property <bool> about-update-busy: false;
+    in property <string> about-update-status: "";
+    in property <bool> about-busy: false;
+
+    callback navigate-requested(string);
+    callback login-requested(string, string);
+    callback register-requested(string);
+    callback twofactor-submit-requested(string, bool);
+    callback ui-action(string, string, string, string, string);
+    callback dating-profile-save-requested(DatingProfileDraft);
+    callback dating-search-requested(DatingSearchFilters);
+    callback twofactor-copy-backup-codes-requested([string]);
+    callback create-group-requested(string, string, string, bool, [GroupMemberRow]);
+    callback create-channel-requested(string, string, string, bool, string, string, string, string);
+
+    if root.screen == "landing" : LandingScreen {
+        authenticated: root.authenticated;
+        login-requested => { root.navigate-requested("/login"); }
+        register-requested => { root.navigate-requested("/register"); }
+        open-app-requested => { root.navigate-requested("/app"); }
+        theme-toggle-requested => { root.ui-action("landing", "theme-toggle", "", "", ""); }
+        language-toggle-requested => { root.ui-action("landing", "language-toggle", "", "", ""); }
+        repository-requested => { root.ui-action("about", "open-url", root.about-repository-url, Platform.open-url(root.about-repository-url) ? "true" : "false", ""); }
+    }
+
+    if root.screen == "login" : LoginScreen {
+        fh-number <=> root.login-fh-number;
+        password <=> root.login-password;
+        error-text: root.login-error;
+        busy: root.login-busy;
+        login-requested(number, password) => { root.login-requested(number, password); }
+        register-requested => { root.navigate-requested("/register"); }
+        back-requested => { root.navigate-requested("/"); }
+    }
+
+    if root.screen == "register" : RegisterScreen {
+        password <=> root.register-password;
+        error-text: root.register-error;
+        busy: root.register-busy;
+        register-requested(password) => { root.register-requested(password); }
+        login-requested => { root.navigate-requested("/login"); }
+        back-requested => { root.navigate-requested("/"); }
+    }
+
+    if root.screen == "two_factor" : TwoFactorScreen {
+        code <=> root.twofactor-code;
+        backup-mode <=> root.twofactor-backup-mode;
+        device-setup: root.twofactor-device-setup;
+        error-text: root.twofactor-error;
+        busy: root.auth-busy;
+        submit-requested(code, backup-mode) => { root.twofactor-submit-requested(code, backup-mode); }
+        mode-changed(backup-mode) => { root.twofactor-backup-mode = backup-mode; }
+        code-changed(code) => { root.twofactor-code = code; }
+        cancel-requested => { root.navigate-requested("/login"); }
+    }
+
+    if root.screen == "connect" : ConnectScreen {
+        username: root.connect-username;
+        keys-state: root.connect-keys-state;
+        socket-state: root.connect-socket-state;
+        error-text: root.connect-error;
+        busy: root.connect-busy;
+        retry-requested => { root.ui-action("connect", "retry", "", "", ""); }
+        continue-offline-requested => { root.ui-action("connect", "continue-offline", "", "", ""); }
+    }
+
+    if root.screen == "invite" : InviteScreen {
+        invite-token: root.invite-token;
+        failed: root.invite-failed;
+        sync-failed: root.invite-sync-failed;
+        busy: root.connect-busy;
+        join-requested(token) => { root.ui-action("invite", "join", token, "", ""); }
+        retry-requested => { root.ui-action("invite", "retry", root.invite-token, "", ""); }
+        chats-requested => { root.navigate-requested("/app"); }
+    }
+
+    if root.screen == "not_found" && !root.authenticated : NotFoundScreen {
+        home-requested => { root.navigate-requested("/"); }
+    }
+
+    if root.authenticated && root.screen != "landing" && root.screen != "login" && root.screen != "register" && root.screen != "two_factor" && root.screen != "connect" && root.screen != "invite" : AppShell {
+        username: root.account-username;
+        fh-number: root.account-fh-number;
+        account-avatar: root.account-avatar;
+        account-avatar-label: root.account-avatar-label;
+        has-account-avatar: root.has-account-avatar;
+        filters: root.conversation-filters;
+        selected-filter: root.selected-filter;
+        folders: root.folders;
+        selected-folder: root.selected-folder;
+        conversations: root.conversations;
+        selected-conversation-id: root.selected-conversation-id;
+        search-query: root.conversation-search;
+        has-archived: root.has-archived;
+        loading-conversations: root.conversations-loading;
+        conversation-error: root.conversations-error;
+        empty-title: root.conversations-empty-title;
+        empty-description: root.conversations-empty-description;
+        light-mode: root.light-mode;
+        language: root.language;
+        show-content: root.screen != "chat_index";
+        offline: root.offline;
+
+        navigation-requested(path) => { root.navigate-requested(path); }
+        account-switch-requested => { root.ui-action("accounts", "open-switcher", "", "", ""); }
+        temporary-room-requested => { root.ui-action("conversations", "create-temporary", "", "", ""); }
+        profile-requested => { root.navigate-requested("/app/profile"); }
+        search-changed(query) => { root.ui-action("conversations", "search", query, "", ""); }
+        filter-changed(filter) => { root.ui-action("conversations", "filter", filter, "", ""); }
+        folder-create-requested => { root.ui-action("conversations", "folder-create", "", "", ""); }
+        folder-edit-requested(id) => { root.ui-action("conversations", "folder-edit", id, "", ""); }
+        conversation-selected(id) => { root.ui-action("conversations", "select", id, "", ""); }
+        conversation-profile-requested(id) => { root.ui-action("profile", "open-public", id, "", ""); }
+        conversation-context-action(id, action) => { root.ui-action("conversations", "context-action", id, action, ""); }
+        conversations-retry-requested => { root.ui-action("conversations", "reload", "", "", ""); }
+        theme-selected(light) => { root.ui-action("appearance", "set-theme", light ? "true" : "false", "", ""); }
+        language-selected(code) => { root.ui-action("appearance", "set-language", code, "", ""); }
+
+        if root.screen == "chat_index" : Rectangle {
+            background: Theme.background;
+            VerticalLayout {
+                alignment: center;
+                Text { text: "Выберите чат"; color: Theme.foreground; font-size: 14px; horizontal-alignment: center; }
+                Text { text: "История переписки будет показана здесь."; color: Theme.muted; font-size: 12px; horizontal-alignment: center; }
+            }
+        }
+
+        if root.screen == "chat" : ChatScreen {
+            title: root.conversation-title;
+            subtitle: root.conversation-subtitle;
+            conversation-kind: root.conversation-kind;
+            banner-text: root.chat-banner-text;
+            pinned-text: root.chat-pinned-text;
+            pin-counter: root.chat-pin-counter;
+            pin-count: root.chat-pin-count;
+            error-text: root.chat-error-text;
+            messages: root.messages;
+            polls: root.polls;
+            loading: root.chat-loading;
+            polls-loading: root.polls-loading;
+            polls-has-older: root.polls-has-older;
+            polls-loading-older: root.polls-loading-older;
+            polls-error-text: root.polls-error-text;
+            has-older: root.chat-has-older;
+            search-open: root.chat-search-open;
+            can-call: root.chat-can-call;
+            can-poll: root.chat-can-poll;
+            can-schedule: root.chat-can-schedule;
+            composer-enabled: root.chat-composer-enabled;
+            busy: root.chat-busy;
+            draft <=> root.chat-draft;
+            search-query <=> root.chat-search-query;
+            search-results: root.chat-search-results;
+            searching: root.chat-searching;
+            search-selected-index: root.chat-search-selected-index;
+            search-position: root.chat-search-position;
+            composer-error: root.chat-composer-error;
+            editing: root.chat-editing;
+            poll-create-open: root.chat-poll-create-open;
+            poll-create-busy: root.chat-poll-create-busy;
+            poll-create-can-create: root.chat-poll-create-can-create;
+            poll-create-is-quiz: root.chat-poll-create-is-quiz;
+            poll-create-allows-multiple: root.chat-poll-create-allows-multiple;
+            poll-create-allows-revoting: root.chat-poll-create-allows-revoting;
+            poll-create-allows-user-options: root.chat-poll-create-allows-user-options;
+            poll-create-closes-automatically: root.chat-poll-create-closes-automatically;
+            poll-create-can-add-option: root.chat-poll-create-can-add-option;
+            poll-create-duration-open: root.chat-poll-create-duration-open;
+            poll-create-duration-valid: root.chat-poll-create-duration-valid;
+            poll-create-duration-label: root.chat-poll-create-duration-label;
+            poll-create-title-count-label: root.chat-poll-create-title-count-label;
+            poll-create-description-count-label: root.chat-poll-create-description-count-label;
+            poll-create-error-text: root.chat-poll-create-error-text;
+            poll-create-options: root.chat-poll-create-options;
+            poll-create-title <=> root.chat-poll-create-title;
+            poll-create-description <=> root.chat-poll-create-description;
+            poll-create-duration-hours <=> root.chat-poll-create-duration-hours;
+            poll-create-duration-minutes <=> root.chat-poll-create-duration-minutes;
+            message-menu-open: root.chat-message-menu-open;
+            message-menu-index: root.chat-message-menu-index;
+            message-menu-items: root.chat-message-menu-items;
+            message-menu-reactions: root.chat-message-menu-reactions;
+            delete-confirm-open: root.chat-delete-confirm-open;
+            delete-confirm-busy: root.chat-delete-confirm-busy;
+            delete-confirm-title: root.chat-delete-confirm-title;
+            delete-confirm-hint: root.chat-delete-confirm-hint;
+            delete-confirm-cancel-label: root.chat-delete-confirm-cancel-label;
+            delete-confirm-delete-label: root.chat-delete-confirm-delete-label;
+            delete-confirm-busy-label: root.chat-delete-confirm-busy-label;
+            delete-confirm-error-text: root.chat-delete-confirm-error-text;
+            back-requested => { root.navigate-requested("/app"); }
+            profile-requested => { root.ui-action("profile", "open-conversation", root.selected-conversation-id, "", ""); }
+            search-toggled => { root.ui-action("chat", "search-toggle", "", "", ""); }
+            search-query-changed(value) => { root.ui-action("chat", "search", value, "", ""); }
+            search-previous-requested => { root.ui-action("chat", "search-previous", "", "", ""); }
+            search-next-requested => { root.ui-action("chat", "search-next", "", "", ""); }
+            search-result-selected(index) => { root.ui-action("chat", "search-result", "\{index}", "", ""); }
+            audio-call-requested => { root.ui-action("calls", "audio", root.selected-conversation-id, "", ""); }
+            video-call-requested => { root.ui-action("calls", "video", root.selected-conversation-id, "", ""); }
+            settings-requested => { root.navigate-requested(root.route + "/settings"); }
+            more-requested => { root.ui-action("chat", "more", "", "", ""); }
+            pin-open-requested => { root.ui-action("chat", "pins-open", "", "", ""); }
+            pin-previous-requested => { root.ui-action("chat", "pins-previous", "", "", ""); }
+            pin-next-requested => { root.ui-action("chat", "pins-next", "", "", ""); }
+            pin-remove-requested => { root.ui-action("chat", "pin-remove", "", "", ""); }
+            load-older-requested => { root.ui-action("chat", "load-older", "", "", ""); }
+            message-menu-requested(index) => { root.ui-action("chat", "message-menu", "\{index}", "", ""); }
+            message-menu-action-selected(action) => { root.ui-action("chat", "message-menu-action", "\{root.chat-message-menu-index}", action, ""); }
+            message-menu-reaction-selected(emoji) => { root.ui-action("chat", "message-menu-reaction", "\{root.chat-message-menu-index}", emoji, ""); }
+            message-menu-close-requested => { root.ui-action("chat", "message-menu-close", "", "", ""); }
+            delete-confirm-requested => { root.ui-action("chat", "delete-confirm", "", "", ""); }
+            delete-cancel-requested => { root.ui-action("chat", "delete-cancel", "", "", ""); }
+            attachment-open-requested(index, id) => { root.ui-action("attachments", "open-message", "\{index}", id, ""); }
+            reaction-requested(index, emoji) => { root.ui-action("chat", "reaction", "\{index}", emoji, ""); }
+            polls-retry-requested => { root.ui-action("polls", "retry", "", "", ""); }
+            polls-load-older-requested => { root.ui-action("polls", "load-older", "", "", ""); }
+            poll-option-selection-requested(poll, option) => { root.ui-action("polls", "select-option", poll, option, ""); }
+            poll-vote-requested(poll) => { root.ui-action("polls", "vote", poll, "", ""); }
+            poll-proposal-changed(poll, text) => { root.ui-action("polls", "proposal-changed", poll, text, ""); }
+            poll-propose-option-requested(poll, text) => { root.ui-action("polls", "add-option", poll, text, ""); }
+            poll-option-remove-requested(poll, option) => { root.ui-action("polls", "remove-option", poll, option, ""); }
+            poll-stop-requested(poll) => { root.ui-action("polls", "stop", poll, "", ""); }
+            poll-remove-requested(poll) => { root.ui-action("polls", "delete", poll, "", ""); }
+            draft-changed(value) => { root.ui-action("chat", "draft", value, "", ""); }
+            send-requested(text) => { root.ui-action("chat", "send", text, "", ""); }
+            attachment-requested(kind) => { root.ui-action("attachments", "choose", kind, "", ""); }
+            emoji-picker-requested => { root.ui-action("chat", "emoji-picker", "", "", ""); }
+            poll-requested => { root.ui-action("polls", "create-dialog", "", "", ""); }
+            poll-create-title-changed(value) => { root.ui-action("polls", "title-changed", value, "", ""); }
+            poll-create-description-changed(value) => { root.ui-action("polls", "description-changed", value, "", ""); }
+            poll-create-type-changed(value) => { root.ui-action("polls", "type-changed", value ? "true" : "false", "", ""); }
+            poll-create-multiple-changed(value) => { root.ui-action("polls", "multiple-changed", value ? "true" : "false", "", ""); }
+            poll-create-revoting-changed(value) => { root.ui-action("polls", "revoting-changed", value ? "true" : "false", "", ""); }
+            poll-create-user-options-changed(value) => { root.ui-action("polls", "user-options-changed", value ? "true" : "false", "", ""); }
+            poll-create-auto-close-changed(value) => { root.ui-action("polls", "auto-close-changed", value ? "true" : "false", "", ""); }
+            poll-create-duration-requested => { root.ui-action("polls", "duration-requested", "", "", ""); }
+            poll-create-duration-selected(hours, minutes) => { root.ui-action("polls", "duration-selected", hours, minutes, ""); }
+            poll-create-duration-cancelled => { root.ui-action("polls", "duration-cancelled", "", "", ""); }
+            poll-create-option-changed(index, value) => { root.ui-action("polls", "option-changed", "\{index}", value, ""); }
+            poll-create-option-correct-requested(index) => { root.ui-action("polls", "option-correct", "\{index}", "", ""); }
+            poll-create-option-remove-requested(index) => { root.ui-action("polls", "option-remove", "\{index}", "", ""); }
+            poll-create-option-add-requested => { root.ui-action("polls", "option-add", "", "", ""); }
+            poll-create-requested => { root.ui-action("polls", "create", "", "", ""); }
+            poll-create-close-requested => { root.ui-action("polls", "close", "", "", ""); }
+            schedule-requested(text) => { root.ui-action("chat", "schedule", text, "", ""); }
+            voice-record-requested => { root.ui-action("attachments", "voice-record", "", "", ""); }
+            video-note-requested => { root.ui-action("attachments", "video-note", "", "", ""); }
+            cancel-edit-requested => { root.ui-action("chat", "cancel-edit", "", "", ""); }
+        }
+
+        if root.screen == "channel" : ChannelScreen {
+            title: root.conversation-title;
+            posts: root.channel-posts;
+            pinned-posts: root.pinned-channel-posts;
+            polls: root.polls;
+            reaction-options: root.channel-reaction-options;
+            polls-loading: root.polls-loading;
+            polls-has-older: root.polls-has-older;
+            polls-loading-older: root.polls-loading-older;
+            polls-error-text: root.polls-error-text;
+            loading: root.channel-loading;
+            has-older: root.channel-has-older;
+            can-publish: root.channel-can-publish;
+            busy: root.channel-busy;
+            error-text: root.channel-error-text;
+            draft <=> root.channel-draft;
+            editing: root.channel-editing;
+            open-post-menu-index <=> root.channel-open-post-menu-index;
+            back-requested => { root.navigate-requested("/app"); }
+            profile-requested => { root.ui-action("profile", "open-conversation", root.selected-conversation-id, "", ""); }
+            settings-requested => { root.navigate-requested(root.route + "/settings"); }
+            refresh-requested => { root.ui-action("channel", "refresh", "", "", ""); }
+            load-older-requested => { root.ui-action("channel", "load-older", "", "", ""); }
+            post-open-requested(index) => { root.ui-action("channel", "post-open", "\{index}", "", ""); }
+            post-edit-requested(index) => { root.ui-action("channel", "post-edit", "\{index}", "", ""); }
+            post-delete-requested(index) => { root.ui-action("channel", "post-delete", "\{index}", "", ""); }
+            post-pin-requested(index) => { root.ui-action("channel", "post-pin", "\{index}", "", ""); }
+            post-reaction-requested(index, emoji) => { root.ui-action("channel", "post-reaction", "\{index}", emoji, ""); }
+            post-discussion-requested(index) => { root.ui-action("channel", "post-discussion", "\{index}", "", ""); }
+            post-attachment-requested(index, id) => { root.ui-action("attachments", "open-post", "\{index}", id, ""); }
+            polls-retry-requested => { root.ui-action("polls", "retry", "", "", ""); }
+            polls-load-older-requested => { root.ui-action("polls", "load-older", "", "", ""); }
+            poll-option-selection-requested(poll, option) => { root.ui-action("polls", "select-option", poll, option, ""); }
+            poll-vote-requested(poll) => { root.ui-action("polls", "vote", poll, "", ""); }
+            poll-proposal-changed(poll, text) => { root.ui-action("polls", "proposal-changed", poll, text, ""); }
+            poll-propose-option-requested(poll, text) => { root.ui-action("polls", "add-option", poll, text, ""); }
+            poll-option-remove-requested(poll, option) => { root.ui-action("polls", "remove-option", poll, option, ""); }
+            poll-stop-requested(poll) => { root.ui-action("polls", "stop", poll, "", ""); }
+            poll-remove-requested(poll) => { root.ui-action("polls", "delete", poll, "", ""); }
+            draft-changed(value) => { root.ui-action("channel", "draft", value, "", ""); }
+            publish-requested(text) => { root.ui-action("channel", "publish", text, "", ""); }
+            attachment-requested(kind) => { root.ui-action("attachments", "choose", kind, "", ""); }
+            poll-requested => { root.ui-action("polls", "create-dialog", "", "", ""); }
+            voice-record-requested => { root.ui-action("attachments", "voice-record", "", "", ""); }
+            video-note-requested => { root.ui-action("attachments", "video-note", "", "", ""); }
+            cancel-edit-requested => { root.ui-action("channel", "cancel-edit", "", "", ""); }
+        }
+
+        if root.screen == "conversation_settings" : ConversationSettingsScreen {
+            kind: root.conversation-settings-kind;
+            title: root.conversation-settings-title;
+            conversation-title: root.conversation-title;
+            description: root.conversation-settings-description;
+            handle: root.conversation-settings-handle;
+            error-text: root.conversation-settings-error-text;
+            profile-error-text: root.conversation-settings-profile-error-text;
+            linked-group-id: root.conversation-settings-linked-group-id;
+            linked-group-state-known: root.conversation-settings-linked-group-state-known;
+            members: root.conversation-settings-members;
+            banned-members: root.conversation-settings-banned-members;
+            available-members: root.conversation-settings-available-members;
+            invites: root.conversation-settings-invites;
+            linked-groups: root.conversation-settings-linked-groups;
+            available-bots: root.conversation-settings-available-bots;
+            analytics: root.conversation-settings-analytics;
+            loading: root.conversation-settings-loading;
+            no-access: root.conversation-settings-no-access;
+            members-unavailable: root.conversation-settings-members-unavailable;
+            can-edit-profile: root.conversation-settings-can-edit-profile;
+            can-manage-members: root.conversation-settings-can-manage-members;
+            can-manage-roles: root.conversation-settings-can-manage-roles;
+            can-mute-members: root.conversation-settings-can-mute-members;
+            can-change-tags: root.conversation-settings-can-change-tags;
+            can-remove-members: root.conversation-settings-can-remove-members;
+            can-ban-members: root.conversation-settings-can-ban-members;
+            can-manage-invites: root.conversation-settings-can-manage-invites;
+            can-view-analytics: root.conversation-settings-can-view-analytics;
+            is-owner: root.conversation-settings-is-owner;
+            is-public: root.conversation-settings-is-public;
+            public-state-known: root.conversation-settings-public-state-known;
+            has-photo: root.conversation-settings-has-photo;
+            profile-save-enabled: root.conversation-settings-profile-save-enabled;
+            photo-image: root.conversation-settings-photo-image;
+            busy: root.conversation-settings-busy;
+            confirmation-visible: root.conversation-settings-confirmation-visible;
+            confirmation-title: root.conversation-settings-confirmation-title;
+            confirmation-description: root.conversation-settings-confirmation-description;
+            title-draft <=> root.conversation-settings-title-draft;
+            description-draft <=> root.conversation-settings-description-draft;
+            handle-draft <=> root.conversation-settings-handle-draft;
+            linked-group-draft <=> root.conversation-settings-linked-group-draft;
+            selected-member-id <=> root.conversation-settings-selected-member-id;
+            selected-owner-index <=> root.conversation-settings-selected-owner-index;
+            public-state-draft <=> root.conversation-settings-public-state-draft;
+            back-requested => { root.navigate-requested("/app"); }
+            retry-requested => { root.ui-action("conversation-settings", "retry", "", "", ""); }
+            metadata-save-requested(title, description, is-public) => { root.ui-action("conversation-settings", "save-metadata", title, description, is-public ? "true" : "false"); }
+            photo-change-requested => { root.ui-action("conversation-settings", "photo-change", "", "", ""); }
+            photo-remove-requested => { root.ui-action("conversation-settings", "photo-remove", "", "", ""); }
+            handle-save-requested(handle) => { root.ui-action("conversation-settings", "save-handle", handle, "", ""); }
+            public-state-changed(value) => { root.ui-action("conversation-settings", "set-public", value ? "true" : "false", "", ""); }
+            linked-group-save-requested(id) => { root.ui-action("conversation-settings", "link-group", id, "", ""); }
+            member-add-requested(id) => { root.ui-action("conversation-settings", "add-member", id, "", ""); }
+            member-action-requested(index, action) => { root.ui-action("conversation-settings", "member-action", "\{index}", action, ""); }
+            banned-member-action-requested(index, action) => { root.ui-action("conversation-settings", "banned-member-action", "\{index}", action, ""); }
+            invite-create-requested(kind) => { root.ui-action("invites", "create", kind, "", ""); }
+            invite-copy-requested(index) => { root.ui-action("invites", "copy", "\{index}", "", ""); }
+            invite-revoke-requested(index) => { root.ui-action("invites", "revoke", "\{index}", "", ""); }
+            channel-bot-add-requested(id) => { root.ui-action("bots", "add-to-channel", id, "", ""); }
+            analytics-refresh-requested => { root.ui-action("conversation-settings", "analytics-refresh", "", "", ""); }
+            owner-transfer-requested(index) => { root.ui-action("conversation-settings", "owner-transfer", "\{index}", "", ""); }
+            conversation-delete-requested => { root.ui-action("conversation-settings", "delete", "", "", ""); }
+            confirmation-accepted => { root.ui-action("conversation-settings", "confirm", "", "", ""); }
+            confirmation-cancelled => { root.ui-action("conversation-settings", "cancel-confirmation", "", "", ""); }
+        }
+
+        if root.screen == "bot" : BotChatScreen {
+            handle: root.conversation-title;
+            error-text: root.bot-error-text;
+            messages: root.bot-messages;
+            loading: root.bot-loading;
+            loading-older: root.bot-loading-older;
+            has-older: root.bot-has-older;
+            busy: root.bot-busy;
+            draft <=> root.bot-draft;
+            back-requested => { root.navigate-requested("/app"); }
+            retry-requested => { root.ui-action("bots", "refresh", "", "", ""); }
+            load-older-requested => { root.ui-action("bots", "load-older", "", "", ""); }
+            draft-changed(value) => { root.ui-action("bots", "draft", value, "", ""); }
+            send-requested(text) => { root.ui-action("bots", "send", text, "", ""); }
+        }
+
+        if root.screen == "discover" : DiscoverScreen {
+            channel-mode: root.discover-channel-mode;
+            handle-query <=> root.discover-query;
+            entries: root.discover-entries;
+            busy: root.discover-busy;
+            loading: root.discover-loading;
+            has-error: root.discover-has-error;
+            error-text: root.discover-error-text;
+            lookup-mode: root.discover-lookup-mode;
+            back-requested => { root.navigate-requested("/app"); }
+            channel-mode-changed(value) => { root.ui-action("discover", "channel-mode", value ? "true" : "false", "", ""); }
+            lookup-requested(handle) => { root.ui-action("discover", "lookup", handle, "", ""); }
+            show-catalog-requested => { root.ui-action("discover", "catalog", "", "", ""); }
+            open-requested(id) => { root.ui-action("discover", "open", id, "", ""); }
+        }
+
+        if root.screen == "dating" : DatingScreen {
+            has-profile: root.dating-has-profile;
+            busy: root.dating-busy;
+            loading: root.dating-loading;
+            profile-loading: root.dating-profile-loading;
+            profile-error: root.dating-profile-error;
+            profile-error-text: root.dating-profile-error-text;
+            profile-not-found: root.dating-profile-not-found;
+            profile-age-label: root.dating-profile-age-label;
+            validation-error: root.dating-validation-error;
+            search-error: root.dating-search-error;
+            editing: root.dating-editing;
+            profile-draft <=> root.dating-profile-draft;
+            filters <=> root.dating-filters;
+            results: root.dating-results;
+            search-started: root.dating-search-started;
+            has-more: root.dating-has-more;
+            details-open: root.dating-details-open;
+            details-loading: root.dating-details-loading;
+            details: root.dating-details;
+            details-fh-number: root.dating-details-fh-number;
+            details-error: root.dating-details-error;
+            back-requested => { root.navigate-requested("/app"); }
+            profile-save-requested(value) => { root.dating-profile-save-requested(value); }
+            profile-retry-requested => { root.ui-action("dating", "profile-retry", "", "", ""); }
+            edit-requested => { root.ui-action("dating", "edit-profile", "", "", ""); }
+            cancel-edit-requested => { root.ui-action("dating", "cancel-edit", "", "", ""); }
+            profile-listed-changed(value) => { root.ui-action("dating", "profile-listed", value ? "true" : "false", "", ""); }
+            profile-gender-selected(value) => { root.ui-action("dating", "profile-gender", value, "", ""); }
+            profile-looking-for-selected(value) => { root.ui-action("dating", "profile-looking-for", value, "", ""); }
+            filter-gender-selected(value) => { root.ui-action("dating", "filter-gender", value, "", ""); }
+            filter-looking-for-selected(value) => { root.ui-action("dating", "filter-looking-for", value, "", ""); }
+            search-requested(value) => { root.dating-search-requested(value); }
+            clear-filters-requested => { root.ui-action("dating", "clear-filters", "", "", ""); }
+            load-more-requested => { root.ui-action("dating", "load-more", "", "", ""); }
+            open-details-requested(id) => { root.ui-action("dating", "open-details", id, "", ""); }
+            details-retry-requested => { root.ui-action("dating", "details-retry", "", "", ""); }
+            close-details-requested => { root.ui-action("dating", "close-details", "", "", ""); }
+        }
+
+        if root.screen == "profile" : ProfileScreen {
+            username: root.account-username;
+            fh-number: root.account-fh-number;
+            status-text: root.profile-status-text;
+            status-emoji: root.profile-status-emoji;
+            has-avatar: root.profile-has-avatar;
+            avatar-image: root.profile-avatar-image;
+            avatar-initials: root.profile-avatar-initials;
+            fields: root.profile-fields;
+            back-requested => { root.navigate-requested("/app"); }
+            edit-requested => { root.navigate-requested("/app/settings/account"); }
+            share-requested(value) => { root.ui-action("profile", "share", value, "", ""); }
+            avatar-open-requested => { root.ui-action("profile", "avatar-open", "", "", ""); }
+        }
+
+        if root.screen == "user_profile" : UserProfileModal {
+            open: root.user-profile-open;
+            loading: root.user-profile-loading;
+            unavailable: root.user-profile-unavailable;
+            busy: root.user-profile-busy;
+            error-text: root.user-profile-error-text;
+            username: root.user-profile-username;
+            alias: root.user-profile-alias;
+            fh-number: root.user-profile-fh-number;
+            status-text: root.user-profile-status-text;
+            status-emoji: root.user-profile-status-emoji;
+            is-contact: root.user-profile-is-contact;
+            is-blocked: root.user-profile-is-blocked;
+            has-avatar: root.user-profile-has-avatar;
+            avatar-image: root.user-profile-avatar-image;
+            avatar-initials: root.user-profile-avatar-initials;
+            fields: root.user-profile-fields;
+            alias-editor-open: root.user-profile-alias-editor-open;
+            alias-draft <=> root.user-profile-alias-draft;
+            close-requested => { root.ui-action("profile", "close-modal", "", "", ""); }
+            avatar-open-requested => { root.ui-action("profile", "avatar-open", "", "", ""); }
+            write-requested => { root.ui-action("profile", "message", "", "", ""); }
+            call-requested(video) => { root.ui-action("calls", "profile-call", video ? "true" : "false", "", ""); }
+            contact-toggle-requested => { root.ui-action("profile", "contact-toggle", "", "", ""); }
+            block-toggle-requested => { root.ui-action("profile", "block-toggle", "", "", ""); }
+            alias-editor-requested => { root.ui-action("profile", "alias-editor", "", "", ""); }
+            alias-save-requested(value) => { root.ui-action("profile", "alias-save", value, "", ""); }
+            alias-cancel-requested => { root.ui-action("profile", "alias-cancel", "", "", ""); }
+        }
+
+        if root.screen == "calls" : CallHistoryScreen {
+            calls: root.calls;
+            loading: root.calls-loading;
+            error-text: root.calls-error-text;
+            busy: root.calls-busy;
+            has-calls: root.calls-has-calls;
+            confirmation-open <=> root.calls-confirmation-open;
+            confirm-clear-all <=> root.calls-confirm-clear-all;
+            confirm-call-id <=> root.calls-confirm-call-id;
+            back-requested => { root.navigate-requested("/app"); }
+            refresh-requested => { root.ui-action("calls", "refresh", "", "", ""); }
+            clear-history-requested => { root.ui-action("calls", "clear-history", "", "", ""); }
+            profile-requested(id) => { root.ui-action("profile", "open-public", id, "", ""); }
+            audio-call-requested(id) => { root.ui-action("calls", "audio", id, "", ""); }
+            delete-call-requested(id) => { root.ui-action("calls", "delete-history-item", id, "", ""); }
+            retry-requested => { root.ui-action("calls", "retry", "", "", ""); }
+        }
+
+        if root.screen == "create_group" : create-group-view := CreateGroupScreen {
+            group-title <=> root.create-group-title;
+            description <=> root.create-group-description;
+            handle <=> root.create-group-handle;
+            is-public <=> root.create-group-is-public;
+            handle-feedback: root.create-group-handle-feedback;
+            handle-feedback-error: root.create-group-handle-feedback-error;
+            can-continue: root.create-group-can-continue;
+            can-create: root.create-group-can-create;
+            contacts: root.create-group-contacts;
+            selected-contacts: root.create-group-selected-contacts;
+            contacts-loading: root.create-group-contacts-loading;
+            contact-search: root.create-group-contact-search;
+            selected-members-note: root.create-group-selected-members-note;
+            summary-rows: root.create-group-summary-rows;
+            expiry-summary: root.create-group-expiry-summary;
+            busy: root.create-group-busy;
+            create-requested => { root.create-group-requested(create-group-view.group-title, create-group-view.description, create-group-view.handle, create-group-view.is-public, create-group-view.selected-contacts); }
+            contact-search-changed(value) => { root.ui-action("create-group", "contact-search", value, "", ""); }
+            member-toggle-requested(id) => { root.ui-action("create-group", "member-toggle", id, "", ""); }
+            back-requested => { root.navigate-requested("/app"); }
+            cancel-requested => { root.navigate-requested("/app"); }
+        }
+
+        if root.screen == "create_channel" : create-channel-view := CreateChannelScreen {
+            channel-title <=> root.create-channel-title;
+            description <=> root.create-channel-description;
+            handle <=> root.create-channel-handle;
+            is-public <=> root.create-channel-is-public;
+            handle-feedback: root.create-channel-handle-feedback;
+            handle-feedback-error: root.create-channel-handle-feedback-error;
+            can-continue: root.create-channel-can-continue;
+            can-create: root.create-channel-can-create;
+            discussion-kind <=> root.create-channel-discussion-kind;
+            discussion-title <=> root.create-channel-discussion-title;
+            discussion-handle <=> root.create-channel-discussion-handle;
+            discussion-handle-feedback: root.create-channel-discussion-handle-feedback;
+            discussion-handle-feedback-error: root.create-channel-discussion-handle-feedback-error;
+            discussion-ready: root.create-channel-discussion-ready;
+            groups-loading: root.create-channel-groups-loading;
+            existing-groups: root.create-channel-existing-groups;
+            selected-group-id <=> root.create-channel-selected-group-id;
+            discussion-summary: root.create-channel-discussion-summary;
+            busy: root.create-channel-busy;
+            create-requested => { root.create-channel-requested(create-channel-view.channel-title, create-channel-view.description, create-channel-view.handle, create-channel-view.is-public, create-channel-view.discussion-kind, create-channel-view.discussion-title, create-channel-view.discussion-handle, create-channel-view.selected-group-id); }
+            discussion-kind-changed(value) => { root.ui-action("create-channel", "discussion-kind", value, "", ""); }
+            existing-group-selected(id) => { root.ui-action("create-channel", "select-group", id, "", ""); }
+            back-requested => { root.navigate-requested("/app"); }
+            cancel-requested => { root.navigate-requested("/app"); }
+        }
+
+        if root.screen == "settings_index" : SettingsIndexScreen {
+            back-requested => { root.navigate-requested("/app"); }
+            open-section(section) => { root.navigate-requested("/app/settings/" + section); }
+        }
+        if root.screen == "settings_account" : AccountSettingsScreen {
+            username <=> root.account-username;
+            fh-number: root.account-fh-number;
+            avatar-url: root.settings-account-avatar-url;
+            avatar-image: root.settings-account-avatar-image;
+            has-avatar: root.settings-account-has-avatar;
+            status-text <=> root.settings-account-status-text;
+            status-emoji <=> root.settings-account-status-emoji;
+            status-ttl-seconds: root.settings-account-status-ttl-seconds;
+            profile-fields: root.settings-account-profile-fields;
+            username-valid: root.settings-account-username-valid;
+            username-error: root.settings-account-username-error;
+            busy: root.settings-account-busy;
+            back-requested => { root.navigate-requested("/app/settings"); }
+            choose-avatar-requested => { root.ui-action("account-settings", "choose-avatar", "", "", ""); }
+            remove-avatar-requested => { root.ui-action("account-settings", "remove-avatar", "", "", ""); }
+            copy-fh-number-requested(value) => { root.ui-action("account-settings", "copy-fh-number", value, "", ""); }
+            save-username-requested(value) => { root.ui-action("account-settings", "save-username", value, "", ""); }
+            save-status-requested(text, emoji, ttl) => { root.ui-action("account-settings", "save-status", text, emoji, "\{ttl}"); }
+            clear-status-requested => { root.ui-action("account-settings", "clear-status", "", "", ""); }
+            status-duration-requested => { root.ui-action("account-settings", "status-duration", "", "", ""); }
+            profile-field-label-edited(index, value) => { root.ui-action("account-settings", "field-label", "\{index}", value, ""); }
+            profile-field-value-edited(index, value) => { root.ui-action("account-settings", "field-value", "\{index}", value, ""); }
+            add-profile-field-requested => { root.ui-action("account-settings", "field-add", "", "", ""); }
+            remove-profile-field-requested(index) => { root.ui-action("account-settings", "field-remove", "\{index}", "", ""); }
+            save-profile-fields-requested => { root.ui-action("account-settings", "save-profile-fields", "", "", ""); }
+        }
+        if root.screen == "settings_appearance" : AppearanceSettingsScreen {
+            theme-value: root.light-mode ? "light" : "dark";
+            language-value: root.language;
+            has-custom-colors: root.appearance-has-custom-colors;
+            background-r <=> root.appearance-background-r;
+            background-g <=> root.appearance-background-g;
+            background-b <=> root.appearance-background-b;
+            button-r <=> root.appearance-button-r;
+            button-g <=> root.appearance-button-g;
+            button-b <=> root.appearance-button-b;
+            bubble-r <=> root.appearance-bubble-r;
+            bubble-g <=> root.appearance-bubble-g;
+            bubble-b <=> root.appearance-bubble-b;
+            text-r <=> root.appearance-text-r;
+            text-g <=> root.appearance-text-g;
+            text-b <=> root.appearance-text-b;
+            background-preview: root.appearance-background-preview;
+            button-preview: root.appearance-button-preview;
+            bubble-preview: root.appearance-bubble-preview;
+            text-preview: root.appearance-text-preview;
+            contrast-score: root.appearance-contrast-score;
+            busy: root.appearance-busy;
+            back-requested => { root.navigate-requested("/app/settings"); }
+            theme-changed(value) => { root.ui-action("appearance", "set-theme", value, "", ""); }
+            language-changed(value) => { root.ui-action("appearance", "set-language", value, "", ""); }
+            rgb-channel-edited(channel, value) => { root.ui-action("appearance", "edit-color", channel, value, ""); }
+            choose-color-requested(channel) => { root.ui-action("appearance", "choose-color", channel, "", ""); }
+            apply-colors-requested => { root.ui-action("appearance", "apply-colors", "", "", ""); }
+            reset-colors-requested => { root.ui-action("appearance", "reset-colors", "", "", ""); }
+        }
+        if root.screen == "settings_privacy" : PrivacySettingsScreen {
+            dm-policy: root.privacy-dm-policy;
+            group-add-policy: root.privacy-group-add-policy;
+            invisible: root.privacy-invisible;
+            allow-nudges: root.privacy-allow-nudges;
+            profile-hidden: root.privacy-profile-hidden;
+            hidden-from-search: root.privacy-hidden-from-search;
+            contacts: root.privacy-contacts;
+            presence-exceptions: root.privacy-presence-exceptions;
+            profile-exceptions: root.privacy-profile-exceptions;
+            group-add-exceptions: root.privacy-group-add-exceptions;
+            blocked-accounts: root.privacy-blocked-accounts;
+            presence-contact-id <=> root.privacy-presence-contact-id;
+            presence-kind <=> root.privacy-presence-kind;
+            profile-contact-id <=> root.privacy-profile-contact-id;
+            group-contact-id <=> root.privacy-group-contact-id;
+            block-contact-id <=> root.privacy-block-contact-id;
+            busy: root.privacy-busy;
+            back-requested => { root.navigate-requested("/app/settings"); }
+            dm-policy-changed(value) => { root.ui-action("privacy", "dm-policy", value, "", ""); }
+            group-add-policy-changed(value) => { root.ui-action("privacy", "group-add-policy", value, "", ""); }
+            invisible-changed(value) => { root.ui-action("privacy", "invisible", value ? "true" : "false", "", ""); }
+            nudges-changed(value) => { root.ui-action("privacy", "allow-nudges", value ? "true" : "false", "", ""); }
+            profile-hidden-changed(value) => { root.ui-action("privacy", "profile-hidden", value ? "true" : "false", "", ""); }
+            hidden-from-search-changed(value) => { root.ui-action("privacy", "hidden-from-search", value ? "true" : "false", "", ""); }
+            presence-exception-added(kind, id) => { root.ui-action("privacy", "presence-exception-add", kind, id, ""); }
+            presence-exception-removed(kind, id) => { root.ui-action("privacy", "presence-exception-remove", kind, id, ""); }
+            profile-exception-added(id) => { root.ui-action("privacy", "profile-exception-add", id, "", ""); }
+            profile-exception-removed(id) => { root.ui-action("privacy", "profile-exception-remove", id, "", ""); }
+            group-add-exception-added(id) => { root.ui-action("privacy", "group-add-exception-add", id, "", ""); }
+            group-add-exception-removed(id) => { root.ui-action("privacy", "group-add-exception-remove", id, "", ""); }
+            account-blocked(id) => { root.ui-action("privacy", "block-contact", id, "", ""); }
+            account-unblocked(id) => { root.ui-action("privacy", "unblock-contact", id, "", ""); }
+        }
+        if root.screen == "settings_security" : SecuritySettingsScreen {
+            totp-enabled: root.security-totp-enabled;
+            sessions: root.security-sessions;
+            devices: root.security-devices;
+            history-source-options: root.security-history-source-options;
+            history-source-device: root.security-history-source-device;
+            history-progress: root.security-history-progress;
+            history-conversation-options: root.security-history-conversation-options;
+            history-conversation-id: root.security-history-conversation-id;
+            history-page-result: root.security-history-page-result;
+            has-older-history: root.security-history-has-older-history;
+            device-policy-hint: root.security-device-policy-hint;
+            events: root.security-events;
+            session-error: root.security-session-error;
+            device-error: root.security-device-error;
+            history-error: root.security-history-error;
+            events-error: root.security-events-error;
+            busy: root.security-busy;
+            back-requested => { root.navigate-requested("/app/settings"); }
+            open-two-factor-requested => { root.navigate-requested("/app/settings/security/2fa"); }
+            revoke-session-requested(id) => { root.ui-action("security", "revoke-session", id, "", ""); }
+            revoke-all-sessions-requested => { root.ui-action("security", "revoke-all-sessions", "", "", ""); }
+            revoke-device-requested(id) => { root.ui-action("security", "revoke-device", id, "", ""); }
+            request-history-sync-requested(id) => { root.ui-action("security", "history-sync", id, "", ""); }
+            load-device-history-requested(id, older) => { root.ui-action("security", "load-history", id, older ? "true" : "false", ""); }
+            refresh-sessions-requested => { root.ui-action("security", "refresh-sessions", "", "", ""); }
+            refresh-devices-requested => { root.ui-action("security", "refresh-devices", "", "", ""); }
+            refresh-events-requested => { root.ui-action("security", "refresh-events", "", "", ""); }
+            select-history-source(id) => { root.ui-action("security", "select-history-source", id, "", ""); }
+            select-history-conversation(id) => { root.ui-action("security", "select-history-conversation", id, "", ""); }
+        }
+        if root.screen == "settings_twofactor" : TwoFactorSetupScreen {
+            enabled: root.twofactor-setup-enabled;
+            enrollment-started: root.twofactor-setup-enrollment-started;
+            has-qr-image: root.twofactor-setup-has-qr-image;
+            qr-image: root.twofactor-setup-qr-image;
+            secret-base32: root.twofactor-setup-secret-base32;
+            otpauth-uri: root.twofactor-setup-otpauth-uri;
+            error-text: root.twofactor-setup-error-text;
+            backup-codes: root.twofactor-setup-backup-codes;
+            show-backup-codes: root.twofactor-setup-show-backup-codes;
+            busy: root.twofactor-setup-busy;
+            verify-code <=> root.twofactor-setup-verify-code;
+            disable-password <=> root.twofactor-setup-disable-password;
+            disable-code <=> root.twofactor-setup-disable-code;
+            back-requested => { root.navigate-requested("/app/settings/security"); }
+            start-enrollment-requested => { root.ui-action("twofactor-setup", "start", "", "", ""); }
+            copy-otpauth-uri-requested(uri) => { root.ui-action("twofactor-setup", "copy-uri", uri, "", ""); }
+            verify-enrollment-requested(code) => { root.ui-action("twofactor-setup", "verify", code, "", ""); }
+            copy-backup-codes-requested(codes) => { root.twofactor-copy-backup-codes-requested(codes); }
+            dismiss-backup-codes-requested => { root.ui-action("twofactor-setup", "dismiss-codes", "", "", ""); }
+            disable-requested(password, code) => { root.ui-action("twofactor-setup", "disable", password, code, ""); }
+        }
+        if root.screen == "settings_notifications" : NotificationsSettingsScreen {
+            sound-enabled: root.notifications-sound-enabled;
+            sound-value: root.notifications-sound-value;
+            sound-options: root.notifications-sound-options;
+            os-permission: root.notifications-os-permission;
+            push-status: root.notifications-push-status;
+            permission-request-supported: root.notifications-permission-request-supported;
+            busy: root.notifications-busy;
+            back-requested => { root.navigate-requested("/app/settings"); }
+            sound-enabled-changed(value) => { root.ui-action("notifications", "sound-enabled", value ? "true" : "false", "", ""); }
+            sound-changed(value) => { root.ui-action("notifications", "sound", value, "", ""); }
+            preview-sound-requested(value) => { root.ui-action("notifications", "preview-sound", value, "", ""); }
+            request-system-notification-permission => { root.ui-action("notifications", "request-permission", "", "", ""); }
+            open-system-notification-settings => { root.ui-action("notifications", "open-system-settings", "", "", ""); }
+        }
+        if root.screen == "settings_accounts" : AccountsSettingsScreen {
+            accounts: root.settings-accounts;
+            active-account-id: root.settings-active-account-id;
+            busy-account-id: root.settings-busy-account-id;
+            busy: root.settings-accounts-busy;
+            error-text: root.settings-accounts-error-text;
+            back-requested => { root.navigate-requested("/app/settings"); }
+            switch-account-requested(id) => { root.ui-action("accounts", "switch", id, "", ""); }
+            add-account-requested => { root.navigate-requested("/login?add=1"); }
+            remove-account-requested(id) => { root.ui-action("accounts", "remove", id, "", ""); }
+            retry-requested => { root.ui-action("accounts", "retry", "", "", ""); }
+        }
+        if root.screen == "settings_bots" : BotsSettingsScreen {
+            bots: root.settings-bots;
+            loading: root.settings-bots-loading;
+            can-create: root.settings-bots-can-create;
+            busy: root.settings-bots-busy;
+            error-text: root.settings-bots-error-text;
+            token-secret <=> root.settings-bots-token-secret;
+            back-requested => { root.navigate-requested("/app/settings"); }
+            create-bot-requested => { root.ui-action("bots", "create", "", "", ""); }
+            set-bot-handle-requested(id, handle) => { root.ui-action("bots", "set-handle", id, handle, ""); }
+            rotate-bot-token-requested(id) => { root.ui-action("bots", "rotate-token", id, "", ""); }
+            delete-bot-requested(id) => { root.ui-action("bots", "delete", id, "", ""); }
+            copy-token-requested(token) => { root.ui-action("bots", "copy-token", token, "", ""); }
+            close-token-requested => { root.ui-action("bots", "dismiss-token", "", "", ""); }
+            retry-requested => { root.ui-action("bots", "retry", "", "", ""); }
+        }
+        if root.screen == "settings_about" : AboutSettingsScreen {
+            app-version: root.about-app-version;
+            repository-url: root.about-repository-url;
+            native-releases-url: root.about-native-releases-url;
+            core-repository-url: root.about-core-repository-url;
+            updater-supported: root.about-updater-supported;
+            update-busy: root.about-update-busy;
+            update-status: root.about-update-status;
+            busy: root.about-busy;
+            back-requested => { root.navigate-requested("/app/settings"); }
+            open-url-requested(url) => {
+                if url == root.about-repository-url || url == root.about-native-releases-url || url == root.about-core-repository-url {
+                    root.ui-action("about", "open-url", url, Platform.open-url(url) ? "true" : "false", "");
+                } else {
+                    root.ui-action("about", "open-url", url, "false", "");
+                }
+            }
+            copy-text-requested(text) => { root.ui-action("about", "copy-text", text, "", ""); }
+            check-updates-requested => { root.ui-action("about", "check-updates", "", "", ""); }
+            logout-requested => { root.ui-action("auth", "logout", "", "", ""); }
+        }
+        if root.screen == "not_found" : NotFoundScreen {
+            home-requested => { root.navigate-requested("/app"); }
+        }
+    }
+
+    if root.call-overlay-visible : CallOverlay {
+        visible: root.call-overlay-visible;
+        call-state: root.call-state;
+        peer-name: root.call-peer-name;
+        peer-initial: root.call-peer-initial;
+        with-video: root.call-with-video;
+        status-text: root.call-status;
+        error-text: root.call-error;
+        has-remote-video: root.call-has-remote-video;
+        remote-video-frame: root.call-remote-video-frame;
+        has-local-video: root.call-has-local-video;
+        local-video-frame: root.call-local-video-frame;
+        speaker-on: root.call-speaker-on;
+        camera-off: root.call-camera-off;
+        accept-requested => { root.ui-action("calls", "accept", "", "", ""); }
+        decline-requested => { root.ui-action("calls", "decline", "", "", ""); }
+        hang-up-requested => { root.ui-action("calls", "hang-up", "", "", ""); }
+        speaker-toggle-requested => { root.ui-action("calls", "toggle-speaker", "", "", ""); }
+        camera-toggle-requested => { root.ui-action("calls", "toggle-camera", "", "", ""); }
+        switch-camera-requested => { root.ui-action("calls", "switch-camera", "", "", ""); }
+    }
 }

@@ -1,0 +1,74 @@
+import { Theme } from "theme.slint";
+import { FHPrimaryButton } from "components.slint";
+
+export component InviteScreen inherits Rectangle {
+    in property <string> invite-token;
+    in property <bool> failed: false;
+    in property <bool> sync-failed: false;
+    in property <bool> busy: false;
+
+    callback join-requested(string);
+    callback retry-requested();
+    callback chats-requested();
+
+    public function begin-join() {
+        if !root.invite-token.is-empty {
+            root.join-requested(root.invite-token);
+        }
+    }
+
+    background: Theme.background;
+
+    VerticalLayout {
+        padding: 24px;
+        alignment: center;
+        cross-axis-alignment: center;
+        spacing: 10px;
+
+        if !root.failed && !root.sync-failed : VerticalLayout {
+            alignment: center;
+            spacing: 12px;
+
+            Rectangle {
+                width: 24px;
+                height: 24px;
+                border-width: 3px;
+                border-color: Theme.border;
+                border-radius: 12px;
+                Text { text: "…"; color: Theme.muted; font-size: 14px; horizontal-alignment: center; vertical-alignment: center; width: 100%; height: 100%; }
+            }
+            Text { text: "Присоединяемся…"; color: Theme.muted; font-size: 14px; horizontal-alignment: center; }
+        }
+
+        if root.failed || root.sync-failed : VerticalLayout {
+            alignment: center;
+            spacing: 8px;
+
+            Text { text: "♙"; color: Theme.muted; font-size: 32px; horizontal-alignment: center; }
+            Text {
+                text: root.sync-failed ? "Вы вступили, но список чатов не обновился" : "Приглашение не сработало";
+                color: Theme.foreground;
+                font-size: 14px;
+                font-weight: 500;
+                horizontal-alignment: center;
+                wrap: word-wrap;
+            }
+            Text {
+                text: root.sync-failed ? "Проверьте подключение и повторите загрузку чата перед открытием." : "Ссылка могла быть отозвана или уже использована.";
+                color: Theme.muted;
+                font-size: 12px;
+                horizontal-alignment: center;
+                wrap: word-wrap;
+            }
+            FHPrimaryButton {
+                text: root.sync-failed ? "Повторить" : "К списку чатов";
+                enabled: !root.busy;
+                busy: root.busy;
+                clicked => {
+                    if root.sync-failed { root.retry-requested(); }
+                    else { root.chats-requested(); }
+                }
+            }
+        }
+    }
+}

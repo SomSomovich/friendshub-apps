@@ -1,0 +1,475 @@
+import { Theme } from "../theme.slint";
+import { FHInput, FHTextButton, FHPrimaryButton } from "../components.slint";
+import { ComboBox, ScrollView, TextEdit } from "std-widgets.slint";
+
+export struct DatingProfileDraft {
+    display-name: string,
+    city: string,
+    birth-year: string,
+    gender: string,
+    looking-for: string,
+    bio: string,
+    interests: string,
+    is-listed: bool,
+}
+
+export struct DatingSearchFilters {
+    query: string,
+    city: string,
+    gender: string,
+    looking-for: string,
+    min-age: string,
+    max-age: string,
+    interests: string,
+}
+
+export struct DatingCard {
+    account-id: string,
+    display-name: string,
+    age: string,
+    city: string,
+    gender-label: string,
+    looking-for-label: string,
+    initials: string,
+    has-avatar: bool,
+    avatar-image: image,
+    bio: string,
+    interests-label: string,
+}
+
+export component DatingScreen inherits Rectangle {
+    in property <bool> has-profile: false;
+    in property <bool> busy: false;
+    in property <bool> loading: false;
+    in property <bool> profile-loading: false;
+    in property <bool> profile-error: false;
+    in property <string> profile-error-text;
+    in property <bool> profile-not-found: false;
+    in property <string> profile-age-label;
+    in property <string> validation-error;
+    in property <string> search-error;
+    in property <bool> editing: false;
+    in-out property <DatingProfileDraft> profile-draft;
+    in-out property <DatingSearchFilters> filters;
+    in property <[DatingCard]> results;
+    in property <bool> search-started: false;
+    in property <bool> has-more: false;
+    in property <bool> details-open: false;
+    in property <bool> details-loading: false;
+    in property <DatingCard> details;
+    in property <string> details-fh-number;
+    in property <string> details-error;
+
+    callback back-requested();
+    callback profile-save-requested(DatingProfileDraft);
+    callback profile-retry-requested();
+    callback edit-requested();
+    callback cancel-edit-requested();
+    callback profile-listed-changed(bool);
+    callback profile-gender-selected(int);
+    callback profile-looking-for-selected(int);
+    callback filter-gender-selected(int);
+    callback filter-looking-for-selected(int);
+    callback search-requested(DatingSearchFilters);
+    callback clear-filters-requested();
+    callback load-more-requested();
+    callback open-details-requested(string);
+    callback details-retry-requested();
+    callback close-details-requested();
+
+    background: Theme.background;
+
+    VerticalLayout {
+        spacing: 0px;
+
+        HorizontalLayout {
+            height: 48px;
+            padding-left: 16px;
+            padding-right: 16px;
+            spacing: 12px;
+
+            FHTextButton { text: "‹  Назад"; clicked => { root.back-requested(); } }
+            Text { text: "Поиск знакомств"; color: Theme.foreground; font-size: 14px; font-weight: 600; vertical-alignment: center; }
+        }
+
+        ScrollView {
+            VerticalLayout {
+                width: 100%;
+                padding: 16px;
+                spacing: 16px;
+
+                if !root.has-profile && root.profile-loading : HorizontalLayout {
+                    alignment: center;
+                    Text { text: "Загружаем анкету…"; color: Theme.muted; font-size: 14px; }
+                }
+
+                if !root.has-profile && root.profile-error : VerticalLayout {
+                    alignment: center;
+                    spacing: 8px;
+                    Text { text: root.profile-error-text; color: Theme.muted; font-size: 14px; wrap: word-wrap; }
+                    FHTextButton { text: "Повторить"; enabled: !root.busy; clicked => { root.profile-retry-requested(); } }
+                }
+
+                if !root.has-profile && root.profile-not-found : HorizontalLayout {
+                    alignment: center;
+                    Text {
+                        width: min(parent.width, 672px);
+                        text: "Сначала создайте анкету. После этого откроются фильтры и каталог анкет.";
+                        color: Theme.muted;
+                        font-size: 14px;
+                        wrap: word-wrap;
+                    }
+                }
+
+                if root.editing || (!root.has-profile && root.profile-not-found) : HorizontalLayout {
+                    alignment: center;
+
+                    Rectangle {
+                        width: min(parent.width, 672px);
+                        height: editor-content.preferred-height;
+                        background: Theme.surface;
+                        border-width: 1px;
+                        border-color: Theme.border;
+                        border-radius: 12px;
+
+                        editor-content := VerticalLayout {
+                            padding: 16px;
+                            spacing: 12px;
+
+                            Text {
+                                text: root.has-profile ? "Редактировать анкету" : "Моя анкета";
+                                color: Theme.foreground;
+                                font-size: 16px;
+                                font-weight: 600;
+                            }
+                            Text {
+                                text: "Заполните обязательные поля, чтобы искать людей и появиться в каталоге.";
+                                color: Theme.muted;
+                                font-size: 12px;
+                                wrap: word-wrap;
+                            }
+
+                            FHInput { label: "Имя"; placeholder: "Имя"; value <=> root.profile-draft.display-name; helper: "От 1 до 64 символов."; }
+                            FHInput { label: "Город"; placeholder: "Город"; value <=> root.profile-draft.city; helper: "От 1 до 64 символов."; }
+                            FHInput { label: "Год рождения"; placeholder: "Например, 1995"; value <=> root.profile-draft.birth-year; helper: "От 1900 года до возраста 18 лет и старше."; }
+
+                            Text { text: "Пол"; color: Theme.muted; font-size: 12px; font-weight: 600; }
+                            ComboBox {
+                                model: ["Не указан", "Женщина", "Мужчина", "Другой"];
+                                current-index: root.profile-draft.gender == "female" ? 1 : root.profile-draft.gender == "male" ? 2 : root.profile-draft.gender == "other" ? 3 : 0;
+                                enabled: !root.busy;
+                                selected => { root.profile-gender-selected(self.current-index); }
+                            }
+
+                            Text { text: "Кого ищу"; color: Theme.muted; font-size: 12px; font-weight: 600; }
+                            ComboBox {
+                                model: ["Дружбу", "Отношения", "Общение", "Любой вариант"];
+                                current-index: root.profile-draft.looking-for == "relationship" ? 1 : root.profile-draft.looking-for == "chat" ? 2 : root.profile-draft.looking-for == "all" ? 3 : 0;
+                                enabled: !root.busy;
+                                selected => { root.profile-looking-for-selected(self.current-index); }
+                            }
+
+                            Text { text: "О себе"; color: Theme.muted; font-size: 12px; font-weight: 600; }
+                            Rectangle {
+                                height: 96px;
+                                background: Theme.background;
+                                border-width: 1px;
+                                border-color: Theme.border;
+                                border-radius: 8px;
+                                clip: true;
+                                TextEdit {
+                                    x: 10px;
+                                    y: 8px;
+                                    width: parent.width - 20px;
+                                    height: parent.height - 16px;
+                                    text <=> root.profile-draft.bio;
+                                    placeholder-text: "Не более 500 символов.";
+                                    enabled: !root.busy;
+                                    font-size: 14px;
+                                }
+                            }
+
+                            FHInput {
+                                label: "Интересы";
+                                placeholder: "Музыка, книги, прогулки";
+                                value <=> root.profile-draft.interests;
+                                helper: "До 10 тегов через запятую, каждый до 32 символов.";
+                            }
+
+                            HorizontalLayout {
+                                spacing: 8px;
+
+                                Rectangle {
+                                    width: 20px;
+                                    height: 20px;
+                                    background: root.profile-draft.is-listed ? Theme.accent : Theme.surface;
+                                    border-width: 1px;
+                                    border-color: Theme.border;
+                                    border-radius: 4px;
+                                    accessible-role: checkbox;
+                                    accessible-label: "Показывать мою анкету в каталоге";
+                                    accessible-checked: root.profile-draft.is-listed;
+                                    accessible-action-default => { root.profile-listed-changed(!root.profile-draft.is-listed); }
+
+                                    if root.profile-draft.is-listed : Text { text: "✓"; color: Theme.accent-foreground; font-size: 14px; horizontal-alignment: center; vertical-alignment: center; width: 100%; height: 100%; }
+                                    TouchArea { mouse-cursor: pointer; clicked => { root.profile-listed-changed(!root.profile-draft.is-listed); } }
+                                }
+
+                                Text { text: "Показывать мою анкету в каталоге"; color: Theme.foreground; font-size: 14px; vertical-alignment: center; }
+                            }
+
+                            if !root.validation-error.is-empty : Text { text: root.validation-error; color: Theme.danger; font-size: 12px; wrap: word-wrap; }
+
+                            HorizontalLayout {
+                                spacing: 8px;
+                                FHPrimaryButton {
+                                    text: root.busy ? "Сохраняем…" : root.has-profile ? "Сохранить" : "Создать анкету";
+                                    enabled: !root.busy;
+                                    busy: root.busy;
+                                    clicked => { root.profile-save-requested(root.profile-draft); }
+                                }
+                                if root.has-profile : FHTextButton {
+                                    text: "Отмена";
+                                    enabled: !root.busy;
+                                    clicked => { root.cancel-edit-requested(); }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if root.has-profile && !root.editing : HorizontalLayout {
+                    alignment: center;
+
+                    Rectangle {
+                        width: min(parent.width, 672px);
+                        height: summary-content.preferred-height;
+                        background: Theme.surface;
+                        border-width: 1px;
+                        border-color: Theme.border;
+                        border-radius: 12px;
+
+                        summary-content := VerticalLayout {
+                            padding: 16px;
+                            spacing: 8px;
+
+                            Text { text: "Моя анкета"; color: Theme.foreground; font-size: 16px; font-weight: 600; }
+                            Text { text: root.profile-draft.is-listed ? "Анкета видна в каталоге" : "Анкета скрыта из каталога, поиск других анкет доступен"; color: Theme.muted; font-size: 12px; }
+                            HorizontalLayout {
+                                Text { text: "\{root.profile-draft.display-name} · \{root.profile-draft.city} · \{root.profile-age-label}"; color: Theme.foreground; font-size: 14px; horizontal-stretch: 1; overflow: elide; }
+                                FHTextButton { text: "Изменить"; clicked => { root.edit-requested(); } }
+                            }
+                        }
+                    }
+                }
+
+                if root.has-profile : HorizontalLayout {
+                    alignment: center;
+
+                    Rectangle {
+                        width: min(parent.width, 672px);
+                        height: filters-content.preferred-height;
+                        background: Theme.surface;
+                        border-width: 1px;
+                        border-color: Theme.border;
+                        border-radius: 12px;
+
+                        filters-content := VerticalLayout {
+                            padding: 16px;
+                            spacing: 12px;
+
+                            Text { text: "Фильтры поиска"; color: Theme.foreground; font-size: 16px; font-weight: 600; }
+                            Text { text: "Можно указать один или несколько фильтров."; color: Theme.muted; font-size: 12px; }
+
+                            FHInput { label: "Имя или описание"; placeholder: "От 3 до 64 символов"; value <=> root.filters.query; helper: "От 3 до 64 символов."; }
+                            FHInput { label: "Город"; placeholder: "Любой"; value <=> root.filters.city; }
+
+                            Text { text: "Пол"; color: Theme.muted; font-size: 12px; font-weight: 600; }
+                            ComboBox {
+                                model: ["Любой", "Женщина", "Мужчина", "Другой"];
+                                current-index: root.filters.gender == "female" ? 1 : root.filters.gender == "male" ? 2 : root.filters.gender == "other" ? 3 : 0;
+                                enabled: !root.busy;
+                                selected => { root.filter-gender-selected(self.current-index); }
+                            }
+
+                            Text { text: "Кого ищу"; color: Theme.muted; font-size: 12px; font-weight: 600; }
+                            ComboBox {
+                                model: ["Любой", "Дружбу", "Отношения", "Общение", "Любой вариант"];
+                                current-index: root.filters.looking-for == "friendship" ? 1 : root.filters.looking-for == "relationship" ? 2 : root.filters.looking-for == "chat" ? 3 : root.filters.looking-for == "all" ? 4 : 0;
+                                enabled: !root.busy;
+                                selected => { root.filter-looking-for-selected(self.current-index); }
+                            }
+
+                            HorizontalLayout {
+                                spacing: 8px;
+                                FHInput { label: "Возраст от"; placeholder: "Любой"; value <=> root.filters.min-age; }
+                                FHInput { label: "Возраст до"; placeholder: "Любой"; value <=> root.filters.max-age; }
+                            }
+
+                            FHInput { label: "Интересы"; placeholder: "Через запятую"; value <=> root.filters.interests; helper: "До 10 тегов через запятую, каждый до 32 символов."; }
+
+                            if !root.search-error.is-empty : Text { text: root.search-error; color: Theme.danger; font-size: 12px; wrap: word-wrap; }
+
+                            HorizontalLayout {
+                                spacing: 8px;
+                                FHPrimaryButton {
+                                    text: root.busy ? "Ищем…" : "Искать";
+                                    enabled: !root.busy;
+                                    busy: root.busy;
+                                    clicked => { root.search-requested(root.filters); }
+                                }
+                                FHTextButton {
+                                    text: "Очистить фильтры";
+                                    enabled: !root.busy;
+                                    clicked => { root.clear-filters-requested(); }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if root.has-profile && !root.search-started : HorizontalLayout {
+                    alignment: center;
+                    Text { text: "Укажите фильтры и нажмите «Искать»."; color: Theme.muted; font-size: 14px; }
+                }
+
+                if root.has-profile && root.loading : HorizontalLayout {
+                    alignment: center;
+                    Text { text: "Загружаем анкеты…"; color: Theme.muted; font-size: 13px; }
+                }
+
+                if root.has-profile && root.search-started && !root.loading && root.results.length == 0 : HorizontalLayout {
+                    alignment: center;
+                    Text { text: "Подходящих анкет не найдено."; color: Theme.muted; font-size: 14px; }
+                }
+
+                for card in root.results : HorizontalLayout {
+                    alignment: center;
+
+                    Rectangle {
+                        width: min(parent.width, 672px);
+                        height: card-content.preferred-height;
+                        background: Theme.surface;
+                        border-width: 1px;
+                        border-color: Theme.border;
+                        border-radius: 12px;
+
+                        card-content := HorizontalLayout {
+                            padding: 12px;
+                            spacing: 12px;
+
+                            Rectangle {
+                                width: 44px;
+                                height: 44px;
+                                background: Theme.hover;
+                                border-radius: 22px;
+                                Text { text: card.initials; color: Theme.foreground; font-size: 14px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; width: 100%; height: 100%; }
+                            }
+
+                            VerticalLayout {
+                                spacing: 4px;
+                                horizontal-stretch: 1;
+
+                                Text { text: "\{card.display-name}, \{card.age}"; color: Theme.foreground; font-size: 14px; font-weight: 500; overflow: elide; }
+                                Text { text: "\{card.city} · \{card.gender-label}"; color: Theme.muted; font-size: 12px; overflow: elide; }
+                                Text { text: card.looking-for-label; color: Theme.muted; font-size: 12px; overflow: elide; }
+                                if !card.interests-label.is-empty : Text { text: card.interests-label; color: Theme.muted; font-size: 12px; wrap: word-wrap; }
+                            }
+
+                            FHTextButton {
+                                text: "Подробнее";
+                                enabled: !root.busy;
+                                clicked => { root.open-details-requested(card.account-id); }
+                            }
+                        }
+                    }
+                }
+
+                if root.has-profile && root.has-more : HorizontalLayout {
+                    alignment: center;
+                    FHTextButton { text: root.busy ? "Загружаем…" : "Показать ещё"; enabled: !root.busy; clicked => { root.load-more-requested(); } }
+                }
+            }
+        }
+    }
+
+    if root.details-open : Rectangle {
+        width: 100%;
+        height: 100%;
+        background: transparent;
+
+        Rectangle { width: 100%; height: 100%; background: #000000; opacity: 0.5; }
+        TouchArea { width: 100%; height: 100%; clicked => { root.close-details-requested(); } }
+
+        VerticalLayout {
+            x: (parent.width - min(parent.width - 24px, 384px)) / 2;
+            y: 0px;
+            height: 100%;
+            width: min(parent.width - 24px, 384px);
+            alignment: center;
+
+            Rectangle {
+                width: 100%;
+                height: min(detail-content.preferred-height, parent.height - 32px);
+                background: Theme.background;
+                border-width: 1px;
+                border-color: Theme.border;
+                border-radius: 16px;
+                clip: true;
+
+                detail-content := VerticalLayout {
+                    padding: 16px;
+                    spacing: 12px;
+
+                    HorizontalLayout {
+                        Text { text: "Анкета"; color: Theme.foreground; font-size: 16px; font-weight: 600; horizontal-stretch: 1; }
+                        FHTextButton { text: "Закрыть"; clicked => { root.close-details-requested(); } }
+                    }
+
+                    ScrollView {
+                        vertical-stretch: 1;
+                        vertical-scrollbar-policy: as-needed;
+                        content-width: parent.width;
+                        content-height: detail-body.preferred-height;
+
+                        detail-body := VerticalLayout {
+                            width: parent.width;
+                            spacing: 8px;
+
+                            if root.details-loading : Text { text: "Загружаем анкету…"; color: Theme.muted; font-size: 14px; }
+                            if !root.details-error.is-empty : VerticalLayout {
+                                spacing: 8px;
+                                Text { text: root.details-error; color: Theme.danger; font-size: 13px; wrap: word-wrap; }
+                                FHTextButton { text: "Повторить"; enabled: !root.busy; clicked => { root.details-retry-requested(); } }
+                            }
+                            if !root.details-loading && root.details-error.is-empty : VerticalLayout {
+                                spacing: 8px;
+                                HorizontalLayout {
+                                    spacing: 12px;
+                                    Rectangle {
+                                        width: 64px;
+                                        height: 64px;
+                                        background: Theme.hover;
+                                        border-radius: 32px;
+                                        clip: true;
+                                        if root.details.has-avatar : Image { width: 100%; height: 100%; source: root.details.avatar-image; image-fit: cover; }
+                                        if !root.details.has-avatar : Text { text: root.details.initials; color: Theme.foreground; font-size: 20px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; width: 100%; height: 100%; }
+                                    }
+                                    VerticalLayout {
+                                        spacing: 3px;
+                                        Text { text: "\{root.details.display-name}, \{root.details.age}"; color: Theme.foreground; font-size: 16px; font-weight: 600; }
+                                        Text { text: root.details.city; color: Theme.muted; font-size: 14px; }
+                                        if !root.details-fh-number.is-empty : Text { text: "Номер FriendsHub: \{root.details-fh-number}"; color: Theme.muted; font-size: 12px; }
+                                    }
+                                }
+                                Text { text: "\{root.details.gender-label} · \{root.details.looking-for-label}"; color: Theme.foreground; font-size: 14px; wrap: word-wrap; }
+                                if !root.details.bio.is-empty : Text { text: root.details.bio; color: Theme.foreground; font-size: 14px; wrap: word-wrap; }
+                                if !root.details.interests-label.is-empty : Text { text: root.details.interests-label; color: Theme.muted; font-size: 12px; wrap: word-wrap; }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

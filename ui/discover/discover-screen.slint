@@ -1,0 +1,205 @@
+import { Theme } from "../theme.slint";
+import { FHInput, FHTextButton, FHPrimaryButton } from "../components.slint";
+import { ScrollView } from "std-widgets.slint";
+
+export struct DiscoverEntry {
+    conversation-id: string,
+    title: string,
+    description: string,
+    count-label: string,
+    initials: string,
+    has-avatar: bool,
+    avatar-image: image,
+}
+
+export component DiscoverScreen inherits Rectangle {
+    in property <bool> channel-mode: false;
+    in-out property <string> handle-query;
+    in property <[DiscoverEntry]> entries;
+    in property <bool> busy: false;
+    in property <bool> loading: false;
+    in property <bool> has-error: false;
+    in property <string> error-text;
+    in property <bool> lookup-mode: false;
+
+    callback back-requested();
+    callback channel-mode-changed(bool);
+    callback lookup-requested(string);
+    callback show-catalog-requested();
+    callback open-requested(string);
+
+    background: Theme.background;
+
+    VerticalLayout {
+        spacing: 0px;
+
+        HorizontalLayout {
+            height: 48px;
+            padding-left: 16px;
+            padding-right: 16px;
+            spacing: 12px;
+
+            FHTextButton { text: "‹  Назад"; clicked => { root.back-requested(); } }
+            Text { text: "Публичные чаты"; color: Theme.foreground; font-size: 14px; font-weight: 600; vertical-alignment: center; }
+        }
+
+        ScrollView {
+            VerticalLayout {
+                width: 100%;
+                padding: 16px;
+                spacing: 16px;
+
+                HorizontalLayout {
+                    alignment: center;
+
+                    Rectangle {
+                        width: min(parent.width, 576px);
+                        height: kind-content.preferred-height;
+                        background: Theme.surface;
+                        border-width: 1px;
+                        border-color: Theme.border;
+                        border-radius: 12px;
+
+                        kind-content := VerticalLayout {
+                            padding: 12px;
+                            spacing: 8px;
+
+                            Text { text: "Что искать"; color: Theme.muted; font-size: 12px; font-weight: 600; }
+
+                            HorizontalLayout {
+                                spacing: 8px;
+
+                                if root.channel-mode : FHTextButton { text: "Группы"; enabled: !root.busy && !root.loading; clicked => { root.channel-mode-changed(false); } }
+                                if !root.channel-mode : FHPrimaryButton { text: "Группы"; enabled: !root.busy && !root.loading; clicked => { root.channel-mode-changed(false); } }
+                                if root.channel-mode : FHPrimaryButton { text: "Каналы"; enabled: !root.busy && !root.loading; clicked => { root.channel-mode-changed(true); } }
+                                if !root.channel-mode : FHTextButton { text: "Каналы"; enabled: !root.busy && !root.loading; clicked => { root.channel-mode-changed(true); } }
+                            }
+                        }
+                    }
+                }
+
+                HorizontalLayout {
+                    alignment: center;
+
+                    Rectangle {
+                        width: min(parent.width, 576px);
+                        height: search-content.preferred-height;
+                        background: Theme.surface;
+                        border-width: 1px;
+                        border-color: Theme.border;
+                        border-radius: 12px;
+
+                        search-content := VerticalLayout {
+                            padding: 12px;
+                            spacing: 10px;
+
+                            FHInput {
+                                label: "Найти по адресу";
+                                placeholder: "@example";
+                                value <=> root.handle-query;
+                            }
+
+                            HorizontalLayout {
+                                spacing: 8px;
+
+                                FHPrimaryButton {
+                                    text: root.busy ? "Ищем…" : "Найти";
+                                    enabled: !root.busy && !root.handle-query.is-empty;
+                                    busy: root.busy;
+                                    clicked => { root.lookup-requested(root.handle-query); }
+                                }
+
+                                if root.lookup-mode : FHTextButton {
+                                    text: "Показать каталог";
+                                    enabled: !root.busy;
+                                    clicked => { root.show-catalog-requested(); }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if root.has-error : HorizontalLayout {
+                    alignment: center;
+                    Text {
+                        width: min(parent.width, 576px);
+                        text: root.error-text;
+                        color: Theme.danger;
+                        font-size: 13px;
+                        wrap: word-wrap;
+                    }
+                }
+
+                if root.loading : HorizontalLayout {
+                    alignment: center;
+                    Text { text: "Загружаем публичные чаты…"; color: Theme.muted; font-size: 13px; }
+                }
+
+                if !root.loading && !root.has-error && root.entries.length == 0 : HorizontalLayout {
+                    alignment: center;
+                    Rectangle {
+                        width: min(parent.width, 576px);
+                        height: empty-content.preferred-height;
+                        background: transparent;
+
+                        empty-content := VerticalLayout {
+                            padding-top: 32px;
+                            padding-bottom: 32px;
+                            spacing: 8px;
+                            alignment: center;
+
+                            Text { text: "◉"; color: Theme.muted; font-size: 28px; horizontal-alignment: center; }
+                            Text { text: "Публичных чатов пока нет."; color: Theme.foreground; font-size: 14px; font-weight: 500; horizontal-alignment: center; }
+                        }
+                    }
+                }
+
+                for entry in root.entries : HorizontalLayout {
+                    alignment: center;
+
+                    Rectangle {
+                        width: min(parent.width, 576px);
+                        height: row-content.preferred-height;
+                        background: Theme.surface;
+                        border-width: 1px;
+                        border-color: Theme.border;
+                        border-radius: 12px;
+
+                        row-content := HorizontalLayout {
+                            padding: 12px;
+                            spacing: 12px;
+
+                            Rectangle {
+                                width: 44px;
+                                height: 44px;
+                                background: Theme.hover;
+                                border-radius: 22px;
+                                clip: true;
+
+                                if entry.has-avatar : Image { width: 100%; height: 100%; source: entry.avatar-image; image-fit: cover; }
+
+                                if !entry.has-avatar : Text { text: entry.initials; color: Theme.foreground; font-size: 14px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; width: 100%; height: 100%; }
+                            }
+
+                            VerticalLayout {
+                                spacing: 4px;
+                                horizontal-stretch: 1;
+
+                                Text { text: entry.title; color: Theme.foreground; font-size: 14px; font-weight: 500; overflow: elide; }
+                                if !entry.description.is-empty : Text { text: entry.description; color: Theme.muted; font-size: 12px; wrap: word-wrap; max-height: 36px; }
+                                Text { text: entry.count-label; color: Theme.muted; font-size: 12px; }
+                            }
+
+                            FHPrimaryButton {
+                                text: "Открыть / вступить";
+                                enabled: !root.busy;
+                                busy: root.busy;
+                                clicked => { root.open-requested(entry.conversation-id); }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

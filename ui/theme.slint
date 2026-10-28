@@ -1,0 +1,21 @@
+export global Theme {
+    in property <bool> light-mode: false;
+    in property <bool> custom-colors-enabled: false;
+    in property <color> custom-background: #1a1a3a;
+    in property <color> custom-accent: #fc9003;
+    in property <color> custom-bubble: #493936;
+    in property <color> custom-foreground: #f4f4fb;
+    in property <color> custom-accent-foreground: #1a1a3a;
+
+    out property <color> background: custom-colors-enabled ? custom-background : (light-mode ? #ffffff : #1a1a3a);
+    out property <color> surface: light-mode ? #f5f6fa : #24244d;
+    out property <color> hover: light-mode ? #ebedf5 : #2c2c5c;
+    out property <color> foreground: custom-colors-enabled ? custom-foreground : (light-mode ? #14141c : #f4f4fb);
+    out property <color> muted: light-mode ? #62627a : #9a9ac4;
+    out property <color> accent: custom-colors-enabled ? custom-accent : (light-mode ? #030bfc : #fc9003);
+    out property <color> accent-hover: light-mode ? #0310ff : #ff9e03;
+    out property <color> accent-foreground: custom-colors-enabled ? custom-accent-foreground : (light-mode ? #ffffff : #1a1a3a);
+    out property <color> border: light-mode ? #dfe1ea : #32325f;
+    out property <color> danger: light-mode ? #d92d20 : #e5484d;
+    out property <color> message-bubble: custom-colors-enabled ? custom-bubble : (light-mode ? #cdcefe : #47322f);
+}

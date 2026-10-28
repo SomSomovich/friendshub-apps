@@ -1,0 +1,138 @@
+import { Theme } from "../theme.slint";
+import { ChatAction } from "chat-controls.slint";
+import { TextEdit } from "std-widgets.slint";
+
+export component MessageComposer inherits Rectangle {
+    in-out property <string> value: "";
+    in property <bool> enabled: true;
+    in property <bool> busy: false;
+    in property <bool> editing: false;
+    in property <bool> can-poll: true;
+    in property <bool> can-schedule: true;
+    in property <string> error-text: "";
+    callback draft-changed(string);
+    callback send-requested(string);
+    callback attachment-requested(string);
+    callback emoji-picker-requested();
+    callback poll-requested();
+    callback schedule-requested(string);
+    callback voice-record-requested();
+    callback video-note-requested();
+    callback cancel-edit-requested();
+
+    background: Theme.surface;
+
+    VerticalLayout {
+        padding: 8px;
+        spacing: 6px;
+
+        if root.editing : HorizontalLayout {
+            Text {
+                text: "Редактирование сообщения";
+                color: Theme.accent;
+                font-size: 12px;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+            ChatAction {
+                label: "Отменить";
+                enabled: !root.busy;
+                clicked => { root.cancel-edit-requested(); }
+            }
+        }
+
+        if !root.error-text.is-empty : Text {
+            text: root.error-text;
+            color: Theme.danger;
+            font-size: 12px;
+            wrap: word-wrap;
+        }
+
+        Rectangle {
+            height: 72px;
+            background: Theme.background;
+            border-width: 1px;
+            border-color: input.has-focus ? Theme.accent : Theme.border;
+            border-radius: 10px;
+
+            input := TextEdit {
+                x: 12px;
+                y: 8px;
+                width: parent.width - 24px;
+                height: parent.height - 16px;
+                text <=> root.value;
+                placeholder-text: "Сообщение";
+                enabled: root.enabled && !root.busy;
+                font-size: 14px;
+                wrap: word-wrap;
+                edited => { root.draft-changed(self.text); }
+                key-pressed(event) => {
+                    if event.text == Key.Return && !event.modifiers.shift && root.enabled && !root.busy && !root.value.is-empty {
+                        root.send-requested(root.value);
+                        return accept;
+                    }
+                    return reject;
+                }
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 4px;
+            if !root.editing : ChatAction {
+                label: "☺";
+                accessible-name: "Эмодзи";
+                enabled: root.enabled && !root.busy;
+                clicked => { root.emoji-picker-requested(); }
+            }
+            if !root.editing : ChatAction {
+                label: "▣";
+                accessible-name: "Фото";
+                enabled: root.enabled && !root.busy;
+                clicked => { root.attachment-requested("photo"); }
+            }
+            if !root.editing : ChatAction {
+                label: "▷";
+                accessible-name: "Видео";
+                enabled: root.enabled && !root.busy;
+                clicked => { root.attachment-requested("video"); }
+            }
+            if !root.editing : ChatAction {
+                label: "+";
+                accessible-name: "Файл";
+                enabled: root.enabled && !root.busy;
+                clicked => { root.attachment-requested("file"); }
+            }
+            if !root.editing && root.can-poll : ChatAction {
+                label: "▤";
+                accessible-name: "Опрос";
+                enabled: root.enabled && !root.busy;
+                clicked => { root.poll-requested(); }
+            }
+            if !root.editing && root.can-schedule : ChatAction {
+                label: "◷";
+                accessible-name: "Отложить";
+                enabled: root.enabled && !root.busy && !root.value.is-empty;
+                clicked => { root.schedule-requested(root.value); }
+            }
+            if !root.editing : ChatAction {
+                label: "♪";
+                accessible-name: "Голосовое сообщение";
+                enabled: root.enabled && !root.busy;
+                clicked => { root.voice-record-requested(); }
+            }
+            if !root.editing : ChatAction {
+                label: "◉";
+                accessible-name: "Видеосообщение";
+                enabled: root.enabled && !root.busy;
+                clicked => { root.video-note-requested(); }
+            }
+            Rectangle { horizontal-stretch: 1; background: transparent; }
+            ChatAction {
+                label: root.busy ? "Отправка…" : (root.editing ? "Сохранить" : "Отправить");
+                enabled: root.enabled && !root.busy && !root.value.is-empty;
+                active: true;
+                clicked => { root.send-requested(root.value); }
+            }
+        }
+    }
+}

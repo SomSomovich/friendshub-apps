@@ -1,0 +1,108 @@
+import { Theme } from "../theme.slint";
+import { ChatAction } from "chat-controls.slint";
+
+export component ScheduleMessageDialog inherits Rectangle {
+    in property <bool> open: false;
+    in property <bool> busy: false;
+    in property <bool> duration-valid: false;
+    in property <string> title: "Отложенная отправка";
+    in property <string> hint: "Выберите, через сколько часов и минут отправить сообщение.";
+    in property <string> draft-preview: "";
+    in property <string> hours-label: "Часы";
+    in property <string> minutes-label: "Минуты";
+    in property <string> hours: "1";
+    in property <string> minutes: "0";
+    in property <string> error-text: "";
+    in property <string> confirm-label: "Запланировать";
+
+    callback hours-changed(string);
+    callback minutes-changed(string);
+    callback schedule-requested();
+    callback close-requested();
+
+    if root.open : Rectangle {
+        x: 0px;
+        y: 0px;
+        width: 100%;
+        height: 100%;
+        background: #99000000;
+        TouchArea { clicked => { if !root.busy { root.close-requested(); } } }
+        Rectangle {
+            x: (parent.width - min(parent.width - 32px, 460px)) / 2;
+            y: (parent.height - duration-card.preferred-height) / 2;
+            width: min(parent.width - 32px, 460px);
+            height: duration-card.preferred-height;
+            background: Theme.surface;
+            border-width: 1px;
+            border-color: Theme.border;
+            border-radius: 12px;
+            duration-card := VerticalLayout {
+                padding: 20px;
+                spacing: 12px;
+                Text { text: root.title; color: Theme.foreground; font-size: 16px; font-weight: 600; }
+                Text { text: root.hint; color: Theme.muted; font-size: 13px; wrap: word-wrap; }
+                if !root.draft-preview.is-empty : Text {
+                    text: root.draft-preview;
+                    color: Theme.foreground;
+                    font-size: 12px;
+                    wrap: word-wrap;
+                    max-height: 56px;
+                    overflow: elide;
+                }
+                HorizontalLayout {
+                    spacing: 10px;
+                    VerticalLayout {
+                        spacing: 5px;
+                        horizontal-stretch: 1;
+                        Text { text: root.hours-label; color: Theme.muted; font-size: 11px; }
+                        Rectangle {
+                            height: 40px;
+                            background: Theme.background;
+                            border-width: 1px;
+                            border-color: hours-input.has-focus ? Theme.accent : Theme.border;
+                            border-radius: 8px;
+                            hours-input := TextInput {
+                                x: 10px; width: parent.width - 20px; height: parent.height;
+                                text: root.hours;
+                                font-size: 13px;
+                                color: Theme.foreground;
+                                edited => { root.hours-changed(self.text); }
+                            }
+                        }
+                    }
+                    VerticalLayout {
+                        spacing: 5px;
+                        horizontal-stretch: 1;
+                        Text { text: root.minutes-label; color: Theme.muted; font-size: 11px; }
+                        Rectangle {
+                            height: 40px;
+                            background: Theme.background;
+                            border-width: 1px;
+                            border-color: minutes-input.has-focus ? Theme.accent : Theme.border;
+                            border-radius: 8px;
+                            minutes-input := TextInput {
+                                x: 10px; width: parent.width - 20px; height: parent.height;
+                                text: root.minutes;
+                                font-size: 13px;
+                                color: Theme.foreground;
+                                edited => { root.minutes-changed(self.text); }
+                            }
+                        }
+                    }
+                }
+                if !root.error-text.is-empty : Text { text: root.error-text; color: Theme.danger; font-size: 11px; wrap: word-wrap; }
+                HorizontalLayout {
+                    alignment: end;
+                    spacing: 8px;
+                    ChatAction { label: "Отмена"; enabled: !root.busy; clicked => { root.close-requested(); } }
+                    ChatAction {
+                        label: root.busy ? "Планируем…" : root.confirm-label;
+                        active: true;
+                        enabled: root.duration-valid && !root.busy;
+                        clicked => { root.schedule-requested(); }
+                    }
+                }
+            }
+        }
+    }
+}

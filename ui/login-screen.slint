@@ -1,0 +1,102 @@
+import { Theme } from "theme.slint";
+import { FHInput, FHPrimaryButton, FHTextButton } from "components.slint";
+
+export component LoginScreen inherits Rectangle {
+    in-out property <string> fh-number;
+    in-out property <string> password;
+    in property <string> error-text: "";
+    in property <bool> busy: false;
+
+    callback login-requested(string, string);
+    callback register-requested();
+    callback back-requested();
+
+    private property <bool> password-visible: false;
+
+    background: Theme.background;
+
+    VerticalLayout {
+        padding: 16px;
+        alignment: center;
+        cross-axis-alignment: center;
+
+        Rectangle {
+            width: min(root.width - 32px, 384px);
+            height: card-content.preferred-height;
+            background: Theme.surface;
+            border-width: 1px;
+            border-color: Theme.border;
+            border-radius: 16px;
+
+            card-content := VerticalLayout {
+                padding: 24px;
+                spacing: 16px;
+                alignment: start;
+
+                Text {
+                    text: "Вход";
+                    color: Theme.foreground;
+                    font-size: 18px;
+                    font-weight: 600;
+                }
+
+                FHInput {
+                    label: "FH-номер";
+                    placeholder: "FH1234567";
+                    value <=> root.fh-number;
+                    password: false;
+                    password-visible: false;
+                    error: "";
+                }
+
+                FHInput {
+                    label: "Пароль";
+                    value <=> root.password;
+                    password: true;
+                    password-visible <=> root.password-visible;
+                    error: "";
+                }
+
+                if root.error-text != "": Text {
+                    text: root.error-text;
+                    color: Theme.danger;
+                    font-size: 12px;
+                    wrap: word-wrap;
+                }
+
+                FHPrimaryButton {
+                    text: root.busy ? "Вход…" : "Войти";
+                    enabled: !root.busy;
+                    clicked => {
+                        root.login-requested(root.fh-number, root.password);
+                    }
+                }
+
+                VerticalLayout {
+                    spacing: 8px;
+                    alignment: center;
+
+                    HorizontalLayout {
+                        alignment: center;
+
+                        FHTextButton {
+                            text: "Создать аккаунт";
+                            enabled: true;
+                            clicked => { root.register-requested(); }
+                        }
+                    }
+
+                    HorizontalLayout {
+                        alignment: center;
+
+                        FHTextButton {
+                            text: "Назад";
+                            enabled: true;
+                            clicked => { root.back-requested(); }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

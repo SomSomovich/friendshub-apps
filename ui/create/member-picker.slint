@@ -1,0 +1,190 @@
+import { Theme } from "../theme.slint";
+import { ScrollView } from "std-widgets.slint";
+
+export struct GroupMemberRow {
+    account-id: string,
+    name: string,
+    fh-number: string,
+    selected: bool,
+    initial: string,
+}
+
+export component MemberPicker inherits VerticalLayout {
+    in property <[GroupMemberRow]> contacts: [];
+    in property <[GroupMemberRow]> selected-contacts: [];
+    in property <bool> loading: false;
+    in-out property <string> search-query: "";
+    in property <string> no-contacts-text: "Поиск выполняется среди ваших контактов после ввода минимум трёх символов. Пользователей вне списка контактов здесь найти нельзя.";
+
+    callback search-changed(string);
+    callback member-toggle-requested(string);
+
+    spacing: 12px;
+
+    if root.selected-contacts.length > 0 : FlexboxLayout {
+        width: parent.width;
+        spacing: 6px;
+        cross-axis-alignment: center;
+
+        for contact[index] in root.selected-contacts : Rectangle {
+            height: 28px;
+            width: selected-name.preferred-width + 38px;
+            border-radius: 14px;
+            border-width: 1px;
+            border-color: Theme.accent;
+            background: Theme.surface;
+            HorizontalLayout {
+                padding-left: 3px;
+                padding-right: 8px;
+                spacing: 5px;
+                alignment: center;
+                Rectangle {
+                    width: 20px;
+                    height: 20px;
+                    border-radius: 10px;
+                    background: Theme.hover;
+                    Text { text: contact.initial; color: Theme.foreground; font-size: 10px; horizontal-alignment: center; vertical-alignment: center; width: 100%; height: 100%; }
+                }
+                selected-name := Text { text: contact.name; color: Theme.foreground; font-size: 12px; overflow: elide; }
+                Text { text: "×"; color: Theme.muted; font-size: 14px; }
+            }
+            TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.member-toggle-requested(contact.account-id); }
+            }
+        }
+    }
+
+    Rectangle {
+        height: 40px;
+        border-radius: 8px;
+        border-width: 1px;
+        border-color: search-input.has-focus ? Theme.accent : Theme.border;
+        background: Theme.background;
+
+        Text {
+            x: 12px;
+            width: 22px;
+            height: parent.height;
+            text: "⌕";
+            color: Theme.muted;
+            font-size: 18px;
+            vertical-alignment: center;
+            accessible-role: none;
+        }
+
+        search-input := TextInput {
+            x: 36px;
+            width: parent.width - 48px;
+            height: parent.height;
+            text <=> root.search-query;
+            font-size: 14px;
+            color: Theme.foreground;
+            accessible-label: "Поиск по контактам";
+            accessible-placeholder-text: "Поиск по контактам";
+            edited => { root.search-changed(self.text); }
+        }
+    }
+
+    if root.loading : VerticalLayout {
+        spacing: 8px;
+        for row in 3 : Rectangle {
+            height: 52px;
+            border-radius: 8px;
+            background: Theme.surface;
+            HorizontalLayout {
+                padding: 8px;
+                spacing: 10px;
+                alignment: center;
+                Rectangle { width: 36px; height: 36px; border-radius: 18px; background: Theme.hover; }
+                Rectangle { height: 8px; width: 45%; border-radius: 4px; background: Theme.hover; }
+            }
+        }
+    }
+    if !root.loading && root.contacts.length == 0 : Text {
+        text: root.search-query.is-empty ? root.no-contacts-text : (root.search-query.character-count < 3 ? "Введите минимум три символа для поиска." : "По запросу «\{root.search-query}» никого нет.");
+        color: Theme.muted;
+        font-size: 12px;
+        wrap: word-wrap;
+        width: 100%;
+    }
+    if !root.loading && root.contacts.length > 0 : ScrollView {
+        height: min(rows.preferred-height, 256px);
+        content-width: parent.width;
+        content-height: rows.preferred-height;
+
+        VerticalLayout {
+            width: parent.width;
+            spacing: 4px;
+
+            rows := VerticalLayout {
+                width: parent.width;
+                spacing: 4px;
+
+                for contact[index] in root.contacts : Rectangle {
+                    height: 52px;
+                    border-radius: 8px;
+                    background: contact.selected || row-area.has-hover ? Theme.hover : transparent;
+                    accessible-role: checkbox;
+                    accessible-label: "\{contact.name}, \{contact.fh-number}";
+                    accessible-checked: contact.selected;
+                    accessible-action-default => { root.member-toggle-requested(contact.account-id); }
+
+                    HorizontalLayout {
+                        padding-left: 8px;
+                        padding-right: 8px;
+                        spacing: 10px;
+                        alignment: center;
+
+                        Rectangle {
+                            width: 36px;
+                            height: 36px;
+                            border-radius: 18px;
+                            background: Theme.hover;
+                            Text {
+                                text: contact.initial;
+                                color: Theme.foreground;
+                                font-size: 14px;
+                                font-weight: 600;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                                width: 100%;
+                                height: 100%;
+                            }
+                        }
+
+                        VerticalLayout {
+                            spacing: 2px;
+                            horizontal-stretch: 1;
+                            Text { text: contact.name; color: Theme.foreground; font-size: 14px; overflow: elide; }
+                            Text { text: contact.fh-number; color: Theme.muted; font-size: 12px; overflow: elide; }
+                        }
+
+                        Rectangle {
+                            width: 18px;
+                            height: 18px;
+                            border-radius: 4px;
+                            border-width: 1px;
+                            border-color: contact.selected ? Theme.accent : Theme.border;
+                            background: contact.selected ? Theme.accent : transparent;
+                            Text {
+                                text: contact.selected ? "✓" : "";
+                                color: Theme.accent-foreground;
+                                font-size: 12px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                                width: 100%;
+                                height: 100%;
+                            }
+                        }
+                    }
+
+                    row-area := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.member-toggle-requested(contact.account-id); }
+                    }
+                }
+            }
+        }
+    }
+}

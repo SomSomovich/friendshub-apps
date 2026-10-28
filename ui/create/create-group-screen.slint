@@ -1,0 +1,105 @@
+import { Theme } from "../theme.slint";
+import { CreateWizard } from "create-wizard.slint";
+import { CreateInfoStep } from "create-info-step.slint";
+import { MemberPicker, GroupMemberRow } from "member-picker.slint";
+import { CreateSummary, CreateSummaryRow } from "create-summary.slint";
+
+export component CreateGroupScreen inherits Rectangle {
+    in-out property <string> group-title: "";
+    in-out property <string> description: "";
+    in-out property <string> handle: "";
+    in-out property <bool> is-public: false;
+    in property <string> handle-feedback: "";
+    in property <bool> handle-feedback-error: false;
+    in property <bool> can-continue: false;
+    in property <bool> can-create: false;
+    in property <[GroupMemberRow]> contacts: [];
+    in property <[GroupMemberRow]> selected-contacts: [];
+    in property <bool> contacts-loading: false;
+    in property <string> contact-search: "";
+    in property <string> selected-members-note: "";
+    in property <[CreateSummaryRow]> summary-rows: [];
+    in property <string> expiry-summary: "";
+    in property <bool> busy: false;
+
+    callback contact-search-changed(string);
+    callback member-toggle-requested(string);
+    callback back-requested();
+    callback cancel-requested();
+    callback create-requested();
+
+    private property <int> current-step: 0;
+    private property <bool> title-ready: !root.group-title.replace-all(" ", "").replace-all("\u{9}", "").replace-all("\u{d}", "").replace-all("\n", "").is-empty;
+
+    background: Theme.background;
+
+    CreateWizard {
+        title: root.expiry-summary.is-empty ? "Новая группа" : "Создать временную группу";
+        second-step-label: "Участники";
+        current-step: root.current-step;
+        submit-label: "Создать группу";
+        primary-enabled: root.current-step == 2 ? root.title-ready : (root.current-step == 0 ? root.title-ready : true);
+        busy: root.busy;
+        back-requested => {
+            if root.current-step > 0 {
+                root.current-step -= 1;
+            } else {
+                root.back-requested();
+            }
+        }
+        cancel-requested => { root.cancel-requested(); }
+        primary-requested => {
+            if root.current-step < 2 {
+                root.current-step += 1;
+            } else {
+                root.create-requested();
+            }
+        }
+
+        if root.current-step == 0 : CreateInfoStep {
+            card-title: "О группе";
+            title-label: "Название";
+            title-value <=> root.group-title;
+            description-value <=> root.description;
+            handle-value <=> root.handle;
+            is-public <=> root.is-public;
+            handle-feedback: root.handle-feedback;
+            handle-feedback-error: root.handle-feedback-error;
+        }
+        if root.current-step == 1 : Rectangle {
+            border-radius: 12px;
+            border-width: 1px;
+            border-color: Theme.border;
+            background: Theme.surface;
+
+            VerticalLayout {
+                padding: 12px;
+                spacing: 12px;
+                Text { text: "Участники"; color: Theme.foreground; font-size: 14px; font-weight: 600; }
+                Text {
+                    text: "Необязательно: группу можно создать пустой и добавить людей позже.";
+                    color: Theme.muted;
+                    font-size: 12px;
+                    wrap: word-wrap;
+                }
+                MemberPicker {
+                    contacts: root.contacts;
+                    selected-contacts: root.selected-contacts;
+                    loading: root.contacts-loading;
+                    search-query: root.contact-search;
+                    search-changed(text) => { root.contact-search-changed(text); }
+                    member-toggle-requested(id) => { root.member-toggle-requested(id); }
+                }
+            }
+        }
+        if root.current-step >= 2 : CreateSummary {
+            title: "Проверка";
+            rows: [
+                { label: "Название", value: root.group-title },
+                { label: "Доступ", value: root.is-public ? "Публичная" : "Приватная" },
+                { label: "Участники", value: "\{root.selected-contacts.length}" }
+            ];
+            note: root.selected-members-note;
+        }
+    }
+}

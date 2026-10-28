@@ -1,0 +1,248 @@
+import { Theme } from "../theme.slint";
+import { FHTextButton, FHPrimaryButton } from "../components.slint";
+import { ScrollView } from "std-widgets.slint";
+
+export struct OwnProfileField {
+    label: string,
+    value: string,
+}
+
+export component ProfileScreen inherits Rectangle {
+    in property <string> username;
+    in property <string> fh-number;
+    in property <string> status-text;
+    in property <string> status-emoji;
+    in property <bool> has-avatar: false;
+    in property <image> avatar-image;
+    in property <string> avatar-initials;
+    in property <[OwnProfileField]> fields;
+
+    callback back-requested();
+    callback edit-requested();
+    callback share-requested(string);
+    callback avatar-open-requested();
+
+    background: Theme.background;
+
+    VerticalLayout {
+        spacing: 0px;
+
+        Rectangle {
+            height: 48px;
+            background: Theme.background;
+            border-width: 0px;
+            border-color: Theme.border;
+
+            HorizontalLayout {
+                padding-left: 16px;
+                padding-right: 16px;
+                spacing: 12px;
+
+                FHTextButton {
+                    text: "‹  Назад";
+                    clicked => { root.back-requested(); }
+                }
+
+                Text {
+                    text: "Профиль";
+                    color: Theme.foreground;
+                    font-size: 14px;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+            }
+        }
+
+        ScrollView {
+            VerticalLayout {
+                width: 100%;
+                padding: 16px;
+                spacing: 12px;
+                alignment: start;
+
+                HorizontalLayout {
+                    alignment: center;
+
+                    Rectangle {
+                        width: min(parent.width, 576px);
+                        height: card-content.preferred-height;
+                        background: Theme.surface;
+                        border-width: 1px;
+                        border-color: Theme.border;
+                        border-radius: 12px;
+
+                        card-content := VerticalLayout {
+                            padding: 12px;
+                            spacing: 12px;
+
+                            HorizontalLayout {
+                                spacing: 16px;
+
+                                Rectangle {
+                                    width: 72px;
+                                    height: 72px;
+                                    background: Theme.hover;
+                                    border-radius: 36px;
+                                    clip: true;
+
+                                    if root.has-avatar : Image {
+                                        width: 100%;
+                                        height: 100%;
+                                        source: root.avatar-image;
+                                        image-fit: cover;
+                                    }
+
+                                    if !root.has-avatar : Text {
+                                        text: root.avatar-initials;
+                                        color: Theme.foreground;
+                                        font-size: 22px;
+                                        font-weight: 600;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                        width: 100%;
+                                        height: 100%;
+                                    }
+
+                                    if root.has-avatar : TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => { root.avatar-open-requested(); }
+                                    }
+                                }
+
+                                VerticalLayout {
+                                    spacing: 2px;
+                                    vertical-stretch: 0;
+
+                                    Text {
+                                        text: root.username;
+                                        color: Theme.foreground;
+                                        font-size: 16px;
+                                        font-weight: 600;
+                                        overflow: elide;
+                                    }
+
+                                    Text {
+                                        text: root.fh-number;
+                                        color: Theme.muted;
+                                        font-size: 14px;
+                                        overflow: elide;
+                                    }
+
+                                    if !root.status-text.is-empty || !root.status-emoji.is-empty : Text {
+                                        text: "\{root.status-emoji} \{root.status-text}";
+                                        color: Theme.muted;
+                                        font-size: 14px;
+                                        overflow: elide;
+                                    }
+                                }
+                            }
+
+                            Rectangle {
+                                height: 1px;
+                                background: Theme.border;
+                            }
+
+                            HorizontalLayout {
+                                spacing: 8px;
+
+                                FHTextButton {
+                                    text: "Изменить";
+                                    clicked => { root.edit-requested(); }
+                                }
+
+                                FHTextButton {
+                                    text: "Скопировать FH-номер";
+                                    clicked => { root.share-requested(root.fh-number); }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if root.fields.length > 0 : HorizontalLayout {
+                    alignment: center;
+
+                    Rectangle {
+                        width: min(parent.width, 576px);
+                        height: fields-content.preferred-height;
+                        background: Theme.surface;
+                        border-width: 1px;
+                        border-color: Theme.border;
+                        border-radius: 12px;
+
+                        fields-content := VerticalLayout {
+                            padding: 12px;
+                            spacing: 10px;
+
+                            for field in root.fields : VerticalLayout {
+                                spacing: 2px;
+
+                                Text {
+                                    text: field.label;
+                                    color: Theme.muted;
+                                    font-size: 12px;
+                                    wrap: word-wrap;
+                                }
+
+                                Text {
+                                    text: field.value;
+                                    color: Theme.foreground;
+                                    font-size: 14px;
+                                    wrap: word-wrap;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                HorizontalLayout {
+                    alignment: center;
+
+                    Rectangle {
+                        width: min(parent.width, 576px);
+                        height: number-content.preferred-height;
+                        background: Theme.surface;
+                        border-width: 1px;
+                        border-color: Theme.border;
+                        border-radius: 12px;
+
+                        number-content := VerticalLayout {
+                            padding: 12px;
+                            spacing: 8px;
+
+                            Text {
+                                text: "FH-номер";
+                                color: Theme.foreground;
+                                font-size: 14px;
+                                font-weight: 600;
+                            }
+
+                            Text {
+                                text: "Постоянный номер аккаунта. Его можно передать собеседнику.";
+                                color: Theme.muted;
+                                font-size: 12px;
+                                wrap: word-wrap;
+                            }
+
+                            HorizontalLayout {
+                                Text {
+                                    text: root.fh-number;
+                                    color: Theme.foreground;
+                                    font-size: 14px;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                }
+
+                                FHPrimaryButton {
+                                    text: "Копировать";
+                                    clicked => { root.share-requested(root.fh-number); }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

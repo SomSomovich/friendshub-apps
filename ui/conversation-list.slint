@@ -1,0 +1,860 @@
+import { Theme } from "theme.slint";
+import { ListView } from "std-widgets.slint";
+
+export struct ConversationRow {
+    id: string,
+    title: string,
+    avatar-label: string,
+    avatar-image: image,
+    has-avatar: bool,
+    peer-account-id: string,
+    preview: string,
+    timestamp: string,
+    unread-count: int,
+    muted: bool,
+    has-pinned: bool,
+    archived: bool,
+}
+
+export struct FilterTab {
+    id: string,
+    label: string,
+    unread-count: int,
+    visible: bool,
+}
+
+export struct FolderTab {
+    id: string,
+    name: string,
+    unread-count: int,
+}
+
+component FilterButton inherits Rectangle {
+    in property <string> label;
+    in property <string> key;
+    in property <int> unread-count: 0;
+    in property <bool> active: false;
+    callback selected(string);
+
+    width: label-text.preferred-width + (root.unread-count > 0 ? 52px : 20px);
+    height: 30px;
+    background: root.active ? Theme.accent : (tap.has-hover ? Theme.hover : transparent);
+    border-radius: 8px;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-action-default => { root.selected(root.key); }
+    forward-focus: keyboard-scope;
+
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 6px;
+        alignment: center;
+
+        label-text := Text {
+            text: root.label;
+            color: root.active ? Theme.accent-foreground : Theme.muted;
+            font-size: 12px;
+            font-weight: 500;
+            accessible-role: none;
+        }
+
+        if root.unread-count > 0 : Rectangle {
+            min-width: 20px;
+            height: 17px;
+            background: root.active ? #ffffff33 : Theme.accent;
+            border-radius: 9px;
+
+            HorizontalLayout {
+                padding-left: 5px;
+                padding-right: 5px;
+                alignment: center;
+
+                count-text := Text {
+                    text: root.unread-count > 99 ? "99+" : "\{root.unread-count}";
+                    color: Theme.accent-foreground;
+                    font-size: 10px;
+                    font-weight: 600;
+                    accessible-role: none;
+                }
+            }
+        }
+    }
+
+    tap := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.selected(root.key); }
+    }
+
+    keyboard-scope := FocusScope {
+        x: 0;
+        width: 0;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.selected(root.key);
+                return accept;
+            }
+            return reject;
+        }
+    }
+}
+
+component FolderFilterButton inherits Rectangle {
+    in property <FolderTab> folder;
+    in property <bool> active: false;
+    in property <string> language: "ru";
+    callback selected(string);
+    callback edit-requested(string);
+
+    width: label-text.preferred-width + (root.folder.unread-count > 0 ? 52px : 20px);
+    height: 30px;
+    background: root.active ? Theme.accent : (tap.has-hover ? Theme.hover : transparent);
+    border-radius: 8px;
+    accessible-role: button;
+    accessible-label: root.language == "ru"
+        ? "\{root.folder.name}, непрочитанных: \{root.folder.unread-count}"
+        : "\{root.folder.name}, \{root.folder.unread-count} unread";
+    accessible-action-default => { root.selected(root.folder.id); }
+    forward-focus: keyboard-scope;
+
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 6px;
+        alignment: center;
+
+        label-text := Text {
+            text: root.folder.name;
+            color: root.active ? Theme.accent-foreground : Theme.muted;
+            font-size: 12px;
+            font-weight: 500;
+            accessible-role: none;
+        }
+
+        if root.folder.unread-count > 0 : Rectangle {
+            min-width: 20px;
+            height: 17px;
+            background: root.active ? #ffffff33 : Theme.accent;
+            border-radius: 9px;
+
+            HorizontalLayout {
+                padding-left: 5px;
+                padding-right: 5px;
+                alignment: center;
+
+                count-text := Text {
+                    text: root.folder.unread-count > 99 ? "99+" : "\{root.folder.unread-count}";
+                    color: Theme.accent-foreground;
+                    font-size: 10px;
+                    font-weight: 600;
+                    accessible-role: none;
+                }
+            }
+        }
+    }
+
+    ContextMenuArea {
+        Menu {
+            MenuItem {
+                title: root.language == "ru" ? "Настроить папку" : "Edit folder";
+                activated => { root.edit-requested(root.folder.id); }
+            }
+        }
+    }
+
+    tap := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.selected(root.folder.id); }
+    }
+
+    keyboard-scope := FocusScope {
+        x: 0;
+        width: 0;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.selected(root.folder.id);
+                return accept;
+            }
+            return reject;
+        }
+    }
+}
+
+component ConversationRowView inherits Rectangle {
+    in property <ConversationRow> conversation;
+    in property <bool> active: false;
+    in property <string> language: "ru";
+    callback selected(string);
+    callback profile-requested(string);
+    callback context-action(string, string);
+
+    height: 68px;
+    background: root.active ? Theme.hover : (row-area.has-hover ? Theme.hover : transparent);
+    accessible-role: button;
+    accessible-label: root.language == "ru" ? "Открыть чат: \{root.conversation.title}" : "Open chat: \{root.conversation.title}";
+    accessible-action-default => { root.selected(root.conversation.id); }
+    forward-focus: keyboard-scope;
+
+    row-area := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.selected(root.conversation.id); }
+    }
+
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        spacing: 12px;
+        alignment: center;
+
+        Rectangle {
+            width: 40px;
+            height: 40px;
+            background: Theme.hover;
+            border-radius: 20px;
+            clip: true;
+
+            if root.conversation.has-avatar : Image {
+                source: root.conversation.avatar-image;
+                width: 100%;
+                height: 100%;
+                image-fit: cover;
+                accessible-role: none;
+            }
+            if !root.conversation.has-avatar : Text {
+                text: root.conversation.avatar-label;
+                color: Theme.muted;
+                font-size: 14px;
+                font-weight: 600;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                width: 100%;
+                height: 100%;
+                accessible-role: none;
+            }
+
+            if !root.conversation.peer-account-id.is-empty : TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.profile-requested(root.conversation.peer-account-id); }
+            }
+        }
+
+        VerticalLayout {
+            min-width: 0px;
+            horizontal-stretch: 1;
+            spacing: 2px;
+
+            HorizontalLayout {
+                spacing: 6px;
+
+                Text {
+                    text: root.conversation.title;
+                    color: Theme.foreground;
+                    font-size: 14px;
+                    font-weight: 500;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                    accessible-role: none;
+                }
+
+                if root.conversation.muted : Text {
+                    text: "🔕";
+                    color: Theme.muted;
+                    font-size: 12px;
+                    accessible-label: root.language == "ru" ? "Без уведомлений" : "Muted";
+                }
+
+                if root.conversation.has-pinned : Text {
+                    text: "📌";
+                    color: Theme.muted;
+                    font-size: 12px;
+                    accessible-label: root.language == "ru" ? "Есть закреплённые сообщения" : "Pinned messages";
+                }
+
+                if !root.conversation.timestamp.is-empty : Text {
+                    text: root.conversation.timestamp;
+                    color: Theme.muted;
+                    font-size: 11px;
+                    horizontal-alignment: right;
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 8px;
+
+                Text {
+                    text: root.conversation.preview.is-empty
+                        ? (root.language == "ru" ? "Нет сообщений" : "No messages")
+                        : root.conversation.preview;
+                    color: Theme.muted;
+                    font-size: 12px;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                    accessible-role: none;
+                }
+
+                if root.conversation.unread-count > 0 && !root.conversation.archived : Rectangle {
+                    min-width: 20px;
+                    height: 18px;
+                    background: Theme.accent;
+                    border-radius: 9px;
+
+                    HorizontalLayout {
+                        padding-left: 6px;
+                        padding-right: 6px;
+                        alignment: center;
+
+                        Text {
+                            text: root.conversation.unread-count > 99 ? "99+" : "\{root.conversation.unread-count}";
+                            color: Theme.accent-foreground;
+                            font-size: 11px;
+                            font-weight: 600;
+                            accessible-role: none;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    ContextMenuArea {
+        Menu {
+            MenuItem {
+                title: root.language == "ru" ? "Отметить прочитанным" : "Mark as read";
+                activated => { root.context-action(root.conversation.id, "mark-read"); }
+            }
+            MenuItem {
+                title: root.conversation.muted
+                    ? (root.language == "ru" ? "Включить уведомления" : "Unmute")
+                    : (root.language == "ru" ? "Без уведомлений" : "Mute");
+                activated => { root.context-action(root.conversation.id, "toggle-mute"); }
+            }
+            MenuItem {
+                title: root.conversation.archived
+                    ? (root.language == "ru" ? "Из архива" : "Unarchive")
+                    : (root.language == "ru" ? "В архив" : "Archive");
+                activated => { root.context-action(root.conversation.id, "toggle-archive"); }
+            }
+            MenuItem {
+                title: root.language == "ru" ? "Удалить чат" : "Delete chat";
+                activated => { root.context-action(root.conversation.id, "delete"); }
+            }
+        }
+    }
+
+    keyboard-scope := FocusScope {
+        x: 0;
+        width: 0;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.selected(root.conversation.id);
+                return accept;
+            }
+            return reject;
+        }
+    }
+}
+
+export component ConversationList inherits Rectangle {
+    in property <string> username;
+    in property <string> fh-number;
+    in property <image> account-avatar;
+    in property <string> account-avatar-label;
+    in property <bool> has-account-avatar: false;
+    in property <[FilterTab]> filters;
+    in property <string> selected-filter: "all";
+    in property <[FolderTab]> folders;
+    in property <string> selected-folder: "";
+    in property <[ConversationRow]> rows;
+    in property <string> selected-conversation-id: "";
+    in-out property <string> search-query: "";
+    in property <bool> has-archived: false;
+    in property <bool> loading: false;
+    in property <string> load-error: "";
+    in property <string> empty-title: "Чатов пока нет";
+    in property <string> empty-description: "Начните с поиска собеседника или создайте группу.";
+    in property <bool> light-mode: false;
+    in property <string> language: "ru";
+
+    callback profile-requested();
+    callback search-changed(string);
+    callback filter-changed(string);
+    callback folder-create-requested();
+    callback folder-edit-requested(string);
+    callback conversation-selected(string);
+    callback conversation-profile-requested(string);
+    callback conversation-context-action(string, string);
+    callback retry-requested();
+    callback theme-selected(bool);
+    callback language-selected(string);
+    callback menu-requested();
+
+    background: Theme.surface;
+    border-color: Theme.border;
+    border-width: 0px;
+
+    VerticalLayout {
+        spacing: 0px;
+
+        Rectangle {
+            height: 57px;
+            background: Theme.surface;
+
+            Rectangle {
+                x: 0px;
+                y: parent.height - 1px;
+                width: parent.width;
+                height: 1px;
+                background: Theme.border;
+            }
+
+            HorizontalLayout {
+                padding-left: 12px;
+                padding-right: 12px;
+                spacing: 8px;
+                alignment: center;
+
+                Rectangle {
+                    width: 32px;
+                    height: 32px;
+                    background: transparent;
+                    border-radius: 8px;
+                    accessible-role: button;
+                    accessible-label: root.language == "ru" ? "Меню" : "Menu";
+                    accessible-action-default => { root.menu-requested(); }
+
+                    Text {
+                        text: "☰";
+                        color: Theme.muted;
+                        font-size: 19px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        width: 100%;
+                        height: 100%;
+                        accessible-role: none;
+                    }
+
+                    TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.menu-requested(); }
+                    }
+                }
+
+                if !root.username.is-empty : Rectangle {
+                    horizontal-stretch: 1;
+                    height: 40px;
+                    background: transparent;
+                    border-radius: 8px;
+                    accessible-role: button;
+                    accessible-label: root.language == "ru"
+                        ? "Профиль \{root.username}, \{root.fh-number}"
+                        : "Profile \{root.username}, \{root.fh-number}";
+                    accessible-action-default => { root.profile-requested(); }
+
+                    HorizontalLayout {
+                        padding: 4px;
+                        spacing: 8px;
+                        alignment: center;
+
+                        Rectangle {
+                            width: 32px;
+                            height: 32px;
+                            background: Theme.hover;
+                            border-radius: 16px;
+                            clip: true;
+
+                            if root.has-account-avatar : Image {
+                                source: root.account-avatar;
+                                width: 100%;
+                                height: 100%;
+                                image-fit: cover;
+                                accessible-role: none;
+                            }
+                            if !root.has-account-avatar : Text {
+                                text: root.account-avatar-label;
+                                color: Theme.muted;
+                                font-size: 12px;
+                                font-weight: 600;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                                width: 100%;
+                                height: 100%;
+                                accessible-role: none;
+                            }
+                        }
+
+                        VerticalLayout {
+                            min-width: 0px;
+                            horizontal-stretch: 1;
+                            spacing: 1px;
+
+                            Text {
+                                text: root.username;
+                                color: Theme.foreground;
+                                font-size: 14px;
+                                font-weight: 500;
+                                overflow: elide;
+                            }
+
+                            Text {
+                                text: root.fh-number;
+                                color: Theme.muted;
+                                font-size: 12px;
+                                overflow: elide;
+                            }
+                        }
+                    }
+
+                    TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.profile-requested(); }
+                    }
+                }
+            }
+        }
+
+        Rectangle {
+            height: 60px;
+            background: Theme.surface;
+
+            HorizontalLayout {
+                padding: 12px;
+                alignment: center;
+
+                Rectangle {
+                    width: 100%;
+                    height: 36px;
+                    background: Theme.background;
+                    border-width: 1px;
+                    border-color: search-input.has-focus ? Theme.accent : Theme.border;
+                    border-radius: 8px;
+
+                    Text {
+                        text: "⌕";
+                        x: 10px;
+                        width: 18px;
+                        height: parent.height;
+                        color: Theme.muted;
+                        font-size: 18px;
+                        vertical-alignment: center;
+                        accessible-role: none;
+                    }
+
+                    if root.search-query.is-empty : Text {
+                        text: root.language == "ru" ? "Поиск" : "Search";
+                        x: 34px;
+                        width: parent.width - 42px;
+                        height: parent.height;
+                        color: Theme.muted;
+                        font-size: 14px;
+                        vertical-alignment: center;
+                        accessible-role: none;
+                    }
+
+                    search-input := TextInput {
+                        x: 34px;
+                        width: parent.width - 42px;
+                        height: parent.height;
+                        text <=> root.search-query;
+                        font-size: 14px;
+                        color: Theme.foreground;
+                        vertical-alignment: center;
+                        accessible-label: root.language == "ru" ? "Поиск" : "Search";
+                        accessible-placeholder-text: root.language == "ru" ? "Поиск" : "Search";
+                        edited => { root.search-changed(root.search-query); }
+                    }
+                }
+            }
+        }
+
+        Rectangle {
+            height: 44px;
+            background: Theme.surface;
+
+            Rectangle {
+                x: 0px;
+                y: parent.height - 1px;
+                width: parent.width;
+                height: 1px;
+                background: Theme.border;
+            }
+
+            HorizontalLayout {
+                padding-left: 8px;
+                padding-right: 8px;
+                spacing: 4px;
+                alignment: center;
+
+                Flickable {
+                    horizontal-stretch: 1;
+                    height: 34px;
+                    content-height: self.height;
+                    content-width: filter-strip.preferred-width;
+
+                    filter-strip := HorizontalLayout {
+                        x: 0px;
+                        y: 0px;
+                        width: self.preferred-width;
+                        height: parent.height;
+                        spacing: 4px;
+
+                        for tab in root.filters : FilterButton {
+                            visible: tab.visible && (tab.id != "archived" || root.has-archived || root.selected-filter == "archived");
+                            label: tab.label;
+                            key: tab.id;
+                            unread-count: tab.unread-count;
+                            active: root.selected-filter == tab.id;
+                            selected(key) => { root.filter-changed(key); }
+                        }
+
+                        for folder in root.folders : FolderFilterButton {
+                            folder: folder;
+                            active: root.selected-folder == folder.id;
+                            language: root.language;
+                            selected(id) => { root.filter-changed("folder:\{id}"); }
+                            edit-requested(id) => { root.folder-edit-requested(id); }
+                        }
+                    }
+                }
+
+                Rectangle {
+                    width: 32px;
+                    height: 32px;
+                    background: folder-add.has-hover ? Theme.hover : transparent;
+                    border-radius: 8px;
+                    accessible-role: button;
+                    accessible-label: root.language == "ru" ? "Создайте папку с чатами" : "Create a chat folder";
+                    accessible-action-default => { root.folder-create-requested(); }
+
+                    Text {
+                        text: "+";
+                        color: Theme.muted;
+                        font-size: 22px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        width: 100%;
+                        height: 100%;
+                        accessible-role: none;
+                    }
+
+                    folder-add := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.folder-create-requested(); }
+                    }
+                }
+            }
+        }
+
+        if root.loading && root.rows.length == 0 : Rectangle {
+            vertical-stretch: 1;
+            background: Theme.surface;
+
+            VerticalLayout {
+                alignment: center;
+                spacing: 6px;
+
+                Text {
+                    text: root.language == "ru" ? "Загрузка чатов…" : "Loading chats…";
+                    color: Theme.muted;
+                    font-size: 12px;
+                    horizontal-alignment: center;
+                }
+            }
+        }
+        if !root.loading && !root.load-error.is-empty && root.rows.length == 0 : Rectangle {
+            vertical-stretch: 1;
+            background: Theme.surface;
+
+            VerticalLayout {
+                padding: 20px;
+                alignment: center;
+                spacing: 8px;
+
+                Text {
+                    text: root.language == "ru" ? "Не удалось загрузить список чатов" : "Could not load chats";
+                    color: Theme.foreground;
+                    font-size: 14px;
+                    font-weight: 500;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                }
+
+                Text {
+                    text: root.load-error;
+                    color: Theme.muted;
+                    font-size: 12px;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                }
+
+                Rectangle {
+                    width: 92px;
+                    height: 32px;
+                    background: Theme.hover;
+                    border-radius: 8px;
+                    accessible-role: button;
+                    accessible-label: root.language == "ru" ? "Повторить" : "Retry";
+                    accessible-action-default => { root.retry-requested(); }
+
+                    Text {
+                        text: root.language == "ru" ? "Повторить" : "Retry";
+                        color: Theme.foreground;
+                        font-size: 12px;
+                        font-weight: 500;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        width: 100%;
+                        height: 100%;
+                    }
+
+                    TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.retry-requested(); }
+                    }
+                }
+            }
+        }
+        if !root.loading && root.load-error.is-empty && root.rows.length == 0 : Rectangle {
+            vertical-stretch: 1;
+            background: Theme.surface;
+
+            VerticalLayout {
+                padding: 20px;
+                alignment: center;
+                spacing: 8px;
+
+                Text {
+                    text: "▢";
+                    color: Theme.muted;
+                    font-size: 28px;
+                    horizontal-alignment: center;
+                }
+
+                Text {
+                    text: root.empty-title;
+                    color: Theme.foreground;
+                    font-size: 14px;
+                    font-weight: 500;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                }
+
+                Text {
+                    text: root.empty-description;
+                    color: Theme.muted;
+                    font-size: 12px;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                }
+            }
+        }
+        if !root.loading && root.load-error.is-empty && root.rows.length > 0 : ListView {
+            vertical-stretch: 1;
+            for row in root.rows : ConversationRowView {
+                conversation: row;
+                active: root.selected-conversation-id == row.id;
+                language: root.language;
+                selected(id) => { root.conversation-selected(id); }
+                profile-requested(id) => { root.conversation-profile-requested(id); }
+                context-action(id, action) => { root.conversation-context-action(id, action); }
+            }
+        }
+
+        Rectangle {
+            height: 57px;
+            background: Theme.surface;
+
+            Rectangle {
+                x: 0px;
+                y: 0px;
+                width: parent.width;
+                height: 1px;
+                background: Theme.border;
+            }
+
+            HorizontalLayout {
+                padding: 12px;
+                spacing: 8px;
+                alignment: center;
+
+                HorizontalLayout {
+                    spacing: 2px;
+                    alignment: center;
+
+                    Rectangle {
+                        width: 32px;
+                        height: 30px;
+                        background: !root.light-mode ? Theme.accent : transparent;
+                        border-radius: 8px;
+                        accessible-role: button;
+                        accessible-label: root.language == "ru" ? "Тёмная тема" : "Dark theme";
+                        accessible-action-default => { root.theme-selected(false); }
+
+                        Text {
+                            text: "◐";
+                            color: !root.light-mode ? Theme.accent-foreground : Theme.muted;
+                            font-size: 16px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                            width: 100%;
+                            height: 100%;
+                        }
+
+                        TouchArea { mouse-cursor: pointer; clicked => { root.theme-selected(false); } }
+                    }
+
+                    Rectangle {
+                        width: 32px;
+                        height: 30px;
+                        background: root.light-mode ? Theme.accent : transparent;
+                        border-radius: 8px;
+                        accessible-role: button;
+                        accessible-label: root.language == "ru" ? "Светлая тема" : "Light theme";
+                        accessible-action-default => { root.theme-selected(true); }
+
+                        Text {
+                            text: "☼";
+                            color: root.light-mode ? Theme.accent-foreground : Theme.muted;
+                            font-size: 16px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                            width: 100%;
+                            height: 100%;
+                        }
+
+                        TouchArea { mouse-cursor: pointer; clicked => { root.theme-selected(true); } }
+                    }
+                }
+
+                Rectangle { horizontal-stretch: 1; background: transparent; }
+
+                HorizontalLayout {
+                    spacing: 2px;
+                    alignment: center;
+
+                    for code in ["ru", "en"] : Rectangle {
+                        width: 32px;
+                        height: 30px;
+                        background: root.language == code ? Theme.accent : transparent;
+                        border-radius: 8px;
+                        accessible-role: button;
+                        accessible-label: code == "ru" ? "Русский" : "English";
+                        accessible-action-default => { root.language-selected(code); }
+
+                        Text {
+                            text: code;
+                            color: root.language == code ? Theme.accent-foreground : Theme.muted;
+                            font-size: 11px;
+                            font-weight: 600;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                            width: 100%;
+                            height: 100%;
+                        }
+
+                        TouchArea { mouse-cursor: pointer; clicked => { root.language-selected(code); } }
+                    }
+                }
+            }
+        }
+    }
+}

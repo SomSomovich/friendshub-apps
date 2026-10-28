@@ -1,0 +1,328 @@
+import { Theme } from "../theme.slint";
+import { ChatAction, ChatAttachmentView, ChatReaction } from "../chat/chat-controls.slint";
+import { MessageComposer } from "../chat/message-composer.slint";
+import { PollCard, PollViewModel } from "../chat/poll-card.slint";
+import { ScrollView } from "std-widgets.slint";
+
+export struct ChannelPost {
+    id: string,
+    author: string,
+    time-label: string,
+    body: string,
+    attachments: [ChatAttachmentView],
+    reactions: [ChatReaction],
+    discussion-label: string,
+    edited: bool,
+    pinned: bool,
+}
+
+export component ChannelScreen inherits Rectangle {
+    in property <string> title: "Канал";
+    in property <[ChannelPost]> posts;
+    in property <[ChannelPost]> pinned-posts;
+    in property <[PollViewModel]> polls;
+    in property <[ChatReaction]> reaction-options;
+    in property <bool> polls-loading: false;
+    in property <bool> polls-has-older: false;
+    in property <bool> polls-loading-older: false;
+    in property <string> polls-error-text: "";
+    in property <bool> loading: false;
+    in property <bool> has-older: false;
+    in property <bool> can-publish: false;
+    in property <bool> busy: false;
+    in property <string> error-text: "";
+    in-out property <string> draft: "";
+    in property <bool> editing: false;
+    in-out property <int> open-post-menu-index: -1;
+
+    callback back-requested();
+    callback profile-requested();
+    callback settings-requested();
+    callback refresh-requested();
+    callback load-older-requested();
+    callback post-open-requested(int);
+    callback post-edit-requested(int);
+    callback post-delete-requested(int);
+    callback post-pin-requested(int);
+    callback post-reaction-requested(int, string);
+    callback post-discussion-requested(int);
+    callback post-attachment-requested(int, string);
+    callback polls-retry-requested();
+    callback polls-load-older-requested();
+    callback poll-option-selection-requested(string, string);
+    callback poll-vote-requested(string);
+    callback poll-proposal-changed(string, string);
+    callback poll-propose-option-requested(string, string);
+    callback poll-option-remove-requested(string, string);
+    callback poll-stop-requested(string);
+    callback poll-remove-requested(string);
+    callback draft-changed(string);
+    callback publish-requested(string);
+    callback attachment-requested(string);
+    callback poll-requested();
+    callback voice-record-requested();
+    callback video-note-requested();
+    callback cancel-edit-requested();
+
+    background: Theme.background;
+
+    VerticalLayout {
+        spacing: 0px;
+
+        Rectangle {
+            height: 56px;
+            background: Theme.background;
+            border-width: 0px;
+            HorizontalLayout {
+                padding: 8px;
+                spacing: 6px;
+                ChatAction { label: "←"; width: 36px; clicked => { root.back-requested(); } }
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 2px;
+                    horizontal-stretch: 1;
+                    Text { text: root.title; color: Theme.foreground; font-size: 14px; font-weight: 600; overflow: elide; }
+                    Text { text: "Публикации канала"; color: Theme.muted; font-size: 11px; }
+                }
+                ChatAction { label: "●"; accessible-name: "Профиль"; clicked => { root.profile-requested(); } }
+                ChatAction { label: "↻"; accessible-name: "Обновить ленту"; enabled: !root.busy; clicked => { root.refresh-requested(); } }
+                ChatAction { label: "⚙"; accessible-name: "Настройки"; clicked => { root.settings-requested(); } }
+            }
+        }
+
+        if !root.error-text.is-empty : Text {
+            text: root.error-text;
+            color: Theme.danger;
+            font-size: 12px;
+            wrap: word-wrap;
+            horizontal-stretch: 1;
+        }
+
+        ScrollView {
+            width: 100%;
+            vertical-stretch: 1;
+            vertical-scrollbar-policy: as-needed;
+            VerticalLayout {
+                width: 100%;
+                max-width: 760px;
+                padding: 12px;
+                spacing: 10px;
+
+                if root.pinned-posts.length > 0 : Rectangle {
+                    width: 100%;
+                    background: Theme.surface;
+                    border-width: 1px;
+                    border-color: Theme.border;
+                    border-radius: 10px;
+                    VerticalLayout {
+                        padding: 10px;
+                        spacing: 6px;
+                        Text { text: "Закреплённые публикации"; color: Theme.accent; font-size: 12px; font-weight: 600; }
+                        for post[index] in root.pinned-posts : ChatAction {
+                            label: post.body.is-empty ? post.author : post.body;
+                            width: 100%;
+                            clicked => { root.post-open-requested(index); }
+                        }
+                    }
+                }
+
+                if root.loading && root.posts.length == 0 : Text {
+                    text: "Загружаем публикации…";
+                    color: Theme.muted;
+                    font-size: 12px;
+                    horizontal-alignment: center;
+                }
+
+                if !root.loading && root.posts.length == 0 && root.polls.length == 0 && !root.polls-loading : VerticalLayout {
+                    alignment: center;
+                    spacing: 8px;
+                    Text { text: "Публикаций пока нет."; color: Theme.foreground; font-size: 14px; horizontal-alignment: center; }
+                    if root.can-publish : Text { text: "Создайте первую публикацию."; color: Theme.muted; font-size: 12px; horizontal-alignment: center; }
+                }
+
+                if !root.polls-error-text.is-empty : HorizontalLayout {
+                    Text { text: root.polls-error-text; color: Theme.danger; font-size: 11px; wrap: word-wrap; horizontal-stretch: 1; }
+                    ChatAction { label: "Повторить"; clicked => { root.polls-retry-requested(); } }
+                }
+                if root.polls-loading && root.polls.length == 0 : Text {
+                    text: "Загружаем опросы…";
+                    color: Theme.muted;
+                    font-size: 11px;
+                    horizontal-alignment: center;
+                }
+                for poll[index] in root.polls : PollCard {
+                    poll: poll;
+                    option-selection-requested(option-id) => { root.poll-option-selection-requested(poll.id, option-id); }
+                    vote-requested(poll-id) => { root.poll-vote-requested(poll-id); }
+                    proposal-changed(text) => { root.poll-proposal-changed(poll.id, text); }
+                    propose-option-requested(poll-id, text) => { root.poll-propose-option-requested(poll-id, text); }
+                    remove-option-requested(poll-id, option-id) => { root.poll-option-remove-requested(poll-id, option-id); }
+                    stop-requested(poll-id) => { root.poll-stop-requested(poll-id); }
+                    remove-requested(poll-id) => { root.poll-remove-requested(poll-id); }
+                }
+                if root.polls-has-older : HorizontalLayout {
+                    alignment: center;
+                    ChatAction {
+                        label: root.polls-loading-older ? "Загружаем…" : "Более ранние опросы";
+                        enabled: !root.polls-loading-older;
+                        clicked => { root.polls-load-older-requested(); }
+                    }
+                }
+
+                for post[index] in root.posts : Rectangle {
+                    width: 100%;
+                    height: post-layout.preferred-height;
+                    background: Theme.surface;
+                    border-width: 1px;
+                    border-color: Theme.border;
+                    border-radius: 12px;
+
+                    post-layout := VerticalLayout {
+                        padding: 12px;
+                        spacing: 8px;
+                        HorizontalLayout {
+                            VerticalLayout {
+                                spacing: 3px;
+                                horizontal-stretch: 1;
+                                Text { text: post.author; color: Theme.foreground; font-size: 13px; font-weight: 600; }
+                                Text {
+                                    text: post.edited ? "изменено" : post.time-label;
+                                    color: Theme.muted;
+                                    font-size: 10px;
+                                }
+                            }
+                            if post.pinned : Text { text: "Закреплено"; color: Theme.accent; font-size: 10px; }
+                            ChatAction {
+                                label: "Ещё";
+                                accessible-name: "Дополнительные действия публикации";
+                                active: root.open-post-menu-index == index;
+                                clicked => {
+                                    root.open-post-menu-index = root.open-post-menu-index == index ? -1 : index;
+                                }
+                            }
+                        }
+                        if !post.body.is-empty : Text {
+                            text: post.body;
+                            color: Theme.foreground;
+                            font-size: 14px;
+                            wrap: word-wrap;
+                            horizontal-stretch: 1;
+                        }
+                        for attachment[attachment-index] in post.attachments : Rectangle {
+                            width: 100%;
+                            height: attachment.has-preview ? min(parent.width * 0.72, 280px) : 44px;
+                            background: Theme.background;
+                            border-width: attachment.unavailable ? 1px : 0px;
+                            border-color: Theme.border;
+                            border-radius: 8px;
+                            clip: true;
+                            if attachment.has-preview && !attachment.unavailable : Image {
+                                width: 100%;
+                                height: 100%;
+                                source: attachment.preview-image;
+                                image-fit: cover;
+                            }
+                            if !attachment.has-preview || attachment.unavailable : HorizontalLayout {
+                                padding: 8px;
+                                spacing: 6px;
+                                Text {
+                                    text: attachment.unavailable ? (attachment.state-label.is-empty ? "Вложение недоступно" : attachment.state-label) : attachment.label;
+                                    color: attachment.unavailable ? Theme.muted : Theme.foreground;
+                                    font-size: 11px;
+                                    horizontal-stretch: 1;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                }
+                                Text { text: attachment.size-label; color: Theme.muted; font-size: 10px; vertical-alignment: center; }
+                            }
+                            TouchArea {
+                                enabled: !attachment.unavailable;
+                                accessible-role: button;
+                                accessible-label: attachment.label;
+                                clicked => { root.post-attachment-requested(index, attachment.id); }
+                            }
+                        }
+                        if post.reactions.length > 0 : HorizontalLayout {
+                            spacing: 4px;
+                            for reaction[reaction-index] in post.reactions : ChatAction {
+                                label: reaction.emoji + " " + reaction.count-label;
+                                active: reaction.mine;
+                                accessible-name: reaction.emoji + " " + reaction.count-label;
+                                clicked => { root.post-reaction-requested(index, reaction.emoji); }
+                            }
+                        }
+                        if root.open-post-menu-index == index : HorizontalLayout {
+                            spacing: 6px;
+                            for reaction-option[reaction-option-index] in root.reaction-options : ChatAction {
+                                label: reaction-option.emoji;
+                                active: reaction-option.mine;
+                                accessible-name: reaction-option.emoji + " " + reaction-option.count-label;
+                                clicked => {
+                                    root.open-post-menu-index = -1;
+                                    root.post-reaction-requested(index, reaction-option.emoji);
+                                }
+                            }
+                            if root.can-publish : ChatAction {
+                                label: post.pinned ? "Открепить" : "Закрепить";
+                                enabled: !root.busy;
+                                clicked => {
+                                    root.open-post-menu-index = -1;
+                                    root.post-pin-requested(index);
+                                }
+                            }
+                            if root.can-publish : ChatAction {
+                                label: "Редактировать публикацию";
+                                enabled: !root.busy;
+                                clicked => {
+                                    root.open-post-menu-index = -1;
+                                    root.post-edit-requested(index);
+                                }
+                            }
+                            if root.can-publish : ChatAction {
+                                label: "Удалить";
+                                danger: true;
+                                enabled: !root.busy;
+                                clicked => {
+                                    root.open-post-menu-index = -1;
+                                    root.post-delete-requested(index);
+                                }
+                            }
+                        }
+                        HorizontalLayout {
+                            spacing: 6px;
+                            if !post.discussion-label.is-empty : ChatAction {
+                                label: post.discussion-label;
+                                clicked => { root.post-discussion-requested(index); }
+                            }
+                        }
+                    }
+                }
+
+                if root.has-older : HorizontalLayout {
+                    alignment: center;
+                    ChatAction {
+                        label: root.busy ? "Загружаем…" : "Более ранние публикации";
+                        enabled: !root.busy;
+                        clicked => { root.load-older-requested(); }
+                    }
+                }
+            }
+        }
+
+        if root.can-publish || root.editing : MessageComposer {
+            value <=> root.draft;
+            enabled: true;
+            busy: root.busy;
+            editing: root.editing;
+            can-poll: true;
+            can-schedule: false;
+            draft-changed(text) => { root.draft-changed(text); }
+            send-requested(text) => { root.publish-requested(text); }
+            attachment-requested(kind) => { root.attachment-requested(kind); }
+            poll-requested => { root.poll-requested(); }
+            voice-record-requested => { root.voice-record-requested(); }
+            video-note-requested => { root.video-note-requested(); }
+            cancel-edit-requested => { root.cancel-edit-requested(); }
+        }
+    }
+}

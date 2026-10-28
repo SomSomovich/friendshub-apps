@@ -1,0 +1,208 @@
+import { Theme } from "../theme.slint";
+import { FHPrimaryButton, FHTextButton } from "../components.slint";
+import { SettingsCard, SettingsDivider, SettingsFrame } from "common.slint";
+
+export component AboutSettingsScreen inherits Rectangle {
+    in property <string> app-version: "";
+    in property <string> repository-url: "https://github.com/SomSomovich/friendshubWEB";
+    in property <string> native-releases-url: "https://github.com/SomSomovich/friendshub-apps/releases";
+    in property <string> core-repository-url: "https://github.com/SomSomovich/friendshub-core";
+    in property <bool> updater-supported: false;
+    in property <bool> update-busy: false;
+    in property <string> update-status: "";
+    in property <bool> busy: false;
+
+    callback back-requested();
+    callback open-url-requested(string);
+    callback copy-text-requested(string);
+    callback check-updates-requested();
+    callback logout-requested();
+
+    private property <bool> confirm-logout-open: false;
+
+    width: 100%;
+    height: 100%;
+    background: Theme.background;
+
+    SettingsFrame {
+        title: "О приложении";
+        back-requested => { root.back-requested(); }
+
+        SettingsCard {
+            title: "Приложение";
+
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: center;
+                Text {
+                    text: "Версия";
+                    color: Theme.foreground;
+                    font-size: 13px;
+                    horizontal-stretch: 1;
+                }
+                Text {
+                    text: root.app-version;
+                    color: Theme.muted;
+                    font-size: 13px;
+                }
+            }
+
+            SettingsDivider {}
+
+            Text {
+                text: "Обновление нативного клиента";
+                color: Theme.foreground;
+                font-size: 13px;
+                font-weight: 500;
+            }
+
+            Text {
+                text: root.updater-supported
+                    ? "Проверить и установить актуальную версию приложения."
+                    : "Автоматическое обновление пока не настроено. Релизы доступны по ссылке ниже.";
+                color: Theme.muted;
+                font-size: 12px;
+                wrap: word-wrap;
+                width: 100%;
+            }
+
+            if root.updater-supported : FHPrimaryButton {
+                text: "Проверить обновления";
+                enabled: !root.busy && !root.update-busy;
+                busy: root.update-busy;
+                clicked => { root.check-updates-requested(); }
+            }
+
+            if !root.update-status.is-empty : Text {
+                text: root.update-status;
+                color: Theme.muted;
+                font-size: 12px;
+                wrap: word-wrap;
+                width: 100%;
+            }
+
+            SettingsDivider {}
+
+            Text {
+                text: "Исходный код";
+                color: Theme.foreground;
+                font-size: 13px;
+                font-weight: 500;
+            }
+            Text {
+                text: "Клиент распространяется под AGPL-3.0.";
+                color: Theme.muted;
+                font-size: 12px;
+                wrap: word-wrap;
+                width: 100%;
+            }
+            FHTextButton {
+                text: "Открыть репозиторий FriendsHub WEB";
+                clicked => { root.open-url-requested(root.repository-url); }
+            }
+
+            SettingsDivider {}
+
+            Text {
+                text: "Нативный клиент";
+                color: Theme.foreground;
+                font-size: 13px;
+                font-weight: 500;
+            }
+            Text {
+                text: "Загрузки появятся после первого релиза.";
+                color: Theme.muted;
+                font-size: 12px;
+                wrap: word-wrap;
+                width: 100%;
+            }
+            FHTextButton {
+                text: "Релизы нативного клиента";
+                clicked => { root.open-url-requested(root.native-releases-url); }
+            }
+
+            SettingsDivider {}
+
+            Text {
+                text: "Лицензия";
+                color: Theme.foreground;
+                font-size: 13px;
+                font-weight: 500;
+            }
+            Text {
+                text: "AGPL-3.0 — свободная лицензия с обязательством открывать производные работы.";
+                color: Theme.muted;
+                font-size: 12px;
+                wrap: word-wrap;
+                width: 100%;
+            }
+
+            SettingsDivider {}
+
+            Text {
+                text: "Криптомодуль";
+                color: Theme.foreground;
+                font-size: 13px;
+                font-weight: 500;
+            }
+            Text {
+                text: "Общий Rust-модуль приложения и браузерной версии.";
+                color: Theme.muted;
+                font-size: 12px;
+                wrap: word-wrap;
+                width: 100%;
+            }
+            FHTextButton {
+                text: "Копировать ссылку на core";
+                clicked => { root.copy-text-requested(root.core-repository-url); }
+            }
+        }
+
+        SettingsCard {
+            title: "Сессия";
+
+            if !root.confirm-logout-open : FHPrimaryButton {
+                text: "Выйти";
+                enabled: !root.busy;
+                clicked => { root.confirm-logout-open = true; }
+            }
+            if root.confirm-logout-open : Rectangle {
+                width: 100%;
+                height: logout-content.preferred-height;
+                background: Theme.hover;
+                border-radius: 8px;
+
+                logout-content := VerticalLayout {
+                    padding: 12px;
+                    spacing: 8px;
+
+                    Text {
+                        text: "Сессия будет отозвана, а сообщения и ключи этого аккаунта будут удалены с устройства.";
+                        color: Theme.foreground;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                        width: 100%;
+                    }
+
+                    HorizontalLayout {
+                        spacing: 8px;
+                        FHPrimaryButton {
+                            text: "Выйти";
+                            enabled: !root.busy;
+                            busy: root.busy;
+                            clicked => {
+                                root.logout-requested();
+                                root.confirm-logout-open = false;
+                            }
+                        }
+                        FHTextButton {
+                            text: "Отмена";
+                            enabled: !root.busy;
+                            clicked => { root.confirm-logout-open = false; }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,266 @@
+import { Theme } from "../theme.slint";
+import { FHInput, FHPrimaryButton, FHTextButton } from "../components.slint";
+import { SettingsCard, SettingsDivider, SettingsFrame } from "common.slint";
+
+export struct SettingsProfileField {
+    label: string,
+    value: string,
+}
+
+component ProfileFieldRow inherits Rectangle {
+    in property <int> index;
+    in-out property <string> label;
+    in-out property <string> value;
+    callback label-edited(int, string);
+    callback value-edited(int, string);
+    callback remove-requested(int);
+
+    width: 100%;
+    height: 94px;
+    background: Theme.background;
+    border-width: 1px;
+    border-color: Theme.border;
+    border-radius: 8px;
+
+    VerticalLayout {
+        padding: 8px;
+        spacing: 6px;
+
+        HorizontalLayout {
+            spacing: 8px;
+
+            TextInput {
+                height: 32px;
+                horizontal-stretch: 1;
+                text <=> root.label;
+                font-size: 13px;
+                color: Theme.foreground;
+                accessible-label: "Название дополнительного поля";
+                edited => { root.label-edited(root.index, self.text); }
+            }
+
+            FHTextButton {
+                text: "Удалить";
+                clicked => { root.remove-requested(root.index); }
+            }
+        }
+
+        TextInput {
+            width: 100%;
+            height: 32px;
+            text <=> root.value;
+            font-size: 13px;
+            color: Theme.foreground;
+            accessible-label: "Значение дополнительного поля";
+            edited => { root.value-edited(root.index, self.text); }
+        }
+    }
+}
+
+export component AccountSettingsScreen inherits Rectangle {
+    in-out property <string> username;
+    in property <string> fh-number;
+    in property <string> avatar-url: "";
+    in property <image> avatar-image;
+    in property <bool> has-avatar: false;
+    in-out property <string> status-text: "";
+    in-out property <string> status-emoji: "";
+    in property <int> status-ttl-seconds: 3600;
+    in property <[SettingsProfileField]> profile-fields: [];
+    in property <bool> username-valid: true;
+    in property <string> username-error: "";
+    in property <bool> busy: false;
+
+    callback back-requested();
+    callback choose-avatar-requested();
+    callback remove-avatar-requested();
+    callback copy-fh-number-requested(string);
+    callback save-username-requested(string);
+    callback save-status-requested(string, string, int);
+    callback clear-status-requested();
+    callback status-duration-requested();
+    callback profile-field-label-edited(int, string);
+    callback profile-field-value-edited(int, string);
+    callback add-profile-field-requested();
+    callback remove-profile-field-requested(int);
+    callback save-profile-fields-requested();
+
+    width: 100%;
+    height: 100%;
+    background: Theme.background;
+
+    SettingsFrame {
+        title: "Аккаунт";
+        back-requested => { root.back-requested(); }
+
+        SettingsCard {
+            title: "Профиль";
+
+            HorizontalLayout {
+                spacing: 12px;
+                alignment: center;
+
+                Rectangle {
+                    width: 72px;
+                    height: 72px;
+                    border-radius: 36px;
+                    background: Theme.hover;
+                    clip: true;
+
+                    if root.has-avatar : Image {
+                        width: 100%;
+                        height: 100%;
+                        source: root.avatar-image;
+                    }
+                    if !root.has-avatar : Text {
+                        text: "FH";
+                        color: Theme.muted;
+                        font-size: 18px;
+                        font-weight: 600;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        width: 100%;
+                        height: 100%;
+                    }
+                }
+
+                VerticalLayout {
+                    spacing: 8px;
+                    horizontal-stretch: 1;
+
+                    FHTextButton {
+                        text: "Сменить аватар";
+                        clicked => { root.choose-avatar-requested(); }
+                    }
+
+                    if !root.avatar-url.is-empty : FHTextButton {
+                        text: "Удалить аватар";
+                        clicked => { root.remove-avatar-requested(); }
+                    }
+                }
+            }
+        }
+
+        SettingsCard {
+            title: "Имя";
+            description: "1–64 символа: латинские буквы, цифры, «_», «.» и одиночные пробелы.";
+
+            FHInput {
+                label: "Имя";
+                value <=> root.username;
+                error: root.username-error;
+            }
+
+            FHPrimaryButton {
+                text: "Сохранить";
+                enabled: root.username-valid && !root.busy;
+                busy: root.busy;
+                clicked => { root.save-username-requested(root.username); }
+            }
+        }
+
+        SettingsCard {
+            title: "FH-номер";
+            description: "Постоянный номер аккаунта. Его можно передать собеседнику.";
+
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: center;
+
+                Text {
+                    text: root.fh-number;
+                    color: Theme.foreground;
+                    font-size: 14px;
+                    horizontal-stretch: 1;
+                    vertical-alignment: center;
+                }
+
+                FHTextButton {
+                    text: "Копировать";
+                    clicked => { root.copy-fh-number-requested(root.fh-number); }
+                }
+            }
+        }
+
+        SettingsCard {
+            title: "Статус";
+            description: "Короткая подпись рядом с именем.";
+
+            FHInput {
+                label: "Текст";
+                placeholder: "Чем занимаетесь?";
+                value <=> root.status-text;
+            }
+
+            FHInput {
+                label: "Эмодзи";
+                placeholder: "До 8 символов";
+                value <=> root.status-emoji;
+                helper: "До 8 символов — обычно один эмодзи.";
+            }
+
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: start;
+
+                Text {
+                    text: "Срок: \{root.status-ttl-seconds / 3600} ч";
+                    color: Theme.muted;
+                    font-size: 12px;
+                    vertical-alignment: center;
+                }
+
+                FHTextButton {
+                    text: "Изменить срок";
+                    clicked => { root.status-duration-requested(); }
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 8px;
+
+                FHPrimaryButton {
+                    text: "Сохранить статус";
+                    enabled: !root.busy;
+                    busy: root.busy;
+                    clicked => {
+                        root.save-status-requested(root.status-text, root.status-emoji, root.status-ttl-seconds);
+                    }
+                }
+
+                FHTextButton {
+                    text: "Сбросить статус";
+                    enabled: !root.busy;
+                    clicked => { root.clear-status-requested(); }
+                }
+            }
+        }
+
+        SettingsCard {
+            title: "Дополнительные поля профиля";
+            description: "До 10 публичных полей: название до 64 символов, значение до 128.";
+
+            for field[index] in root.profile-fields : ProfileFieldRow {
+                index: index;
+                label: field.label;
+                value: field.value;
+                label-edited(index, value) => { root.profile-field-label-edited(index, value); }
+                value-edited(index, value) => { root.profile-field-value-edited(index, value); }
+                remove-requested(index) => { root.remove-profile-field-requested(index); }
+            }
+
+            FHTextButton {
+                text: "Добавить поле";
+                enabled: root.profile-fields.length < 10;
+                clicked => { root.add-profile-field-requested(); }
+            }
+
+            FHPrimaryButton {
+                text: "Сохранить поля профиля";
+                enabled: !root.busy;
+                busy: root.busy;
+                clicked => { root.save-profile-fields-requested(); }
+            }
+        }
+    }
+}

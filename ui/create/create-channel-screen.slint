@@ -1,0 +1,255 @@
+import { Theme } from "../theme.slint";
+import { CreateWizard } from "create-wizard.slint";
+import { CreateInfoStep } from "create-info-step.slint";
+import { CreateSummary, CreateSummaryRow } from "create-summary.slint";
+import { FHInput } from "../components.slint";
+
+export struct ExistingGroupRow {
+    conversation-id: string,
+    title: string,
+    selected: bool,
+}
+
+component DiscussionOption inherits Rectangle {
+    in property <string> value;
+    in property <string> label;
+    in property <string> selected-value;
+    callback selected(string);
+
+    height: 40px;
+    border-radius: 8px;
+    background: option-area.has-hover ? Theme.hover : transparent;
+    accessible-role: radio-button;
+    accessible-label: label;
+    accessible-checked: selected-value == value;
+    accessible-action-default => { root.selected(value); }
+
+    HorizontalLayout {
+        padding-left: 8px;
+        spacing: 10px;
+        alignment: center;
+        Rectangle {
+            width: 16px;
+            height: 16px;
+            border-radius: 8px;
+            border-width: 1px;
+            border-color: root.selected-value == root.value ? Theme.accent : Theme.border;
+            background: transparent;
+            Rectangle {
+                x: 4px;
+                y: 4px;
+                width: 8px;
+                height: 8px;
+                border-radius: 4px;
+                background: root.selected-value == root.value ? Theme.accent : transparent;
+            }
+        }
+        Text { text: root.label; color: Theme.foreground; font-size: 14px; vertical-alignment: center; }
+    }
+
+    option-area := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.selected(root.value); }
+    }
+}
+
+export component CreateChannelScreen inherits Rectangle {
+    in-out property <string> channel-title: "";
+    in-out property <string> description: "";
+    in-out property <string> handle: "";
+    in-out property <bool> is-public: false;
+    in property <string> handle-feedback: "";
+    in property <bool> handle-feedback-error: false;
+    in property <bool> can-continue: false;
+    in property <bool> can-create: false;
+    in-out property <string> discussion-kind: "none";
+    in-out property <string> discussion-title: "";
+    in-out property <string> discussion-handle: "";
+    in property <string> discussion-handle-feedback: "";
+    in property <bool> discussion-handle-feedback-error: false;
+    in property <bool> discussion-ready: true;
+    in property <bool> groups-loading: false;
+    in property <[ExistingGroupRow]> existing-groups: [];
+    in-out property <string> selected-group-id: "";
+    in property <string> discussion-summary: "Нет";
+    in property <bool> busy: false;
+
+    callback discussion-kind-changed(string);
+    callback existing-group-selected(string);
+    callback back-requested();
+    callback cancel-requested();
+    callback create-requested();
+
+    private property <int> current-step: 0;
+    private property <bool> channel-title-ready: !root.channel-title.replace-all(" ", "").replace-all("\u{9}", "").replace-all("\u{d}", "").replace-all("\n", "").is-empty;
+    private property <bool> discussion-title-ready: !root.discussion-title.replace-all(" ", "").replace-all("\u{9}", "").replace-all("\u{d}", "").replace-all("\n", "").is-empty;
+    private property <bool> discussion-is-ready: root.discussion-kind == "none" || (root.discussion-kind == "existing" ? (!root.groups-loading && root.discussion-ready) : root.discussion-title-ready);
+
+    background: Theme.background;
+
+    CreateWizard {
+        title: "Новый канал";
+        second-step-label: "Обсуждение";
+        current-step: root.current-step;
+        submit-label: "Создать канал";
+        primary-enabled: root.current-step == 2 ? (root.channel-title-ready && root.discussion-is-ready) : (root.current-step == 0 ? root.channel-title-ready : true);
+        busy: root.busy;
+        back-requested => {
+            if root.current-step > 0 {
+                root.current-step -= 1;
+            } else {
+                root.back-requested();
+            }
+        }
+        cancel-requested => { root.cancel-requested(); }
+        primary-requested => {
+            if root.current-step < 2 {
+                root.current-step += 1;
+            } else {
+                root.create-requested();
+            }
+        }
+
+        if root.current-step == 0 : CreateInfoStep {
+            card-title: "О канале";
+            title-label: "Название";
+            title-value <=> root.channel-title;
+            description-value <=> root.description;
+            handle-value <=> root.handle;
+            is-public <=> root.is-public;
+            handle-feedback: root.handle-feedback;
+            handle-feedback-error: root.handle-feedback-error;
+        }
+        if root.current-step == 1 : Rectangle {
+            border-radius: 12px;
+            border-width: 1px;
+            border-color: Theme.border;
+            background: Theme.surface;
+
+            VerticalLayout {
+                padding: 12px;
+                spacing: 12px;
+                Text { text: "Группа для обсуждений"; color: Theme.foreground; font-size: 14px; font-weight: 600; }
+                Text {
+                    text: "Необязательно: группа, где читатели смогут комментировать.";
+                    color: Theme.muted;
+                    font-size: 12px;
+                    wrap: word-wrap;
+                }
+
+                DiscussionOption {
+                    value: "none";
+                    label: "Без обсуждений";
+                    selected-value: root.discussion-kind;
+                    selected(value) => {
+                        root.discussion-kind = value;
+                        root.discussion-kind-changed(value);
+                    }
+                }
+                if root.existing-groups.length > 0 : DiscussionOption {
+                    value: "existing";
+                    label: "Привязать существующую";
+                    selected-value: root.discussion-kind;
+                    selected(value) => {
+                        root.discussion-kind = value;
+                        root.discussion-kind-changed(value);
+                    }
+                }
+                DiscussionOption {
+                    value: "new";
+                    label: "Создать новую";
+                    selected-value: root.discussion-kind;
+                    selected(value) => {
+                        root.discussion-kind = value;
+                        root.discussion-kind-changed(value);
+                    }
+                }
+
+                if root.discussion-kind == "new" : VerticalLayout {
+                    spacing: 12px;
+                    FHInput {
+                        label: "Название";
+                        placeholder: "";
+                        value <=> root.discussion-title;
+                        password: false;
+                        helper: "";
+                        error: "";
+                    }
+                    FHInput {
+                        label: "Ссылка-имя для группы обсуждений";
+                        placeholder: "my_name";
+                        value <=> root.discussion-handle;
+                        password: false;
+                        helper: root.discussion-handle-feedback-error ? "" : root.discussion-handle-feedback;
+                        error: root.discussion-handle-feedback-error ? root.discussion-handle-feedback : "";
+                    }
+                }
+
+                if root.discussion-kind == "existing" : VerticalLayout {
+                    spacing: 4px;
+                    if root.groups-loading : Text {
+                        text: "Загрузка…";
+                        color: Theme.muted;
+                        font-size: 14px;
+                    }
+                    if !root.groups-loading && root.existing-groups.length == 0 : Text {
+                        text: "У вас пока нет групп, которые можно привязать.";
+                        color: Theme.muted;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                    }
+                    if !root.groups-loading && root.existing-groups.length > 0 : VerticalLayout {
+                        spacing: 4px;
+                        for group[index] in root.existing-groups : Rectangle {
+                            height: 40px;
+                            border-radius: 8px;
+                            background: group-area.has-hover ? Theme.hover : transparent;
+                            accessible-role: radio-button;
+                            accessible-label: group.title;
+                            accessible-checked: root.selected-group-id == group.conversation-id;
+                            accessible-action-default => {
+                                root.selected-group-id = group.conversation-id;
+                                root.existing-group-selected(group.conversation-id);
+                            }
+                            HorizontalLayout {
+                                padding-left: 8px;
+                                spacing: 10px;
+                                alignment: center;
+                                Rectangle {
+                                    width: 16px;
+                                    height: 16px;
+                                    border-radius: 8px;
+                                    border-width: 1px;
+                                    border-color: root.selected-group-id == group.conversation-id ? Theme.accent : Theme.border;
+                                    background: transparent;
+                                    Rectangle {
+                                        x: 4px; y: 4px; width: 8px; height: 8px; border-radius: 4px;
+                                        background: root.selected-group-id == group.conversation-id ? Theme.accent : transparent;
+                                    }
+                                }
+                                Text { text: group.title; color: Theme.foreground; font-size: 14px; overflow: elide; vertical-stretch: 1; }
+                            }
+                            group-area := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => {
+                                    root.selected-group-id = group.conversation-id;
+                                    root.existing-group-selected(group.conversation-id);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if root.current-step >= 2 : CreateSummary {
+            title: "Проверка";
+            rows: [
+                { label: "Название", value: root.channel-title },
+                { label: "Ссылка-имя (handle)", value: root.handle.is-empty ? "Не задана" : root.handle },
+                { label: "Доступ", value: root.is-public ? "Публичный" : "Приватный" },
+                { label: "Группа для обсуждений", value: root.discussion-kind == "none" ? "Нет" : (root.discussion-kind == "new" ? (root.discussion-title-ready ? root.discussion-title : "Введите название группы обсуждения") : root.discussion-summary) }
+            ];
+            note: "";
+        }
+    }
+}

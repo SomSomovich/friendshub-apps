@@ -1,0 +1,47 @@
+import { Theme } from "../theme.slint";
+
+export struct CreateSummaryRow {
+    label: string,
+    value: string,
+}
+
+export component CreateSummary inherits Rectangle {
+    in property <string> title;
+    in property <[CreateSummaryRow]> rows: [];
+    in property <string> note: "";
+
+    background: transparent;
+
+    Rectangle {
+        border-radius: 12px;
+        border-width: 1px;
+        border-color: Theme.border;
+        background: Theme.surface;
+
+        VerticalLayout {
+            padding: 12px;
+            spacing: 12px;
+
+            Text {
+                text: root.title;
+                color: Theme.foreground;
+                font-size: 14px;
+                font-weight: 600;
+            }
+
+            for row[index] in root.rows : VerticalLayout {
+                spacing: 5px;
+                Rectangle { height: 1px; background: Theme.border; }
+                Text { text: row.label; color: Theme.foreground; font-size: 14px; }
+                Text { text: row.value; color: Theme.muted; font-size: 14px; wrap: word-wrap; width: parent.width; }
+            }
+
+            if !root.note.is-empty : Text {
+                text: root.note;
+                color: Theme.muted;
+                font-size: 12px;
+                wrap: word-wrap;
+            }
+        }
+    }
+}

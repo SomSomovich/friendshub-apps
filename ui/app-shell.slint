@@ -1,0 +1,252 @@
+import { Theme } from "theme.slint";
+import { ConversationList, ConversationRow, FilterTab, FolderTab } from "conversation-list.slint";
+
+component AppMenuItem inherits Rectangle {
+    in property <string> label;
+    in property <string> icon;
+    in property <string> action;
+    callback selected(string);
+
+    width: 100%;
+    height: 40px;
+    background: tap.has-hover ? Theme.hover : transparent;
+    border-radius: 8px;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-action-default => { root.selected(root.action); }
+    forward-focus: keyboard-scope;
+
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        spacing: 10px;
+        alignment: center;
+
+        Text {
+            text: root.icon;
+            color: Theme.muted;
+            font-size: 16px;
+            horizontal-alignment: center;
+            width: 20px;
+            accessible-role: none;
+        }
+
+        Text {
+            text: root.label;
+            color: Theme.foreground;
+            font-size: 14px;
+            horizontal-stretch: 1;
+            vertical-alignment: center;
+            accessible-role: none;
+        }
+    }
+
+    tap := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.selected(root.action); }
+    }
+
+    keyboard-scope := FocusScope {
+        x: 0;
+        width: 0;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.selected(root.action);
+                return accept;
+            }
+            return reject;
+        }
+    }
+}
+
+export component AppShell inherits Rectangle {
+    in property <string> username;
+    in property <string> fh-number;
+    in property <image> account-avatar;
+    in property <string> account-avatar-label;
+    in property <bool> has-account-avatar: false;
+    in property <[FilterTab]> filters;
+    in property <string> selected-filter: "all";
+    in property <[FolderTab]> folders;
+    in property <string> selected-folder: "";
+    in property <[ConversationRow]> conversations;
+    in property <string> selected-conversation-id: "";
+    in property <string> search-query: "";
+    in property <bool> has-archived: false;
+    in property <bool> loading-conversations: false;
+    in property <string> conversation-error: "";
+    in property <string> empty-title: "Чатов пока нет";
+    in property <string> empty-description: "Начните с поиска собеседника или создайте группу.";
+    in property <bool> light-mode: false;
+    in property <string> language: "ru";
+    in property <bool> show-content: false;
+    in property <bool> offline: false;
+
+    callback navigation-requested(string);
+    callback account-switch-requested();
+    callback temporary-room-requested();
+    callback profile-requested();
+    callback search-changed(string);
+    callback filter-changed(string);
+    callback folder-create-requested();
+    callback folder-edit-requested(string);
+    callback conversation-selected(string);
+    callback conversation-profile-requested(string);
+    callback conversation-context-action(string, string);
+    callback conversations-retry-requested();
+    callback theme-selected(bool);
+    callback language-selected(string);
+
+    private property <bool> menu-open: false;
+    private property <length> menu-y: root.offline ? (root.width < 400px ? 96px : 88px) : 56px;
+
+    background: Theme.background;
+
+    VerticalLayout {
+        spacing: 0px;
+
+        if root.offline : Rectangle {
+            height: root.width < 400px ? 40px : 32px;
+            background: Theme.danger;
+
+            Text {
+                text: root.language == "ru"
+                    ? "Соединение потеряно — сообщения отправятся позже."
+                    : "Connection lost — messages will be sent later.";
+                color: #ffffff;
+                font-size: 12px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                width: 100%;
+                height: 100%;
+                wrap: word-wrap;
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 0px;
+            vertical-stretch: 1;
+
+            ConversationList {
+                width: root.width >= 768px ? 320px : root.width;
+                visible: root.width >= 768px || !root.show-content;
+
+                username: root.username;
+                fh-number: root.fh-number;
+                account-avatar: root.account-avatar;
+                account-avatar-label: root.account-avatar-label;
+                has-account-avatar: root.has-account-avatar;
+                filters: root.filters;
+                selected-filter: root.selected-filter;
+                folders: root.folders;
+                selected-folder: root.selected-folder;
+                rows: root.conversations;
+                selected-conversation-id: root.selected-conversation-id;
+                search-query: root.search-query;
+                has-archived: root.has-archived;
+                loading: root.loading-conversations;
+                load-error: root.conversation-error;
+                empty-title: root.empty-title;
+                empty-description: root.empty-description;
+                light-mode: root.light-mode;
+                language: root.language;
+
+                menu-requested => { root.menu-open = !root.menu-open; }
+                profile-requested => { root.profile-requested(); }
+                search-changed(query) => { root.search-changed(query); }
+                filter-changed(filter) => { root.filter-changed(filter); }
+                folder-create-requested => { root.folder-create-requested(); }
+                folder-edit-requested(id) => { root.folder-edit-requested(id); }
+                conversation-selected(id) => { root.conversation-selected(id); }
+                conversation-profile-requested(id) => { root.conversation-profile-requested(id); }
+                conversation-context-action(id, action) => { root.conversation-context-action(id, action); }
+                retry-requested => { root.conversations-retry-requested(); }
+                theme-selected(light) => { root.theme-selected(light); }
+                language-selected(code) => { root.language-selected(code); }
+            }
+
+            Rectangle {
+                horizontal-stretch: 1;
+                visible: root.width >= 768px || root.show-content;
+                background: Theme.background;
+                clip: true;
+
+                @children
+            }
+        }
+    }
+
+    if root.menu-open : TouchArea {
+        x: 0px;
+        y: 0px;
+        width: root.width;
+        height: root.height;
+        clicked => { root.menu-open = false; }
+    }
+
+    if root.menu-open : Rectangle {
+        x: 12px;
+        y: root.menu-y;
+        width: min(root.width - 24px, 268px);
+        height: menu-content.preferred-height + 16px;
+        background: Theme.surface;
+        border-width: 1px;
+        border-color: Theme.border;
+        border-radius: 12px;
+        clip: true;
+
+        menu-content := VerticalLayout {
+            padding: 8px;
+            spacing: 2px;
+
+            AppMenuItem {
+                label: root.language == "ru" ? "Поиск знакомств" : "Discover people";
+                icon: "♡";
+                action: "dating";
+                selected(action) => { root.menu-open = false; root.navigation-requested(action); }
+            }
+
+            AppMenuItem {
+                label: root.language == "ru" ? "Звонки" : "Calls";
+                icon: "☎";
+                action: "calls";
+                selected(action) => { root.menu-open = false; root.navigation-requested(action); }
+            }
+
+            AppMenuItem {
+                label: root.language == "ru" ? "Настройки" : "Settings";
+                icon: "⚙";
+                action: "settings";
+                selected(action) => { root.menu-open = false; root.navigation-requested(action); }
+            }
+
+            AppMenuItem {
+                label: root.language == "ru" ? "Создать группу" : "Create group";
+                icon: "♧";
+                action: "create-group";
+                selected(action) => { root.menu-open = false; root.navigation-requested(action); }
+            }
+
+            AppMenuItem {
+                label: root.language == "ru" ? "Создать временную комнату" : "Create temporary room";
+                icon: "◷";
+                action: "temporary-room";
+                selected(action) => { root.menu-open = false; root.temporary-room-requested(); }
+            }
+
+            AppMenuItem {
+                label: root.language == "ru" ? "Создать канал" : "Create channel";
+                icon: "▤";
+                action: "create-channel";
+                selected(action) => { root.menu-open = false; root.navigation-requested(action); }
+            }
+
+            AppMenuItem {
+                label: root.language == "ru" ? "Сменить аккаунт" : "Switch account";
+                icon: "⇄";
+                action: "switch-account";
+                selected(action) => { root.menu-open = false; root.account-switch-requested(); }
+            }
+        }
+    }
+}

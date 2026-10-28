@@ -1,0 +1,242 @@
+import { Theme } from "../theme.slint";
+import { ChatAction } from "chat-controls.slint";
+
+export struct PollOptionView {
+    id: string,
+    text: string,
+    count-label: string,
+    percent-label: string,
+    percentage: int,
+    selected: bool,
+    correct: bool,
+    user-proposed: bool,
+    can-remove: bool,
+}
+
+export struct PollViewModel {
+    id: string,
+    title: string,
+    description: string,
+    type-label: string,
+    total-voters-label: string,
+    closes-at-label: string,
+    vote-label: string,
+    your-vote-label: string,
+    close-label: string,
+    cannot-decrypt-label: string,
+    option-unavailable-label: string,
+    correct-label: string,
+    propose-label: string,
+    add-option-label: string,
+    stop-label: string,
+    delete-label: string,
+    delete-description: string,
+    closed: bool,
+    busy: bool,
+    error-text: string,
+    owner: bool,
+    can-vote: bool,
+    can-submit-vote: bool,
+    has-voted: bool,
+    can-propose: bool,
+    proposal-valid: bool,
+    allows-multiple: bool,
+    show-results: bool,
+    options: [PollOptionView],
+}
+
+export component PollCard inherits Rectangle {
+    in property <PollViewModel> poll;
+    in-out property <string> proposal: "";
+    out property <bool> confirm-delete-visible: false;
+
+    callback option-selection-requested(string);
+    callback vote-requested(string);
+    callback proposal-changed(string);
+    callback propose-option-requested(string, string);
+    callback remove-option-requested(string, string);
+    callback stop-requested(string);
+    callback remove-requested(string);
+
+    background: Theme.surface;
+    border-width: 1px;
+    border-color: Theme.border;
+    border-radius: 12px;
+
+    VerticalLayout {
+        padding: 12px;
+        spacing: 8px;
+
+        HorizontalLayout {
+            spacing: 8px;
+            VerticalLayout {
+                spacing: 4px;
+                horizontal-stretch: 1;
+                HorizontalLayout {
+                    spacing: 6px;
+                    Text { text: root.poll.type-label; color: Theme.accent; font-size: 10px; font-weight: 600; }
+                    if root.poll.closed : Text { text: root.poll.close-label; color: Theme.muted; font-size: 10px; }
+                }
+                Text { text: root.poll.title; color: Theme.foreground; font-size: 14px; font-weight: 600; wrap: word-wrap; }
+                if !root.poll.description.is-empty : Text { text: root.poll.description; color: Theme.muted; font-size: 12px; wrap: word-wrap; }
+            }
+            if root.poll.owner : VerticalLayout {
+                spacing: 4px;
+                if !root.poll.closed : ChatAction {
+                    label: root.poll.stop-label;
+                    enabled: !root.poll.busy;
+                    clicked => { root.stop-requested(root.poll.id); }
+                }
+                ChatAction {
+                    label: root.poll.delete-label;
+                    danger: true;
+                    enabled: !root.poll.busy;
+                    clicked => { root.confirm-delete-visible = true; }
+                }
+            }
+        }
+
+        if !root.poll.cannot-decrypt-label.is-empty : Text {
+            text: root.poll.cannot-decrypt-label;
+            color: Theme.muted;
+            font-size: 12px;
+            wrap: word-wrap;
+        }
+
+        VerticalLayout {
+            spacing: 6px;
+            for option[index] in root.poll.options : Rectangle {
+                width: 100%;
+                height: option-row.preferred-height;
+                background: Theme.background;
+                border-width: 1px;
+                border-color: Theme.border;
+                border-radius: 8px;
+                if root.poll.show-results : Rectangle {
+                    width: parent.width * min(max(option.percentage, 0), 100) / 100;
+                    height: parent.height;
+                    background: Theme.hover;
+                    border-radius: 8px;
+                }
+                option-row := HorizontalLayout {
+                    padding-left: 9px;
+                    padding-right: 6px;
+                    spacing: 6px;
+                    ChatAction {
+                        label: (root.poll.can-vote
+                            ? (root.poll.allows-multiple ? (option.selected ? "☑ " : "☐ ") : (option.selected ? "● " : "○ "))
+                            : (option.correct ? "✓ " : "")) + (option.text.is-empty ? root.poll.option-unavailable-label : option.text);
+                        active: option.selected;
+                        accessible-name: option.correct && !root.poll.can-vote ? root.poll.correct-label + ": " + option.text : option.text;
+                        enabled: root.poll.can-vote && !root.poll.busy && !option.text.is-empty;
+                        horizontal-stretch: 1;
+                        clicked => { root.option-selection-requested(option.id); }
+                    }
+                    if root.poll.show-results : Text {
+                        text: option.percent-label + " · " + option.count-label;
+                        color: Theme.muted;
+                        font-size: 11px;
+                        vertical-alignment: center;
+                    }
+                    if root.poll.owner && option.user-proposed && option.can-remove && !root.poll.closed : ChatAction {
+                        label: "×";
+                        accessible-name: "Удалить предложенный вариант";
+                        danger: true;
+                        enabled: !root.poll.busy;
+                        clicked => { root.remove-option-requested(root.poll.id, option.id); }
+                    }
+                }
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 8px;
+            Text { text: root.poll.total-voters-label; color: Theme.muted; font-size: 11px; vertical-alignment: center; horizontal-stretch: 1; }
+            if root.poll.can-vote : ChatAction {
+                label: root.poll.vote-label;
+                active: true;
+                enabled: !root.poll.busy && root.poll.can-submit-vote;
+                clicked => { root.vote-requested(root.poll.id); }
+            }
+            if !root.poll.can-vote && root.poll.has-voted : Text {
+                text: root.poll.your-vote-label;
+                color: Theme.muted;
+                font-size: 11px;
+                vertical-alignment: center;
+            }
+        }
+
+        if root.poll.can-propose && !root.poll.closed : HorizontalLayout {
+            spacing: 6px;
+            Rectangle {
+                height: 34px;
+                horizontal-stretch: 1;
+                background: Theme.background;
+                border-width: 1px;
+                border-color: input.has-focus ? Theme.accent : Theme.border;
+                border-radius: 8px;
+                input := TextInput {
+                    x: 9px;
+                    width: parent.width - 18px;
+                    height: parent.height;
+                    text <=> root.proposal;
+                    font-size: 12px;
+                    color: Theme.foreground;
+                    edited => { root.proposal-changed(self.text); }
+                }
+            }
+            ChatAction {
+                label: root.poll.add-option-label;
+                enabled: !root.poll.busy && root.poll.proposal-valid;
+                clicked => { root.propose-option-requested(root.poll.id, root.proposal); }
+            }
+        }
+
+        if !root.poll.error-text.is-empty : Text {
+            text: root.poll.error-text;
+            color: Theme.danger;
+            font-size: 11px;
+            wrap: word-wrap;
+        }
+        if !root.poll.closes-at-label.is-empty : Text { text: root.poll.closes-at-label; color: Theme.muted; font-size: 10px; }
+    }
+
+    if root.confirm-delete-visible : Rectangle {
+        x: 0px;
+        y: 0px;
+        width: 100%;
+        height: 100%;
+        background: #99000000;
+        TouchArea { clicked => { root.confirm-delete-visible = false; } }
+        Rectangle {
+            x: (parent.width - min(parent.width - 24px, 380px)) / 2;
+            y: (parent.height - dialog.preferred-height) / 2;
+            width: min(parent.width - 24px, 380px);
+            height: dialog.preferred-height;
+            background: Theme.surface;
+            border-width: 1px;
+            border-color: Theme.border;
+            border-radius: 12px;
+            dialog := VerticalLayout {
+                padding: 16px;
+                spacing: 10px;
+                Text { text: root.poll.delete-label; color: Theme.foreground; font-size: 15px; font-weight: 600; }
+                Text { text: root.poll.delete-description; color: Theme.muted; font-size: 12px; wrap: word-wrap; }
+                HorizontalLayout {
+                    alignment: end;
+                    spacing: 8px;
+                    ChatAction { label: "Отмена"; clicked => { root.confirm-delete-visible = false; } }
+                    ChatAction {
+                        label: root.poll.delete-label;
+                        danger: true;
+                        enabled: !root.poll.busy;
+                        clicked => {
+                            root.confirm-delete-visible = false;
+                            root.remove-requested(root.poll.id);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

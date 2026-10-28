@@ -1,0 +1,517 @@
+import { Theme } from "../theme.slint";
+import { ChatAction } from "../chat/chat-controls.slint";
+import { FHInput } from "../components.slint";
+import { ScrollView, TextEdit } from "std-widgets.slint";
+
+export struct ConversationMember {
+    id: string,
+    name: string,
+    role: string,
+    tag: string,
+    actor-type: string,
+    muted: bool,
+}
+
+export struct ConversationInvite {
+    id: string,
+    kind-label: string,
+    token: string,
+    detail: string,
+}
+
+export struct ConversationOption {
+    id: string,
+    label: string,
+    present: bool,
+    selected: bool,
+}
+
+export struct ChannelAnalytic {
+    post-id: string,
+    text: string,
+    views-label: string,
+}
+
+export component ConversationSettingsScreen inherits Rectangle {
+    in property <string> kind: "group";
+    in property <string> title: "Настройки группы";
+    in property <string> conversation-title: "";
+    in property <string> description: "";
+    in property <string> handle: "";
+    in property <string> error-text: "";
+    in property <string> profile-error-text: "";
+    in property <string> linked-group-id: "";
+    in property <bool> linked-group-state-known: false;
+    in property <[ConversationMember]> members;
+    in property <[ConversationMember]> banned-members;
+    in property <[ConversationOption]> available-members;
+    in property <[ConversationInvite]> invites;
+    in property <[ConversationOption]> linked-groups;
+    in property <[ConversationOption]> available-bots;
+    in property <[ChannelAnalytic]> analytics;
+    in property <bool> loading: false;
+    in property <bool> no-access: false;
+    in property <bool> members-unavailable: false;
+    in property <bool> can-edit-profile: false;
+    in property <bool> can-manage-members: false;
+    in property <bool> can-manage-roles: false;
+    in property <bool> can-mute-members: false;
+    in property <bool> can-change-tags: false;
+    in property <bool> can-remove-members: false;
+    in property <bool> can-ban-members: false;
+    in property <bool> can-manage-invites: false;
+    in property <bool> can-view-analytics: false;
+    in property <bool> is-owner: false;
+    in property <bool> is-public: false;
+    in property <bool> public-state-known: false;
+    in property <bool> has-photo: false;
+    in property <bool> profile-save-enabled: true;
+    in property <image> photo-image;
+    in property <bool> busy: false;
+    in property <bool> confirmation-visible: false;
+    in property <string> confirmation-title: "";
+    in property <string> confirmation-description: "";
+    in-out property <string> title-draft: "";
+    in-out property <string> description-draft: "";
+    in-out property <string> handle-draft: "";
+    in-out property <string> linked-group-draft: "";
+    in-out property <string> selected-member-id: "";
+    in-out property <int> selected-owner-index: -1;
+    in-out property <bool> public-state-draft: false;
+
+    callback back-requested();
+    callback retry-requested();
+    callback metadata-save-requested(string, string, bool);
+    callback photo-change-requested();
+    callback photo-remove-requested();
+    callback handle-save-requested(string);
+    callback public-state-changed(bool);
+    callback linked-group-save-requested(string);
+    callback member-add-requested(string);
+    callback member-action-requested(int, string);
+    callback banned-member-action-requested(int, string);
+    callback invite-create-requested(string);
+    callback invite-copy-requested(int);
+    callback invite-revoke-requested(int);
+    callback channel-bot-add-requested(string);
+    callback analytics-refresh-requested();
+    callback owner-transfer-requested(int);
+    callback conversation-delete-requested();
+    callback confirmation-accepted();
+    callback confirmation-cancelled();
+
+    background: Theme.background;
+
+    VerticalLayout {
+        spacing: 0px;
+
+        Rectangle {
+            height: 56px;
+            background: Theme.background;
+            HorizontalLayout {
+                padding: 8px;
+                spacing: 8px;
+                ChatAction { label: "←"; width: 36px; clicked => { root.back-requested(); } }
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 2px;
+                    horizontal-stretch: 1;
+                    Text { text: root.title; color: Theme.foreground; font-size: 14px; font-weight: 600; }
+                    if !root.conversation-title.is-empty : Text { text: root.conversation-title; color: Theme.muted; font-size: 11px; }
+                }
+            }
+        }
+
+        if root.loading : Text {
+            text: "Загружаем настройки…";
+            color: Theme.muted;
+            font-size: 12px;
+            horizontal-alignment: center;
+            vertical-stretch: 1;
+        }
+
+        if !root.loading && root.no-access : VerticalLayout {
+            alignment: center;
+            spacing: 8px;
+            Text { text: "Настройки доступны владельцу и администраторам"; color: Theme.foreground; font-size: 14px; horizontal-alignment: center; }
+            if root.members-unavailable : Text { text: "Прочитать участников не удалось, а без этого неизвестно, что вам разрешено."; color: Theme.muted; font-size: 12px; wrap: word-wrap; horizontal-alignment: center; }
+            ChatAction { label: root.members-unavailable ? "Повторить" : "Вернуться в чат"; clicked => { if root.members-unavailable { root.retry-requested(); } else { root.back-requested(); } } }
+        }
+
+        if !root.loading && !root.no-access && !root.error-text.is-empty : VerticalLayout {
+            alignment: center;
+            spacing: 8px;
+            Text { text: root.error-text; color: Theme.danger; font-size: 12px; wrap: word-wrap; horizontal-alignment: center; }
+            ChatAction { label: "Повторить"; clicked => { root.retry-requested(); } }
+        }
+
+        if !root.loading && !root.no-access && root.error-text.is-empty : ScrollView {
+            width: 100%;
+            vertical-stretch: 1;
+            vertical-scrollbar-policy: as-needed;
+            VerticalLayout {
+                width: 100%;
+                max-width: 640px;
+                padding: 16px;
+                spacing: 12px;
+
+                if root.kind == "group" && root.can-edit-profile : Rectangle {
+                    width: 100%;
+                    height: metadata-panel.preferred-height;
+                    background: Theme.surface;
+                    border-width: 1px;
+                    border-color: Theme.border;
+                    border-radius: 12px;
+                    metadata-panel := VerticalLayout {
+                        padding: 14px;
+                        spacing: 10px;
+                        Text { text: "Профиль группы"; color: Theme.foreground; font-size: 14px; font-weight: 600; }
+                        FHInput { label: "Название"; value <=> root.title-draft; }
+                        Rectangle {
+                            height: 88px;
+                            background: Theme.background;
+                            border-width: 1px;
+                            border-color: Theme.border;
+                            border-radius: 8px;
+                            TextEdit {
+                                x: 10px; y: 8px; width: parent.width - 20px; height: parent.height - 16px;
+                                text <=> root.description-draft;
+                                placeholder-text: "Описание";
+                                font-size: 13px;
+                                wrap: word-wrap;
+                            }
+                        }
+                        if root.is-owner : ChatAction {
+                            label: "Публичная группа";
+                            active: root.public-state-draft;
+                            clicked => { root.public-state-draft = !root.public-state-draft; }
+                        }
+                        if !root.profile-error-text.is-empty : Text { text: root.profile-error-text; color: Theme.danger; font-size: 11px; wrap: word-wrap; }
+                        ChatAction {
+                            label: root.busy ? "Сохраняем…" : "Сохранить";
+                            active: true;
+                            enabled: !root.busy && root.profile-save-enabled;
+                            clicked => { root.metadata-save-requested(root.title-draft, root.description-draft, root.public-state-draft); }
+                        }
+                    }
+                }
+
+                if root.can-edit-profile || (root.kind == "channel" && root.is-owner) : Rectangle {
+                    width: 100%;
+                    height: photo-panel.preferred-height;
+                    background: Theme.surface;
+                    border-width: 1px;
+                    border-color: Theme.border;
+                    border-radius: 12px;
+                    photo-panel := VerticalLayout {
+                        padding: 14px; spacing: 8px;
+                        Text { text: "Фото"; color: Theme.foreground; font-size: 14px; font-weight: 600; }
+                        Rectangle {
+                            width: 72px;
+                            height: 72px;
+                            background: Theme.background;
+                            border-width: 1px;
+                            border-color: Theme.border;
+                            border-radius: 12px;
+                            clip: true;
+                            if root.has-photo : Image { width: 100%; height: 100%; source: root.photo-image; image-fit: cover; }
+                            if !root.has-photo : Text { text: "Нет фото"; color: Theme.muted; font-size: 11px; horizontal-alignment: center; vertical-alignment: center; width: 100%; height: 100%; }
+                        }
+                        Text { text: "WebP до 5 МБ; картинка уменьшается до 512 пикселей автоматически."; color: Theme.muted; font-size: 12px; wrap: word-wrap; }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            ChatAction { label: "Изменить фото"; enabled: !root.busy; clicked => { root.photo-change-requested(); } }
+                            if root.has-photo : ChatAction { label: "Удалить фото"; danger: true; enabled: !root.busy; clicked => { root.photo-remove-requested(); } }
+                        }
+                    }
+                }
+
+                if (root.kind == "group" && root.can-edit-profile) || (root.kind == "channel" && root.is-owner) : Rectangle {
+                    width: 100%;
+                    height: handle-panel.preferred-height;
+                    background: Theme.surface;
+                    border-width: 1px;
+                    border-color: Theme.border;
+                    border-radius: 12px;
+                    handle-panel := VerticalLayout {
+                        padding: 14px; spacing: 8px;
+                        Text { text: "Ссылка-имя"; color: Theme.foreground; font-size: 14px; font-weight: 600; }
+                        Text { text: "По ней группу или канал находят в поиске."; color: Theme.muted; font-size: 12px; wrap: word-wrap; }
+                        Text { text: root.handle.is-empty ? "Текущее значение адреса недоступно." : "Текущий адрес на этом устройстве: @" + root.handle; color: Theme.muted; font-size: 12px; wrap: word-wrap; }
+                        FHInput { label: "Новая ссылка-имя"; placeholder: root.handle; value <=> root.handle-draft; helper: "Новое значение заменит прежнее."; }
+                        ChatAction { label: root.busy ? "Сохраняем…" : "Сохранить"; enabled: !root.busy && !root.handle-draft.is-empty; active: true; clicked => { root.handle-save-requested(root.handle-draft); } }
+                    }
+                }
+
+                if root.kind == "channel" && root.is-owner : Rectangle {
+                    width: 100%;
+                    height: channel-options.preferred-height;
+                    background: Theme.surface;
+                    border-width: 1px;
+                    border-color: Theme.border;
+                    border-radius: 12px;
+                    channel-options := VerticalLayout {
+                        padding: 14px; spacing: 8px;
+                        Text { text: "Доступ и обсуждение"; color: Theme.foreground; font-size: 14px; font-weight: 600; }
+                        if root.public-state-known : ChatAction {
+                            label: "Публичный канал";
+                            active: root.is-public;
+                            enabled: !root.busy;
+                            clicked => { root.public-state-changed(!root.is-public); }
+                        }
+                        if !root.public-state-known : HorizontalLayout {
+                            spacing: 6px;
+                            ChatAction { label: "Сделать публичным"; enabled: !root.busy; clicked => { root.public-state-changed(true); } }
+                            ChatAction { label: "Сделать приватным"; enabled: !root.busy; clicked => { root.public-state-changed(false); } }
+                        }
+                        if !root.public-state-known : Text { text: "Сервер не отдаёт текущее значение, поэтому сначала выбор, а не переключатель."; color: Theme.muted; font-size: 11px; wrap: word-wrap; }
+                        ChatAction {
+                            label: "Без обсуждений";
+                            active: root.linked-group-state-known && root.linked-group-draft.is-empty;
+                            enabled: !root.busy;
+                            clicked => { root.linked-group-save-requested(""); }
+                        }
+                        for linked-group[index] in root.linked-groups : ChatAction {
+                            label: linked-group.label;
+                            active: root.linked-group-state-known && linked-group.selected;
+                            enabled: !root.busy;
+                            clicked => { root.linked-group-save-requested(linked-group.id); }
+                        }
+                        if root.linked-groups.length == 0 : Text {
+                            text: "У вас пока нет групп, которые можно привязать.";
+                            color: Theme.muted;
+                            font-size: 11px;
+                            wrap: word-wrap;
+                        }
+                        if !root.linked-group-state-known : Text {
+                            text: "Сервер не возвращает текущее значение группы обсуждений.";
+                            color: Theme.muted;
+                            font-size: 11px;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+
+                if root.can-manage-members : Rectangle {
+                    width: 100%;
+                    height: members-panel.preferred-height;
+                    background: Theme.surface;
+                    border-width: 1px;
+                    border-color: Theme.border;
+                    border-radius: 12px;
+                    members-panel := VerticalLayout {
+                        padding: 14px; spacing: 8px;
+                        Text { text: root.kind == "channel" ? "Подписчики" : "Участники"; color: Theme.foreground; font-size: 14px; font-weight: 600; }
+                        if root.kind == "group" && root.can-ban-members : Text { text: "Участников можно исключать и блокировать по праву блокировки участников."; color: Theme.muted; font-size: 12px; wrap: word-wrap; }
+                        if root.kind == "group" && !root.can-ban-members : Text { text: "Доступные действия зависят от ваших прав в группе."; color: Theme.muted; font-size: 12px; wrap: word-wrap; }
+                        if root.kind == "channel" : Text { text: "Роли и исключение подписчиков доступны только владельцу канала."; color: Theme.muted; font-size: 12px; wrap: word-wrap; }
+                        if root.kind == "group" && root.available-members.length > 0 : VerticalLayout {
+                            spacing: 4px;
+                            Text { text: "Добавить участника"; color: Theme.muted; font-size: 12px; }
+                            for contact[index] in root.available-members : ChatAction {
+                                label: contact.label;
+                                active: root.selected-member-id == contact.id;
+                                width: 100%;
+                                enabled: !root.busy && !contact.present;
+                                clicked => { root.selected-member-id = contact.id; }
+                            }
+                            ChatAction {
+                                label: root.busy ? "Добавляем…" : "Добавить участника";
+                                active: true;
+                                enabled: !root.busy && !root.selected-member-id.is-empty;
+                                clicked => { root.member-add-requested(root.selected-member-id); }
+                            }
+                        }
+                        for member[index] in root.members : Rectangle {
+                            width: 100%;
+                            height: member-row.preferred-height;
+                            background: Theme.background;
+                            border-width: 1px;
+                            border-color: Theme.border;
+                            border-radius: 8px;
+                            member-row := VerticalLayout {
+                                padding: 8px;
+                                spacing: 6px;
+                                HorizontalLayout {
+                                    spacing: 6px;
+                                    VerticalLayout {
+                                        spacing: 2px;
+                                        horizontal-stretch: 1;
+                                        Text { text: member.name; color: Theme.foreground; font-size: 13px; font-weight: 500; }
+                                        Text { text: member.role + (member.tag.is-empty ? "" : " · " + member.tag) + (member.muted ? " · Заглушён" : ""); color: Theme.muted; font-size: 11px; }
+                                    }
+                                    Text { text: member.actor-type == "bot" ? "Бот" : ""; color: Theme.accent; font-size: 10px; }
+                                }
+                                FlexboxLayout {
+                                    spacing: 4px;
+                                    if root.can-manage-roles : ChatAction { label: member.role == "admin" ? "Изменить права" : "Сделать администратором"; enabled: !root.busy; clicked => { root.member-action-requested(index, member.role == "admin" ? "edit_rights" : "make_admin"); } }
+                                    if root.can-mute-members : ChatAction { label: member.muted ? "Снять заглушение" : "Заглушить"; enabled: !root.busy; clicked => { root.member-action-requested(index, member.muted ? "unmute" : "mute"); } }
+                                    if root.can-change-tags : ChatAction { label: "Тег"; enabled: !root.busy; clicked => { root.member-action-requested(index, "tag"); } }
+                                    if root.can-remove-members : ChatAction { label: "Исключить"; danger: true; enabled: !root.busy; clicked => { root.member-action-requested(index, "remove"); } }
+                                }
+                            }
+                        }
+                        if root.kind == "group" && root.can-mute-members : VerticalLayout {
+                            spacing: 6px;
+                            Text { text: "Заблокированные участники"; color: Theme.foreground; font-size: 13px; font-weight: 600; }
+                            for banned-member[index] in root.banned-members : Rectangle {
+                                width: 100%;
+                                height: 36px;
+                                background: Theme.background;
+                                border-width: 1px;
+                                border-color: Theme.border;
+                                border-radius: 8px;
+                                HorizontalLayout {
+                                    padding-left: 8px; padding-right: 4px; spacing: 6px;
+                                    Text { text: banned-member.name; color: Theme.foreground; font-size: 12px; horizontal-stretch: 1; vertical-alignment: center; }
+                                    ChatAction { label: "Разблокировать"; enabled: !root.busy; clicked => { root.banned-member-action-requested(index, "unban"); } }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if root.kind == "channel" && root.is-owner : Rectangle {
+                    width: 100%;
+                    height: bots-panel.preferred-height;
+                    background: Theme.surface;
+                    border-width: 1px;
+                    border-color: Theme.border;
+                    border-radius: 12px;
+                    bots-panel := VerticalLayout {
+                        padding: 14px; spacing: 8px;
+                        Text { text: "Боты канала"; color: Theme.foreground; font-size: 14px; font-weight: 600; }
+                        Text { text: "В канал можно добавить только своих ботов."; color: Theme.muted; font-size: 12px; wrap: word-wrap; }
+                        if root.available-bots.length == 0 : Text { text: "У вас пока нет ботов: их создают через Bot API."; color: Theme.muted; font-size: 11px; wrap: word-wrap; }
+                        for bot[index] in root.available-bots : HorizontalLayout {
+                            Text { text: bot.label; color: Theme.foreground; font-size: 12px; horizontal-stretch: 1; vertical-alignment: center; }
+                            ChatAction {
+                                label: bot.present ? "Уже в канале" : "Добавить";
+                                enabled: !root.busy && !bot.present;
+                                clicked => { root.channel-bot-add-requested(bot.id); }
+                            }
+                        }
+                    }
+                }
+
+                if root.kind == "channel" && root.can-view-analytics : Rectangle {
+                    width: 100%;
+                    height: analytics-panel.preferred-height;
+                    background: Theme.surface;
+                    border-width: 1px;
+                    border-color: Theme.border;
+                    border-radius: 12px;
+                    analytics-panel := VerticalLayout {
+                        padding: 14px; spacing: 8px;
+                        Text { text: "Статистика канала"; color: Theme.foreground; font-size: 14px; font-weight: 600; }
+                        Text { text: "Просмотры публикаций"; color: Theme.muted; font-size: 12px; }
+                        Text { text: "Последние 50 публикаций, начиная с новых. Просмотр учитывается один раз на аккаунт."; color: Theme.muted; font-size: 11px; wrap: word-wrap; }
+                        if root.analytics.length == 0 : Text { text: "Публикаций пока нет."; color: Theme.muted; font-size: 12px; }
+                        for analytic[index] in root.analytics : HorizontalLayout {
+                            Text { text: analytic.text.is-empty ? "Публикация" : analytic.text; color: Theme.foreground; font-size: 12px; horizontal-stretch: 1; overflow: elide; }
+                            Text { text: analytic.views-label; color: Theme.muted; font-size: 12px; }
+                        }
+                        ChatAction { label: "Обновить статистику"; enabled: !root.busy; clicked => { root.analytics-refresh-requested(); } }
+                    }
+                }
+
+                if root.can-manage-invites : Rectangle {
+                    width: 100%;
+                    height: invites-panel.preferred-height;
+                    background: Theme.surface;
+                    border-width: 1px;
+                    border-color: Theme.border;
+                    border-radius: 12px;
+                    invites-panel := VerticalLayout {
+                        padding: 14px; spacing: 8px;
+                        Text { text: "Приглашения"; color: Theme.foreground; font-size: 14px; font-weight: 600; }
+                        Text { text: "Создайте постоянную ссылку или ссылку на одно использование."; color: Theme.muted; font-size: 12px; wrap: word-wrap; }
+                        HorizontalLayout {
+                            spacing: 6px;
+                            ChatAction { label: "Постоянная ссылка"; enabled: !root.busy; clicked => { root.invite-create-requested("permanent"); } }
+                            ChatAction { label: "Одноразовая ссылка"; enabled: !root.busy; clicked => { root.invite-create-requested("one_time"); } }
+                        }
+                        if root.invites.length == 0 : Text { text: "Приглашений пока нет."; color: Theme.muted; font-size: 12px; }
+                        for invite[index] in root.invites : HorizontalLayout {
+                            spacing: 6px;
+                            Rectangle {
+                                horizontal-stretch: 1;
+                                height: 44px;
+                                background: Theme.background;
+                                border-width: 1px;
+                                border-color: Theme.border;
+                                border-radius: 8px;
+                                VerticalLayout {
+                                    x: 8px; y: 5px; width: parent.width - 16px;
+                                    Text { text: invite.kind-label; color: Theme.foreground; font-size: 12px; }
+                                    Text { text: invite.detail; color: Theme.muted; font-size: 10px; }
+                                }
+                            }
+                            ChatAction { label: "Копировать"; enabled: !invite.token.is-empty; clicked => { root.invite-copy-requested(index); } }
+                            ChatAction { label: "Отозвать"; danger: true; enabled: !root.busy; clicked => { root.invite-revoke-requested(index); } }
+                        }
+                    }
+                }
+
+                if root.is-owner : Rectangle {
+                    width: 100%;
+                    height: ownership-panel.preferred-height;
+                    background: Theme.surface;
+                    border-width: 1px;
+                    border-color: Theme.border;
+                    border-radius: 12px;
+                    ownership-panel := VerticalLayout {
+                        padding: 14px; spacing: 8px;
+                        Text { text: "Управление владением"; color: Theme.foreground; font-size: 14px; font-weight: 600; }
+                        Text { text: "Новый владелец"; color: Theme.muted; font-size: 11px; }
+                        for member[index] in root.members : ChatAction {
+                            label: member.name;
+                            visible: member.actor-type == "account" && member.role != "owner";
+                            active: root.selected-owner-index == index;
+                            enabled: !root.busy;
+                            clicked => { root.selected-owner-index = index; }
+                        }
+                        ChatAction {
+                            label: "Передать владение";
+                            active: true;
+                            enabled: !root.busy && root.selected-owner-index >= 0;
+                            clicked => { root.owner-transfer-requested(root.selected-owner-index); }
+                        }
+                        ChatAction {
+                            label: root.kind == "group" ? "Удалить группу" : "Удалить канал";
+                            danger: true;
+                            enabled: !root.busy;
+                            clicked => { root.conversation-delete-requested(); }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if root.confirmation-visible : Rectangle {
+        x: 0px; y: 0px; width: 100%; height: 100%;
+            background: #99000000;
+            TouchArea { clicked => { root.confirmation-cancelled(); } }
+            Rectangle {
+                x: (parent.width - min(parent.width - 32px, 420px)) / 2;
+                y: (parent.height - confirmation-card.preferred-height) / 2;
+                width: min(parent.width - 32px, 420px);
+                height: confirmation-card.preferred-height;
+                background: Theme.surface;
+                border-width: 1px;
+                border-color: Theme.border;
+                border-radius: 12px;
+                confirmation-card := VerticalLayout {
+                    padding: 20px; spacing: 12px;
+                    Text { text: root.confirmation-title; color: Theme.foreground; font-size: 16px; font-weight: 600; }
+                    Text { text: root.confirmation-description; color: Theme.muted; font-size: 13px; wrap: word-wrap; }
+                    HorizontalLayout {
+                        alignment: end; spacing: 8px;
+                        ChatAction { label: "Отмена"; clicked => { root.confirmation-cancelled(); } }
+                        ChatAction { label: "Подтвердить"; danger: true; enabled: !root.busy; clicked => { root.confirmation-accepted(); } }
+                    }
+                }
+            }
+        }
+}

@@ -1,0 +1,20 @@
+import { Theme } from "theme.slint";
+import { FHPrimaryButton } from "components.slint";
+
+export component NotFoundScreen inherits Rectangle {
+    callback home-requested();
+
+    background: Theme.background;
+
+    VerticalLayout {
+        padding: 24px;
+        alignment: center;
+        cross-axis-alignment: center;
+        spacing: 12px;
+
+        Text { text: "◉"; color: Theme.accent; font-size: 40px; horizontal-alignment: center; }
+        Text { text: "Страница не найдена"; color: Theme.foreground; font-size: 18px; font-weight: 600; horizontal-alignment: center; }
+        Text { text: "Такого адреса не существует."; color: Theme.muted; font-size: 14px; horizontal-alignment: center; wrap: word-wrap; }
+        FHPrimaryButton { text: "На главную"; clicked => { root.home-requested(); } }
+    }
+}

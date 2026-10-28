@@ -1,0 +1,171 @@
+import { Theme } from "theme.slint";
+import { FHPrimaryButton, FHTextButton } from "components.slint";
+import { ScrollView } from "std-widgets.slint";
+
+export component TwoFactorScreen inherits Rectangle {
+    in-out property <string> code: "";
+    in-out property <bool> backup-mode: false;
+    in property <bool> device-setup: false;
+    in property <bool> busy: false;
+    in property <string> error-text: "";
+
+    callback submit-requested(string, bool);
+    callback mode-changed(bool);
+    callback code-changed(string);
+    callback cancel-requested();
+
+    background: Theme.background;
+    forward-focus: code-input;
+
+    init => { code-input.focus(); }
+
+    ScrollView {
+        vertical-scrollbar-policy: as-needed;
+
+        VerticalLayout {
+            width: 100%;
+            min-height: root.height;
+            padding-left: 20px;
+            padding-right: 20px;
+            padding-top: 40px;
+            padding-bottom: 40px;
+            alignment: center;
+            cross-axis-alignment: center;
+
+            Rectangle {
+                width: max(0px, min(root.width - 40px, 384px));
+                height: card-content.preferred-height;
+                background: Theme.surface;
+                border-width: 1px;
+                border-color: Theme.border;
+                border-radius: 16px;
+
+                card-content := VerticalLayout {
+                    padding: 24px;
+                    spacing: 16px;
+
+                    Text {
+                        text: "Двухфакторная аутентификация";
+                        color: Theme.foreground;
+                        font-size: 18px;
+                        font-weight: 600;
+                        wrap: word-wrap;
+                        width: 100%;
+                    }
+
+                    Text {
+                        text: root.device-setup
+                            ? "Для завершения настройки этого устройства нужен ещё один код. Дождитесь следующего кода в приложении-аутентификаторе или введите другой резервный код."
+                            : root.backup-mode
+                                ? "Введите один из резервных кодов. Каждый код работает один раз."
+                                : "Введите шестизначный код из приложения-аутентификатора.";
+                        color: Theme.muted;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                        width: 100%;
+                    }
+
+                    VerticalLayout {
+                        spacing: 6px;
+
+                        Text {
+                            text: root.backup-mode ? "Резервный код" : "Код";
+                            color: Theme.muted;
+                            font-size: 12px;
+                            font-weight: 600;
+                        }
+
+                        Rectangle {
+                            width: 100%;
+                            height: 40px;
+                            background: Theme.surface;
+                            border-width: 1px;
+                            border-color: code-input.has-focus ? Theme.accent : Theme.border;
+                            border-radius: 8px;
+                            clip: true;
+
+                            if root.code.is-empty : Text {
+                                x: 12px;
+                                width: parent.width - 24px;
+                                height: 100%;
+                                text: root.backup-mode ? "ABCD2345EF" : "123456";
+                                color: Theme.muted;
+                                font-size: root.backup-mode ? 14px : 18px;
+                                letter-spacing: root.backup-mode ? 0px : 7.2px;
+                                horizontal-alignment: root.backup-mode ? left : center;
+                                vertical-alignment: center;
+                                accessible-role: none;
+                            }
+
+                            code-input := TextInput {
+                                x: 12px;
+                                width: parent.width - 24px;
+                                height: 100%;
+                                text <=> root.code;
+                                input-type: root.backup-mode ? InputType.text : InputType.number;
+                                enabled: !root.busy;
+                                font-size: root.backup-mode ? 14px : 18px;
+                                letter-spacing: root.backup-mode ? 0px : 7.2px;
+                                color: Theme.foreground;
+                                single-line: true;
+                                horizontal-alignment: root.backup-mode ? left : center;
+                                vertical-alignment: center;
+                                accessible-label: root.backup-mode ? "Резервный код" : "Код из приложения-аутентификатора";
+                                accessible-placeholder-text: root.backup-mode ? "ABCD2345EF" : "123456";
+
+                                edited => { root.code-changed(self.text); }
+                                accepted => {
+                                    if !root.busy { root.submit-requested(root.code, root.backup-mode); }
+                                }
+                            }
+                        }
+                    }
+
+                    if !root.error-text.is-empty : Text {
+                        text: root.error-text;
+                        color: Theme.danger;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                        width: 100%;
+                    }
+
+                    FHPrimaryButton {
+                        text: "Подтвердить";
+                        enabled: !root.busy;
+                        busy: root.busy;
+                        clicked => { root.submit-requested(root.code, root.backup-mode); }
+                    }
+
+                    VerticalLayout {
+                        spacing: 8px;
+
+                        HorizontalLayout {
+                            alignment: center;
+
+                            FHTextButton {
+                                text: root.backup-mode ? "Использовать код из приложения" : "Использовать резервный код";
+                                enabled: !root.busy;
+                                clicked => {
+                                    root.backup-mode = !root.backup-mode;
+                                    root.code = "";
+                                    root.mode-changed(root.backup-mode);
+                                    code-input.focus();
+                                }
+                            }
+                        }
+
+                        HorizontalLayout {
+                            alignment: center;
+
+                            FHTextButton {
+                                text: "Вернуться ко входу";
+                                enabled: !root.busy;
+                                clicked => { root.cancel-requested(); }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

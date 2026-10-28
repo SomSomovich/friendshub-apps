@@ -1,0 +1,10 @@
+//! Typed application workflows backed by `friendshub-core`.
+
+pub mod auth;
+pub mod bots;
+pub mod calls_attachments;
+pub mod chat;
+pub mod community;
+pub mod conversations;
+pub mod discovery_dating;
+pub mod profile_settings;

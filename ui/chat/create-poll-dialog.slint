@@ -1,0 +1,281 @@
+import { Theme } from "../theme.slint";
+import { ChatAction } from "chat-controls.slint";
+import { ScrollView, TextEdit } from "std-widgets.slint";
+
+export struct PollDraftOption {
+    id: string,
+    text: string,
+    correct: bool,
+    can-remove: bool,
+}
+
+export component CreatePollDialog inherits Rectangle {
+    in property <bool> open: false;
+    in property <bool> busy: false;
+    in property <bool> can-create: false;
+    in property <bool> is-quiz: false;
+    in property <bool> allows-multiple: false;
+    in property <bool> allows-revoting: false;
+    in property <bool> allows-user-options: false;
+    in property <bool> closes-automatically: false;
+    in property <bool> can-add-option: false;
+    in property <bool> duration-open: false;
+    in property <bool> duration-valid: false;
+    in property <string> duration-label: "";
+    in property <string> title-count-label: "";
+    in property <string> description-count-label: "";
+    in property <string> error-text: "";
+    in property <[PollDraftOption]> options;
+    in-out property <string> title: "";
+    in-out property <string> description: "";
+    in-out property <string> duration-hours: "1";
+    in-out property <string> duration-minutes: "0";
+
+    callback title-changed(string);
+    callback description-changed(string);
+    callback type-changed(bool);
+    callback multiple-changed(bool);
+    callback revoting-changed(bool);
+    callback user-options-changed(bool);
+    callback auto-close-changed(bool);
+    callback duration-requested();
+    callback duration-selected(string, string);
+    callback duration-cancelled();
+    callback option-changed(int, string);
+    callback option-correct-requested(int);
+    callback option-remove-requested(int);
+    callback option-add-requested();
+    callback create-requested();
+    callback close-requested();
+
+    if root.open : Rectangle {
+        x: 0px;
+        y: 0px;
+        width: 100%;
+        height: 100%;
+        background: #99000000;
+        TouchArea { clicked => { root.close-requested(); } }
+        Rectangle {
+            x: (parent.width - min(parent.width - 32px, 560px)) / 2;
+            y: (parent.height - min(parent.height - 32px, 680px)) / 2;
+            width: min(parent.width - 32px, 560px);
+            height: min(parent.height - 32px, 680px);
+            background: Theme.surface;
+            border-width: 1px;
+            border-color: Theme.border;
+            border-radius: 14px;
+
+            VerticalLayout {
+                spacing: 0px;
+                Rectangle {
+                    height: 52px;
+                    background: Theme.surface;
+                    HorizontalLayout {
+                        padding-left: 16px;
+                        padding-right: 8px;
+                        spacing: 8px;
+                        Text { text: "Новый опрос"; color: Theme.foreground; font-size: 16px; font-weight: 600; horizontal-stretch: 1; vertical-alignment: center; }
+                        ChatAction { label: "×"; accessible-name: "Закрыть создание опроса"; enabled: !root.busy; clicked => { root.close-requested(); } }
+                    }
+                }
+
+                ScrollView {
+                    width: 100%;
+                    vertical-stretch: 1;
+                    vertical-scrollbar-policy: as-needed;
+                    VerticalLayout {
+                        padding: 16px;
+                        spacing: 10px;
+
+                        HorizontalLayout {
+                            Text { text: "Вопрос"; color: Theme.muted; font-size: 11px; horizontal-stretch: 1; }
+                            Text { text: root.title-count-label; color: Theme.muted; font-size: 10px; }
+                        }
+                        Rectangle {
+                            height: 40px;
+                            background: Theme.background;
+                            border-width: 1px;
+                            border-color: title-input.has-focus ? Theme.accent : Theme.border;
+                            border-radius: 8px;
+                            title-input := TextInput {
+                                x: 10px;
+                                width: parent.width - 20px;
+                                height: parent.height;
+                                text <=> root.title;
+                                font-size: 13px;
+                                color: Theme.foreground;
+                                enabled: !root.busy;
+                                edited => { root.title-changed(self.text); }
+                            }
+                        }
+                        HorizontalLayout {
+                            Text { text: "Описание"; color: Theme.muted; font-size: 11px; horizontal-stretch: 1; }
+                            Text { text: root.description-count-label; color: Theme.muted; font-size: 10px; }
+                        }
+                        Rectangle {
+                            height: 66px;
+                            background: Theme.background;
+                            border-width: 1px;
+                            border-color: description-input.has-focus ? Theme.accent : Theme.border;
+                            border-radius: 8px;
+                            description-input := TextEdit {
+                                x: 10px; y: 7px; width: parent.width - 20px; height: parent.height - 14px;
+                                text <=> root.description;
+                                placeholder-text: "Описание (необязательно)";
+                                font-size: 12px;
+                                wrap: word-wrap;
+                                enabled: !root.busy;
+                                edited => { root.description-changed(self.text); }
+                            }
+                        }
+
+                        VerticalLayout {
+                            spacing: 4px;
+                            ChatAction { label: "Обычный опрос"; active: !root.is-quiz; enabled: !root.busy; clicked => { root.type-changed(false); } }
+                            ChatAction { label: "Викторина с правильным ответом"; active: root.is-quiz; enabled: !root.busy; clicked => { root.type-changed(true); } }
+                        }
+
+                        Text { text: "Варианты ответа"; color: Theme.muted; font-size: 11px; }
+                        for option[index] in root.options : HorizontalLayout {
+                            spacing: 6px;
+                            Rectangle {
+                                height: 38px;
+                                horizontal-stretch: 1;
+                                background: Theme.background;
+                                border-width: 1px;
+                                border-color: option-input.has-focus ? Theme.accent : Theme.border;
+                                border-radius: 8px;
+                                option-input := TextInput {
+                                    x: 10px;
+                                    width: parent.width - 20px;
+                                    height: parent.height;
+                                    text: option.text;
+                                    font-size: 12px;
+                                    color: Theme.foreground;
+                                    enabled: !root.busy;
+                                    edited => { root.option-changed(index, self.text); }
+                                }
+                            }
+                            if root.is-quiz : ChatAction {
+                                label: option.correct ? "✓" : "○";
+                                accessible-name: "Правильный вариант";
+                                active: option.correct;
+                                enabled: !root.busy;
+                                clicked => { root.option-correct-requested(index); }
+                            }
+                            ChatAction {
+                                label: "×";
+                                accessible-name: "Удалить вариант ответа";
+                                danger: true;
+                                enabled: !root.busy && option.can-remove;
+                                clicked => { root.option-remove-requested(index); }
+                            }
+                        }
+                        HorizontalLayout {
+                            ChatAction { label: "+ Добавить вариант"; enabled: !root.busy && root.can-add-option; clicked => { root.option-add-requested(); } }
+                            Rectangle { horizontal-stretch: 1; background: transparent; }
+                        }
+
+                        if !root.is-quiz : ChatAction {
+                            label: root.allows-multiple ? "✓ Несколько вариантов" : "Несколько вариантов";
+                            active: root.allows-multiple;
+                            enabled: !root.busy;
+                            clicked => { root.multiple-changed(!root.allows-multiple); }
+                        }
+                        ChatAction {
+                            label: root.allows-revoting ? "✓ Разрешить менять ответ" : "Разрешить менять ответ";
+                            active: root.allows-revoting;
+                            enabled: !root.busy;
+                            clicked => { root.revoting-changed(!root.allows-revoting); }
+                        }
+                        ChatAction {
+                            label: root.allows-user-options ? "✓ Разрешить предлагать варианты" : "Разрешить предлагать варианты";
+                            active: root.allows-user-options;
+                            enabled: !root.busy;
+                            clicked => { root.user-options-changed(!root.allows-user-options); }
+                        }
+                        ChatAction {
+                            label: root.closes-automatically ? "✓ Завершить по таймеру" : "Завершить по таймеру";
+                            active: root.closes-automatically;
+                            enabled: !root.busy;
+                            clicked => { root.auto-close-changed(!root.closes-automatically); }
+                        }
+                        if root.closes-automatically : ChatAction {
+                            label: root.duration-label.is-empty ? "Выбрать срок завершения" : root.duration-label;
+                            enabled: !root.busy;
+                            clicked => { root.duration-requested(); }
+                        }
+                        if !root.error-text.is-empty : Text { text: root.error-text; color: Theme.danger; font-size: 11px; wrap: word-wrap; }
+                    }
+                }
+
+                Rectangle {
+                    height: 52px;
+                    background: Theme.surface;
+                    HorizontalLayout {
+                        padding-left: 16px;
+                        padding-right: 16px;
+                        spacing: 8px;
+                        Rectangle { horizontal-stretch: 1; background: transparent; }
+                        ChatAction { label: "Отмена"; enabled: !root.busy; clicked => { root.close-requested(); } }
+                        ChatAction {
+                            label: root.busy ? "Создаём…" : "Создать опрос";
+                            active: true;
+                            enabled: root.can-create && !root.busy;
+                            clicked => { root.create-requested(); }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if root.duration-open : Rectangle {
+        x: 0px;
+        y: 0px;
+        width: 100%;
+        height: 100%;
+        background: #99000000;
+        TouchArea { clicked => { root.duration-cancelled(); } }
+        Rectangle {
+            x: (parent.width - min(parent.width - 32px, 420px)) / 2;
+            y: (parent.height - 220px) / 2;
+            width: min(parent.width - 32px, 420px);
+            height: 220px;
+            background: Theme.surface;
+            border-width: 1px;
+            border-color: Theme.border;
+            border-radius: 14px;
+
+            VerticalLayout {
+                padding: 16px;
+                spacing: 10px;
+                Text { text: "Завершить опрос через"; color: Theme.foreground; font-size: 15px; font-weight: 600; }
+                Text { text: "Укажите время от 1 минуты до 24 часов."; color: Theme.muted; font-size: 11px; wrap: word-wrap; }
+                HorizontalLayout {
+                    spacing: 8px;
+                    Text { text: "Часы"; color: Theme.muted; font-size: 11px; vertical-alignment: center; }
+                    TextInput {
+                        horizontal-stretch: 1;
+                        text <=> root.duration-hours;
+                        enabled: !root.busy;
+                    }
+                    Text { text: ":"; color: Theme.muted; vertical-alignment: center; }
+                    Text { text: "Минуты"; color: Theme.muted; font-size: 11px; vertical-alignment: center; }
+                    TextInput {
+                        horizontal-stretch: 1;
+                        text <=> root.duration-minutes;
+                        enabled: !root.busy;
+                    }
+                }
+                Rectangle { vertical-stretch: 1; background: transparent; }
+                HorizontalLayout {
+                    spacing: 8px;
+                    Rectangle { horizontal-stretch: 1; background: transparent; }
+                    ChatAction { label: "Отмена"; enabled: !root.busy; clicked => { root.duration-cancelled(); } }
+                    ChatAction { label: "Сохранить"; active: true; enabled: root.duration-valid && !root.busy; clicked => { root.duration-selected(root.duration-hours, root.duration-minutes); } }
+                }
+            }
+        }
+    }
+}

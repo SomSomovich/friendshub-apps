@@ -1,0 +1,149 @@
+import { Theme } from "../theme.slint";
+import { ChatAction } from "chat-controls.slint";
+import { ScrollView, TextEdit } from "std-widgets.slint";
+
+export struct PendingAttachmentView {
+    id: string,
+    name: string,
+    size-label: string,
+    compress-label: string,
+    preview-image: image,
+    has-preview: bool,
+    can-compress: bool,
+    compress: bool,
+    active-upload: bool,
+    progress-label: string,
+}
+
+export component AttachmentComposer inherits Rectangle {
+    in property <bool> open: false;
+    in property <bool> busy: false;
+    in property <bool> send-enabled: false;
+    in property <string> error-text: "";
+    in property <[PendingAttachmentView]> attachments;
+    in-out property <string> caption: "";
+
+    callback caption-changed(string);
+    callback compress-toggle-requested(string, bool);
+    callback remove-requested(string);
+    callback send-requested();
+    callback close-requested();
+
+    if root.open : Rectangle {
+        x: 0px;
+        y: 0px;
+        width: 100%;
+        height: 100%;
+        background: #99000000;
+        TouchArea { clicked => { if !root.busy { root.close-requested(); } } }
+        Rectangle {
+            x: (parent.width - min(parent.width - 32px, 620px)) / 2;
+            y: (parent.height - min(parent.height - 32px, 600px)) / 2;
+            width: min(parent.width - 32px, 620px);
+            height: min(parent.height - 32px, 600px);
+            background: Theme.surface;
+            border-width: 1px;
+            border-color: Theme.border;
+            border-radius: 14px;
+            VerticalLayout {
+                spacing: 0px;
+                Rectangle {
+                    height: 52px;
+                    background: Theme.surface;
+                    HorizontalLayout {
+                        padding-left: 16px;
+                        padding-right: 8px;
+                        spacing: 8px;
+                        Text { text: "Вложения"; color: Theme.foreground; font-size: 16px; font-weight: 600; horizontal-stretch: 1; vertical-alignment: center; }
+                        ChatAction { label: "×"; accessible-name: "Закрыть вложения"; enabled: !root.busy; clicked => { root.close-requested(); } }
+                    }
+                }
+                ScrollView {
+                    width: 100%;
+                    vertical-stretch: 1;
+                    vertical-scrollbar-policy: as-needed;
+                    VerticalLayout {
+                        padding: 16px;
+                        spacing: 8px;
+                        for attachment[index] in root.attachments : Rectangle {
+                            width: 100%;
+                            height: attachment-row.preferred-height;
+                            background: Theme.background;
+                            border-width: 1px;
+                            border-color: attachment.active-upload ? Theme.accent : Theme.border;
+                            border-radius: 9px;
+                            attachment-row := HorizontalLayout {
+                                padding: 8px;
+                                spacing: 8px;
+                                Rectangle {
+                                    width: 44px;
+                                    height: 44px;
+                                    background: Theme.hover;
+                                    border-radius: 7px;
+                                    clip: true;
+                                    if attachment.has-preview : Image { width: 100%; height: 100%; source: attachment.preview-image; image-fit: cover; }
+                                    if !attachment.has-preview : Text { text: "▤"; color: Theme.muted; font-size: 18px; horizontal-alignment: center; vertical-alignment: center; width: 100%; height: 100%; }
+                                }
+                                VerticalLayout {
+                                    spacing: 3px;
+                                    horizontal-stretch: 1;
+                                    Text { text: attachment.name; color: Theme.foreground; font-size: 12px; overflow: elide; }
+                                    Text { text: attachment.size-label; color: Theme.muted; font-size: 10px; }
+                                    if attachment.active-upload && !attachment.progress-label.is-empty : Text { text: attachment.progress-label; color: Theme.accent; font-size: 10px; }
+                                }
+                                if attachment.can-compress : ChatAction {
+                                    label: attachment.compress-label;
+                                    active: !attachment.compress;
+                                    enabled: !root.busy;
+                                    clicked => { root.compress-toggle-requested(attachment.id, !attachment.compress); }
+                                }
+                                ChatAction {
+                                    label: "×";
+                                    accessible-name: "Удалить вложение";
+                                    danger: true;
+                                    enabled: !root.busy;
+                                    clicked => { root.remove-requested(attachment.id); }
+                                }
+                            }
+                        }
+                        if !root.error-text.is-empty : Text { text: root.error-text; color: Theme.danger; font-size: 11px; wrap: word-wrap; }
+                        Text { text: "Подпись"; color: Theme.muted; font-size: 11px; }
+                        Rectangle {
+                            height: 72px;
+                            background: Theme.background;
+                            border-width: 1px;
+                            border-color: caption-input.has-focus ? Theme.accent : Theme.border;
+                            border-radius: 8px;
+                            caption-input := TextEdit {
+                                x: 10px; y: 8px; width: parent.width - 20px; height: parent.height - 16px;
+                                text <=> root.caption;
+                                placeholder-text: "Подпись к вложениям";
+                                font-size: 12px;
+                                wrap: word-wrap;
+                                enabled: !root.busy;
+                                edited => { root.caption-changed(self.text); }
+                            }
+                        }
+                    }
+                }
+                Rectangle {
+                    height: 52px;
+                    background: Theme.surface;
+                    HorizontalLayout {
+                        padding-left: 16px;
+                        padding-right: 16px;
+                        spacing: 8px;
+                        Rectangle { horizontal-stretch: 1; background: transparent; }
+                        ChatAction { label: "Отмена"; enabled: !root.busy; clicked => { root.close-requested(); } }
+                        ChatAction {
+                            label: root.busy ? "Загрузка…" : "Отправить";
+                            active: true;
+                            enabled: root.send-enabled && !root.busy;
+                            clicked => { root.send-requested(); }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

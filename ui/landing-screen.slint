@@ -1,0 +1,304 @@
+import { Theme } from "theme.slint";
+import { FHTextButton, FHPrimaryButton } from "components.slint";
+import { ScrollView } from "std-widgets.slint";
+
+
+component LandingCard inherits Rectangle {
+    in property <string> title;
+    in property <string> description;
+    horizontal-stretch: 1;
+    min-width: 0px;
+    background: Theme.surface;
+    border-width: 1px;
+    border-color: Theme.border;
+    border-radius: 16px;
+
+    VerticalLayout {
+        padding: 16px;
+        spacing: 8px;
+        Text { text: "•"; color: Theme.accent; font-size: 18px; font-weight: 700; }
+        Text { text: root.title; color: Theme.foreground; font-size: 14px; font-weight: 600; wrap: word-wrap; }
+        Text { text: root.description; color: Theme.muted; font-size: 14px; wrap: word-wrap; }
+    }
+}
+
+component LandingSection inherits VerticalLayout {
+    in property <string> section-id;
+    in property <string> title;
+    in property <string> subtitle;
+    in property <string> card-one-title;
+    in property <string> card-one-text;
+    in property <string> card-two-title;
+    in property <string> card-two-text;
+    in property <string> card-three-title;
+    in property <string> card-three-text;
+    in property <string> card-four-title: "";
+    in property <string> card-four-text: "";
+    in property <string> card-five-title: "";
+    in property <string> card-five-text: "";
+    in property <string> card-six-title: "";
+    in property <string> card-six-text: "";
+
+    width: 100%;
+    horizontal-stretch: 1;
+    spacing: 16px;
+
+    Text { text: root.title; color: Theme.foreground; font-size: 24px; font-weight: 600; }
+    if !root.subtitle.is-empty : Text { text: root.subtitle; color: Theme.muted; font-size: 14px; wrap: word-wrap; }
+
+    if root.width > 760px && root.card-five-title.is-empty && root.card-four-title.is-empty : HorizontalLayout {
+        spacing: 12px;
+        LandingCard { title: root.card-one-title; description: root.card-one-text; }
+        LandingCard { title: root.card-two-title; description: root.card-two-text; }
+        LandingCard { title: root.card-three-title; description: root.card-three-text; }
+    }
+
+    if root.width > 760px && root.card-four-title.is-empty && !root.card-five-title.is-empty : VerticalLayout {
+        spacing: 12px;
+        HorizontalLayout {
+            spacing: 12px;
+            LandingCard { title: root.card-one-title; description: root.card-one-text; }
+            LandingCard { title: root.card-two-title; description: root.card-two-text; }
+            LandingCard { title: root.card-three-title; description: root.card-three-text; }
+        }
+        HorizontalLayout {
+            spacing: 12px;
+            LandingCard { title: root.card-four-title; description: root.card-four-text; }
+            LandingCard { title: root.card-five-title; description: root.card-five-text; }
+            LandingCard { title: root.card-six-title; description: root.card-six-text; }
+        }
+    }
+
+    if root.width > 760px && !root.card-four-title.is-empty && root.card-five-title.is-empty : VerticalLayout {
+        spacing: 12px;
+        HorizontalLayout {
+            spacing: 12px;
+            LandingCard { title: root.card-one-title; description: root.card-one-text; }
+            LandingCard { title: root.card-two-title; description: root.card-two-text; }
+        }
+        HorizontalLayout {
+            spacing: 12px;
+            LandingCard { title: root.card-three-title; description: root.card-three-text; }
+            LandingCard { title: root.card-four-title; description: root.card-four-text; }
+        }
+    }
+
+    if root.width <= 760px : VerticalLayout {
+        spacing: 12px;
+        LandingCard { title: root.card-one-title; description: root.card-one-text; }
+        LandingCard { title: root.card-two-title; description: root.card-two-text; }
+        LandingCard { title: root.card-three-title; description: root.card-three-text; }
+        if !root.card-four-title.is-empty : LandingCard { title: root.card-four-title; description: root.card-four-text; }
+        if !root.card-five-title.is-empty : LandingCard { title: root.card-five-title; description: root.card-five-text; }
+        if !root.card-six-title.is-empty : LandingCard { title: root.card-six-title; description: root.card-six-text; }
+    }
+}
+
+export component LandingScreen inherits Rectangle {
+    in property <bool> authenticated: false;
+    in property <string> copyright-year: "2026";
+    callback login-requested();
+    callback register-requested();
+    callback open-app-requested();
+    callback theme-toggle-requested();
+    callback language-toggle-requested();
+    callback repository-requested();
+
+    background: Theme.background;
+
+    scroll := ScrollView {
+        VerticalLayout {
+            width: 100%;
+            spacing: 0px;
+
+            Rectangle {
+                height: 56px;
+                background: Theme.background;
+                border-width: 0px;
+                border-color: Theme.border;
+
+                HorizontalLayout {
+                    padding-left: 20px;
+                    padding-right: 20px;
+                    spacing: 16px;
+
+                    Text { text: "FriendsHub"; color: Theme.foreground; font-size: 18px; font-weight: 700; vertical-alignment: center; }
+
+                    if root.width > 760px : HorizontalLayout {
+                        spacing: 16px;
+                        FHTextButton { text: "Возможности"; clicked => { scroll.content-y = features-section.y; } }
+                        FHTextButton { text: "Как это работает"; clicked => { scroll.content-y = how-section.y; } }
+                        FHTextButton { text: "Почему FriendsHub"; clicked => { scroll.content-y = why-section.y; } }
+                    }
+
+                    HorizontalLayout {
+                        alignment: end;
+                        horizontal-stretch: 1;
+                        spacing: 8px;
+
+                        if root.authenticated : FHPrimaryButton { text: "Открыть приложение"; clicked => { root.open-app-requested(); } }
+                        if !root.authenticated && root.width >= 640px : FHTextButton { text: "Войти"; clicked => { root.login-requested(); } }
+                        if !root.authenticated : FHPrimaryButton { text: "Создать аккаунт"; clicked => { root.register-requested(); } }
+                    }
+                }
+            }
+
+            Rectangle { height: 1px; background: Theme.border; }
+
+            VerticalLayout {
+                padding-left: 20px;
+                padding-right: 20px;
+                padding-top: 48px;
+                padding-bottom: 48px;
+                spacing: 36px;
+
+                if root.width > 760px : HorizontalLayout {
+                    alignment: center;
+                    spacing: 48px;
+
+                    hero-copy := VerticalLayout {
+                        width: min((root.width - 88px) / 2, 496px);
+                        spacing: 18px;
+
+                        Text { text: "Приватный мессенджер со сквозным шифрованием"; color: Theme.foreground; font-size: 32px; font-weight: 600; wrap: word-wrap; }
+                        Text { text: "Переписка шифруется на ваших устройствах. Сервер хранит только зашифрованные конверты и прочитать их не может — как и никто другой."; color: Theme.muted; font-size: 16px; wrap: word-wrap; }
+                        HorizontalLayout {
+                            spacing: 10px;
+                            if root.authenticated : FHPrimaryButton { text: "Открыть приложение"; clicked => { root.open-app-requested(); } }
+                            if !root.authenticated : FHPrimaryButton { text: "Создать аккаунт"; clicked => { root.register-requested(); } }
+                            if !root.authenticated : FHTextButton { text: "Войти"; clicked => { root.login-requested(); } }
+                        }
+                    }
+
+                    cipher-mock := Rectangle {
+                        width: min((root.width - 88px) / 2, 384px);
+                        height: cipher-content.preferred-height;
+                        background: Theme.surface;
+                        border-width: 1px;
+                        border-color: Theme.border;
+                        border-radius: 16px;
+
+                        cipher-content := VerticalLayout {
+                            padding: 20px;
+                            spacing: 12px;
+
+                            HorizontalLayout {
+                                alignment: start;
+                                spacing: 8px;
+                                Rectangle { width: 32px; height: 32px; background: Theme.hover; border-radius: 16px; }
+                                Rectangle { width: 160px; height: 40px; background: Theme.hover; border-radius: 18px; }
+                            }
+
+                            HorizontalLayout {
+                                alignment: end;
+                                Rectangle { width: 128px; height: 40px; background: Theme.accent; border-radius: 18px; }
+                            }
+
+                            Rectangle {
+                                background: Theme.background;
+                                border-width: 1px;
+                                border-color: Theme.border;
+                                border-radius: 12px;
+                                VerticalLayout {
+                                    padding: 12px;
+                                    Text { text: "3a7f9c01 8f2b44d0 5e11a7c3 0d6f8b2a"; color: Theme.muted; font-size: 10px; wrap: word-wrap; }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if root.width <= 760px : VerticalLayout {
+                    spacing: 18px;
+
+                    Text { text: "Приватный мессенджер со сквозным шифрованием"; color: Theme.foreground; font-size: 28px; font-weight: 600; wrap: word-wrap; }
+                    Text { text: "Переписка шифруется на ваших устройствах. Сервер хранит только зашифрованные конверты и прочитать их не может — как и никто другой."; color: Theme.muted; font-size: 16px; wrap: word-wrap; }
+                    HorizontalLayout {
+                        spacing: 10px;
+                        if root.authenticated : FHPrimaryButton { text: "Открыть приложение"; clicked => { root.open-app-requested(); } }
+                        if !root.authenticated : FHPrimaryButton { text: "Создать аккаунт"; clicked => { root.register-requested(); } }
+                        if !root.authenticated : FHTextButton { text: "Войти"; clicked => { root.login-requested(); } }
+                    }
+                    Rectangle {
+                        height: cipher-content-mobile.preferred-height;
+                        background: Theme.surface;
+                        border-width: 1px;
+                        border-color: Theme.border;
+                        border-radius: 16px;
+
+                        cipher-content-mobile := VerticalLayout {
+                            padding: 20px;
+                            spacing: 12px;
+
+                            HorizontalLayout { spacing: 8px; Rectangle { width: 32px; height: 32px; background: Theme.hover; border-radius: 16px; } Rectangle { width: 160px; height: 40px; background: Theme.hover; border-radius: 18px; } }
+                            HorizontalLayout { alignment: end; Rectangle { width: 128px; height: 40px; background: Theme.accent; border-radius: 18px; } }
+                            Rectangle {
+                                background: Theme.background;
+                                border-width: 1px;
+                                border-color: Theme.border;
+                                border-radius: 12px;
+                                VerticalLayout { padding: 12px; Text { text: "3a7f9c01 8f2b44d0 5e11a7c3 0d6f8b2a"; color: Theme.muted; font-size: 10px; wrap: word-wrap; } }
+                            }
+                        }
+                    }
+                }
+
+                features-section := LandingSection {
+                    section-id: "features";
+                    title: "Возможности";
+                    subtitle: "Всё, что нужно для приватного общения.";
+                    card-one-title: "Сквозное шифрование";
+                    card-one-text: "Signal Protocol: отдельные сессии и ключи для каждого устройства.";
+                    card-two-title: "До пяти аккаунтов";
+                    card-two-text: "Несколько аккаунтов в одной вкладке, полностью изолированных друг от друга.";
+                    card-three-title: "Несколько устройств";
+                    card-three-text: "Переписка синхронизируется между вашими устройствами и остаётся зашифрованной.";
+                    card-four-title: "Работает офлайн";
+                    card-four-text: "Приложение ставится на телефон и открывает историю сообщений без сети.";
+                    card-five-title: "Группы и каналы";
+                    card-five-text: "Групповые чаты на sender keys, публичные каналы с обсуждениями.";
+                    card-six-title: "Без слежки";
+                    card-six-text: "Ни аналитики, ни рекламных идентификаторов: клиент не отправляет телеметрию.";
+                }
+
+                how-section := LandingSection {
+                    section-id: "how";
+                    title: "Как это работает";
+                    subtitle: "Три шага до первой зашифрованной переписки.";
+                    card-one-title: "Создайте аккаунт";
+                    card-one-text: "Достаточно пароля. Номер вида FH1234567 выдаётся сразу.";
+                    card-two-title: "Поделитесь номером";
+                    card-two-text: "Собеседник добавляет вас по FH-номеру или по ссылке-приглашению.";
+                    card-three-title: "Общайтесь";
+                    card-three-text: "Ключи вырабатываются на устройствах, сервер видит только шифртекст.";
+                }
+
+                why-section := LandingSection {
+                    section-id: "why";
+                    title: "Почему FriendsHub";
+                    subtitle: "";
+                    card-one-title: "Приватность по умолчанию";
+                    card-one-text: "Расшифровать переписку может только владелец устройства.";
+                    card-two-title: "Данные остаются у вас";
+                    card-two-text: "История сообщений живёт в браузере, а не в облаке сервиса.";
+                    card-three-title: "Открытый код";
+                    card-three-text: "Клиент и криптомодуль распространяются под AGPL-3.0.";
+                    card-four-title: "Быстро и без установки";
+                    card-four-text: "PWA открывается в браузере и ставится на домашний экран.";
+                }
+
+                Rectangle { height: 1px; background: Theme.border; }
+
+                VerticalLayout {
+                    spacing: 12px;
+                    HorizontalLayout { spacing: 8px; FHTextButton { text: "Русский / English"; clicked => { root.language-toggle-requested(); } } FHTextButton { text: "Сменить тему"; clicked => { root.theme-toggle-requested(); } } }
+                    HorizontalLayout {
+                        FHTextButton { text: "Репозиторий"; clicked => { root.repository-requested(); } }
+                        Text { text: "Лицензия AGPL-3.0"; color: Theme.muted; font-size: 12px; vertical-alignment: center; }
+                        Text { text: "© \{root.copyright-year} FriendsHub. Все права защищены."; color: Theme.muted; font-size: 12px; horizontal-stretch: 1; horizontal-alignment: right; vertical-alignment: center; }
+                    }
+                }
+            }
+        }
+    }
+}

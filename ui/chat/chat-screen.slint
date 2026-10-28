@@ -1,0 +1,416 @@
+import { Theme } from "../theme.slint";
+import { ChatAction, ChatReaction } from "chat-controls.slint";
+import { MessageList, ChatMessage } from "message-list.slint";
+import { ChatSearchPanel, ChatSearchResult } from "chat-search-panel.slint";
+import { PollViewModel } from "poll-card.slint";
+import { MessageComposer } from "message-composer.slint";
+import { CreatePollDialog, PollDraftOption } from "create-poll-dialog.slint";
+import { ChatMenuItem, MessageActionMenu } from "message-action-menu.slint";
+
+export component ChatScreen inherits Rectangle {
+    in property <string> title: "Чат";
+    in property <string> subtitle: "";
+    in property <string> conversation-kind: "direct";
+    in property <string> banner-text: "";
+    in property <string> pinned-text: "";
+    in property <string> pin-counter: "";
+    in property <int> pin-count: 0;
+    in property <string> error-text: "";
+    in property <[ChatMessage]> messages;
+    in property <[PollViewModel]> polls;
+    in property <bool> loading: false;
+    in property <bool> polls-loading: false;
+    in property <bool> polls-has-older: false;
+    in property <bool> polls-loading-older: false;
+    in property <string> polls-error-text: "";
+    in property <bool> has-older: false;
+    in property <bool> search-open: false;
+    in property <bool> can-call: false;
+    in property <bool> can-poll: true;
+    in property <bool> can-schedule: true;
+    in property <bool> composer-enabled: true;
+    in property <bool> busy: false;
+    in-out property <string> draft: "";
+    in-out property <string> search-query: "";
+    in property <[ChatSearchResult]> search-results;
+    in property <bool> searching: false;
+    in property <int> search-selected-index: -1;
+    in property <string> search-position: "";
+    in property <string> composer-error: "";
+    in property <bool> editing: false;
+    in property <bool> poll-create-open: false;
+    in property <bool> poll-create-busy: false;
+    in property <bool> poll-create-can-create: false;
+    in property <bool> poll-create-is-quiz: false;
+    in property <bool> poll-create-allows-multiple: false;
+    in property <bool> poll-create-allows-revoting: true;
+    in property <bool> poll-create-allows-user-options: false;
+    in property <bool> poll-create-closes-automatically: false;
+    in property <bool> poll-create-can-add-option: false;
+    in property <bool> poll-create-duration-open: false;
+    in property <bool> poll-create-duration-valid: false;
+    in property <string> poll-create-duration-label: "";
+    in property <string> poll-create-title-count-label: "";
+    in property <string> poll-create-description-count-label: "";
+    in property <string> poll-create-error-text: "";
+    in property <[PollDraftOption]> poll-create-options;
+    in-out property <string> poll-create-title: "";
+    in-out property <string> poll-create-description: "";
+    in-out property <string> poll-create-duration-hours: "1";
+    in-out property <string> poll-create-duration-minutes: "0";
+    in property <bool> message-menu-open: false;
+    in property <int> message-menu-index: -1;
+    in property <[ChatMenuItem]> message-menu-items;
+    in property <[ChatReaction]> message-menu-reactions;
+    in property <bool> delete-confirm-open: false;
+    in property <bool> delete-confirm-busy: false;
+    in property <string> delete-confirm-title: "";
+    in property <string> delete-confirm-hint: "";
+    in property <string> delete-confirm-cancel-label: "";
+    in property <string> delete-confirm-delete-label: "";
+    in property <string> delete-confirm-busy-label: "";
+    in property <string> delete-confirm-error-text: "";
+
+    callback back-requested();
+    callback profile-requested();
+    callback search-toggled();
+    callback search-query-changed(string);
+    callback search-previous-requested();
+    callback search-next-requested();
+    callback search-result-selected(int);
+    callback audio-call-requested();
+    callback video-call-requested();
+    callback settings-requested();
+    callback more-requested();
+    callback pin-open-requested();
+    callback pin-previous-requested();
+    callback pin-next-requested();
+    callback pin-remove-requested();
+    callback load-older-requested();
+    callback message-menu-requested(int);
+    callback message-menu-action-selected(string);
+    callback message-menu-reaction-selected(string);
+    callback message-menu-close-requested();
+    callback delete-confirm-requested();
+    callback delete-cancel-requested();
+    callback attachment-open-requested(int, string);
+    callback reaction-requested(int, string);
+    callback polls-retry-requested();
+    callback polls-load-older-requested();
+    callback poll-option-selection-requested(string, string);
+    callback poll-vote-requested(string);
+    callback poll-proposal-changed(string, string);
+    callback poll-propose-option-requested(string, string);
+    callback poll-option-remove-requested(string, string);
+    callback poll-stop-requested(string);
+    callback poll-remove-requested(string);
+    callback draft-changed(string);
+    callback send-requested(string);
+    callback attachment-requested(string);
+    callback emoji-picker-requested();
+    callback poll-requested();
+    callback schedule-requested(string);
+    callback voice-record-requested();
+    callback video-note-requested();
+    callback cancel-edit-requested();
+    callback poll-create-title-changed(string);
+    callback poll-create-description-changed(string);
+    callback poll-create-type-changed(bool);
+    callback poll-create-multiple-changed(bool);
+    callback poll-create-revoting-changed(bool);
+    callback poll-create-user-options-changed(bool);
+    callback poll-create-auto-close-changed(bool);
+    callback poll-create-duration-requested();
+    callback poll-create-duration-selected(string, string);
+    callback poll-create-duration-cancelled();
+    callback poll-create-option-changed(int, string);
+    callback poll-create-option-correct-requested(int);
+    callback poll-create-option-remove-requested(int);
+    callback poll-create-option-add-requested();
+    callback poll-create-requested();
+    callback poll-create-close-requested();
+
+    background: Theme.background;
+
+    VerticalLayout {
+        spacing: 0px;
+
+        Rectangle {
+            height: 56px;
+            background: Theme.background;
+            border-color: Theme.border;
+            border-width: 0px;
+
+            HorizontalLayout {
+                padding: 8px;
+                spacing: 4px;
+
+                ChatAction {
+                    label: "←";
+                    width: 36px;
+                    enabled: true;
+                    clicked => { root.back-requested(); }
+                }
+
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 2px;
+                    horizontal-stretch: 1;
+
+                    TouchArea {
+                        accessible-role: button;
+                        accessible-label: root.title + " Профиль";
+                        clicked => { root.profile-requested(); }
+                        VerticalLayout {
+                            spacing: 2px;
+                            Text { text: root.title; color: Theme.foreground; font-size: 14px; font-weight: 600; overflow: elide; }
+                            if !root.subtitle.is-empty : Text { text: root.subtitle; color: Theme.muted; font-size: 11px; overflow: elide; }
+                        }
+                    }
+                }
+
+                ChatAction {
+                    label: "Поиск";
+                    active: root.search-open;
+                    accessible-name: "Поиск по сообщениям";
+                    clicked => { root.search-toggled(); }
+                }
+                if root.can-call : ChatAction {
+                    label: "Видео";
+                    accessible-name: "Видеозвонок";
+                    clicked => { root.video-call-requested(); }
+                }
+                if root.can-call : ChatAction {
+                    label: "Звонок";
+                    accessible-name: "Аудиозвонок";
+                    clicked => { root.audio-call-requested(); }
+                }
+                ChatAction {
+                    label: "Настройки";
+                    accessible-name: "Настройки беседы";
+                    clicked => { root.settings-requested(); }
+                }
+                ChatAction {
+                    label: "Ещё";
+                    accessible-name: "Дополнительные действия беседы";
+                    clicked => { root.more-requested(); }
+                }
+            }
+        }
+
+        if root.pin-count > 0 && !root.search-open : Rectangle {
+            height: 40px;
+            background: Theme.surface;
+            HorizontalLayout {
+                padding-left: 8px; padding-right: 8px; padding-top: 4px; padding-bottom: 4px;
+                spacing: 4px;
+                ChatAction { label: "Закреплено"; enabled: !root.pinned-text.is-empty; clicked => { root.pin-open-requested(); } }
+                Text { text: root.pinned-text; color: Theme.muted; font-size: 12px; horizontal-stretch: 1; overflow: elide; }
+                if root.pin-count > 1 : Text { text: root.pin-counter; color: Theme.muted; font-size: 11px; }
+                if root.pin-count > 1 : ChatAction { label: "‹"; accessible-name: "Предыдущее закреплённое"; clicked => { root.pin-previous-requested(); } }
+                if root.pin-count > 1 : ChatAction { label: "›"; accessible-name: "Следующее закреплённое"; clicked => { root.pin-next-requested(); } }
+                ChatAction { label: "×"; accessible-name: "Открепить сообщение"; enabled: !root.pinned-text.is-empty; clicked => { root.pin-remove-requested(); } }
+            }
+        }
+
+        if !root.banner-text.is-empty : Rectangle {
+            height: 36px;
+            background: Theme.surface;
+            border-width: 0px;
+            Text {
+                x: 12px;
+                width: parent.width - 24px;
+                height: 100%;
+                text: root.banner-text;
+                color: Theme.muted;
+                font-size: 12px;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+        }
+
+        if !root.error-text.is-empty : Text {
+            text: root.error-text;
+            color: Theme.danger;
+            font-size: 12px;
+            wrap: word-wrap;
+            horizontal-stretch: 1;
+        }
+
+        MessageList {
+            messages: root.messages;
+            polls: root.polls;
+            loading: root.loading;
+            polls-loading: root.polls-loading;
+            polls-has-older: root.polls-has-older;
+            polls-loading-older: root.polls-loading-older;
+            polls-error-text: root.polls-error-text;
+            has-older: root.has-older;
+            vertical-stretch: 1;
+            load-older-requested => { root.load-older-requested(); }
+            message-menu-requested(index) => { root.message-menu-requested(index); }
+            attachment-open-requested(index, attachment-id) => { root.attachment-open-requested(index, attachment-id); }
+            reaction-requested(index, emoji) => { root.reaction-requested(index, emoji); }
+            polls-retry-requested => { root.polls-retry-requested(); }
+            polls-load-older-requested => { root.polls-load-older-requested(); }
+            poll-option-selection-requested(poll-id, option-id) => { root.poll-option-selection-requested(poll-id, option-id); }
+            poll-vote-requested(poll-id) => { root.poll-vote-requested(poll-id); }
+            poll-proposal-changed(poll-id, text) => { root.poll-proposal-changed(poll-id, text); }
+            poll-propose-option-requested(poll-id, text) => { root.poll-propose-option-requested(poll-id, text); }
+            poll-option-remove-requested(poll-id, option-id) => { root.poll-option-remove-requested(poll-id, option-id); }
+            poll-stop-requested(poll-id) => { root.poll-stop-requested(poll-id); }
+            poll-remove-requested(poll-id) => { root.poll-remove-requested(poll-id); }
+        }
+
+        MessageComposer {
+            value <=> root.draft;
+            enabled: root.composer-enabled;
+            busy: root.busy;
+            editing: root.editing;
+            error-text: root.composer-error;
+            can-poll: root.can-poll;
+            can-schedule: root.can-schedule;
+            draft-changed(text) => { root.draft-changed(text); }
+            send-requested(text) => { root.send-requested(text); }
+            attachment-requested(kind) => { root.attachment-requested(kind); }
+            emoji-picker-requested => { root.emoji-picker-requested(); }
+            poll-requested => { root.poll-requested(); }
+            schedule-requested(text) => { root.schedule-requested(text); }
+            voice-record-requested => { root.voice-record-requested(); }
+            video-note-requested => { root.video-note-requested(); }
+            cancel-edit-requested => { root.cancel-edit-requested(); }
+        }
+    }
+
+    if root.search-open : ChatSearchPanel {
+        x: 0px;
+        y: 56px;
+        width: parent.width;
+        height: min(root.height * 0.7, 420px);
+        query <=> root.search-query;
+        results: root.search-results;
+        searching: root.searching;
+        selected-index: root.search-selected-index;
+        position-label: root.search-position;
+        query-changed(text) => { root.search-query-changed(text); }
+        previous-requested => { root.search-previous-requested(); }
+        next-requested => { root.search-next-requested(); }
+        result-selected(index) => {
+            root.search-result-selected(index);
+            root.search-toggled();
+        }
+        close-requested => { root.search-toggled(); }
+    }
+
+    MessageActionMenu {
+        open: root.message-menu-open;
+        anchor-x: root.width - 248px;
+        anchor-y: root.height / 2;
+        title: "Сообщение";
+        items: root.message-menu-items;
+        reactions: root.message-menu-reactions;
+        empty-reactions-label: "";
+        action-selected(action) => { root.message-menu-action-selected(action); }
+        reaction-selected(emoji) => { root.message-menu-reaction-selected(emoji); }
+        close-requested => { root.message-menu-close-requested(); }
+    }
+
+    CreatePollDialog {
+        open: root.poll-create-open;
+        busy: root.poll-create-busy;
+        can-create: root.poll-create-can-create;
+        is-quiz: root.poll-create-is-quiz;
+        allows-multiple: root.poll-create-allows-multiple;
+        allows-revoting: root.poll-create-allows-revoting;
+        allows-user-options: root.poll-create-allows-user-options;
+        closes-automatically: root.poll-create-closes-automatically;
+        can-add-option: root.poll-create-can-add-option;
+        duration-open: root.poll-create-duration-open;
+        duration-valid: root.poll-create-duration-valid;
+        duration-label: root.poll-create-duration-label;
+        title-count-label: root.poll-create-title-count-label;
+        description-count-label: root.poll-create-description-count-label;
+        error-text: root.poll-create-error-text;
+        options: root.poll-create-options;
+        title <=> root.poll-create-title;
+        description <=> root.poll-create-description;
+        duration-hours <=> root.poll-create-duration-hours;
+        duration-minutes <=> root.poll-create-duration-minutes;
+        title-changed(value) => { root.poll-create-title-changed(value); }
+        description-changed(value) => { root.poll-create-description-changed(value); }
+        type-changed(value) => { root.poll-create-type-changed(value); }
+        multiple-changed(value) => { root.poll-create-multiple-changed(value); }
+        revoting-changed(value) => { root.poll-create-revoting-changed(value); }
+        user-options-changed(value) => { root.poll-create-user-options-changed(value); }
+        auto-close-changed(value) => { root.poll-create-auto-close-changed(value); }
+        duration-requested => { root.poll-create-duration-requested(); }
+        duration-selected(hours, minutes) => { root.poll-create-duration-selected(hours, minutes); }
+        duration-cancelled => { root.poll-create-duration-cancelled(); }
+        option-changed(index, value) => { root.poll-create-option-changed(index, value); }
+        option-correct-requested(index) => { root.poll-create-option-correct-requested(index); }
+        option-remove-requested(index) => { root.poll-create-option-remove-requested(index); }
+        option-add-requested => { root.poll-create-option-add-requested(); }
+        create-requested => { root.poll-create-requested(); }
+        close-requested => { root.poll-create-close-requested(); }
+    }
+
+    if root.delete-confirm-open : Rectangle {
+        x: 0px;
+        y: 0px;
+        width: 100%;
+        height: 100%;
+        background: #99000000;
+        TouchArea {
+            clicked => {
+                if !root.delete-confirm-busy { root.delete-cancel-requested(); }
+            }
+        }
+        Rectangle {
+            x: (parent.width - min(parent.width - 24px, 380px)) / 2;
+            y: (parent.height - dialog.preferred-height) / 2;
+            width: min(parent.width - 24px, 380px);
+            height: dialog.preferred-height;
+            background: Theme.surface;
+            border-width: 1px;
+            border-color: Theme.border;
+            border-radius: 12px;
+            dialog := VerticalLayout {
+                padding: 16px;
+                spacing: 10px;
+                Text {
+                    text: root.delete-confirm-title;
+                    color: Theme.foreground;
+                    font-size: 15px;
+                    font-weight: 600;
+                }
+                Text {
+                    text: root.delete-confirm-hint;
+                    color: Theme.muted;
+                    font-size: 12px;
+                    wrap: word-wrap;
+                }
+                if !root.delete-confirm-error-text.is-empty : Text {
+                    text: root.delete-confirm-error-text;
+                    color: Theme.danger;
+                    font-size: 11px;
+                    wrap: word-wrap;
+                }
+                HorizontalLayout {
+                    alignment: end;
+                    spacing: 8px;
+                    ChatAction {
+                        label: root.delete-confirm-cancel-label;
+                        enabled: !root.delete-confirm-busy;
+                        clicked => { root.delete-cancel-requested(); }
+                    }
+                    ChatAction {
+                        label: root.delete-confirm-busy ? root.delete-confirm-busy-label : root.delete-confirm-delete-label;
+                        danger: true;
+                        enabled: !root.delete-confirm-busy;
+                        clicked => { root.delete-confirm-requested(); }
+                    }
+                }
+            }
+        }
+    }
+}

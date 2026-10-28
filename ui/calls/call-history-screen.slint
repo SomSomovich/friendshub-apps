@@ -1,0 +1,260 @@
+import { Theme } from "../theme.slint";
+import { FHPrimaryButton, FHTextButton } from "../components.slint";
+import { ScrollView } from "std-widgets.slint";
+
+export struct CallHistoryRow {
+    id: string,
+    peer-account-id: string,
+    peer-name: string,
+    peer-initial: string,
+    direction-status: string,
+    started-at: string,
+    duration: string,
+    completed: bool,
+}
+
+export component CallHistoryScreen inherits Rectangle {
+    in property <[CallHistoryRow]> calls: [];
+    in property <bool> loading: false;
+    in property <string> error-text: "";
+    in property <bool> busy: false;
+    in property <bool> has-calls: false;
+    in-out property <bool> confirmation-open: false;
+    in-out property <bool> confirm-clear-all: false;
+    in-out property <string> confirm-call-id: "";
+
+    callback back-requested();
+    callback refresh-requested();
+    callback clear-history-requested();
+    callback profile-requested(string);
+    callback audio-call-requested(string);
+    callback delete-call-requested(string);
+    callback retry-requested();
+
+    background: Theme.background;
+
+    VerticalLayout {
+        spacing: 0px;
+
+        HorizontalLayout {
+            height: 52px;
+            padding-left: 12px;
+            padding-right: 16px;
+            spacing: 8px;
+            alignment: center;
+            FHTextButton {
+                text: "‹";
+                enabled: true;
+                clicked => { root.back-requested(); }
+            }
+            Text { text: "Звонки"; color: Theme.foreground; font-size: 14px; font-weight: 600; vertical-alignment: center; }
+        }
+        Rectangle { height: 1px; background: Theme.border; }
+
+        ScrollView {
+            vertical-stretch: 1;
+            content-width: parent.width;
+            content-height: history-content.preferred-height + 32px;
+
+            VerticalLayout {
+                width: parent.width;
+                padding: 16px;
+                history-content := VerticalLayout {
+                    width: min(parent.width - 32px, 576px);
+                    x: (parent.width - self.width) / 2;
+                    spacing: 12px;
+
+                    HorizontalLayout {
+                        spacing: 8px;
+
+                        FHTextButton {
+                            text: root.loading ? "Обновление…" : "Обновить";
+                            enabled: !root.busy && !root.loading;
+                            clicked => { root.refresh-requested(); }
+                        }
+                        Rectangle { horizontal-stretch: 1; background: transparent; }
+                        FHTextButton {
+                            text: "Очистить историю";
+                            enabled: !root.busy && root.has-calls;
+                            clicked => {
+                                root.confirm-clear-all = true;
+                                root.confirm-call-id = "";
+                                root.confirmation-open = true;
+                            }
+                        }
+                    }
+
+                    Text {
+                        text: "Последние 200 звонков.";
+                        color: Theme.muted;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                    }
+
+                    if !root.error-text.is-empty : Rectangle {
+                        border-radius: 8px;
+                        border-width: 1px;
+                        border-color: Theme.danger;
+                        background: Theme.surface;
+                        VerticalLayout {
+                            padding: 12px;
+                            spacing: 8px;
+                            Text { text: root.error-text; color: Theme.danger; font-size: 14px; wrap: word-wrap; }
+                            FHTextButton { text: "Повторить"; clicked => { root.retry-requested(); } }
+                        }
+                    }
+                    if root.error-text.is-empty && root.loading : VerticalLayout {
+                        spacing: 8px;
+                        for skeleton in 4 : Rectangle {
+                            height: 84px;
+                            border-radius: 12px;
+                            border-width: 1px;
+                            border-color: Theme.border;
+                            background: Theme.surface;
+                            HorizontalLayout {
+                                padding: 12px;
+                                spacing: 12px;
+                                alignment: center;
+                                Rectangle { width: 40px; height: 40px; border-radius: 20px; background: Theme.hover; }
+                                VerticalLayout {
+                                    spacing: 8px;
+                                    Rectangle { width: 55%; height: 8px; border-radius: 4px; background: Theme.hover; }
+                                    Rectangle { width: 72%; height: 6px; border-radius: 3px; background: Theme.hover; }
+                                }
+                            }
+                        }
+                    }
+                    if root.error-text.is-empty && !root.loading && root.calls.length == 0 : VerticalLayout {
+                        height: 180px;
+                        alignment: center;
+                        cross-axis-alignment: center;
+                        spacing: 8px;
+                        Text { text: "☎"; color: Theme.muted; font-size: 28px; horizontal-alignment: center; }
+                        Text { text: "Звонков пока нет."; color: Theme.foreground; font-size: 14px; horizontal-alignment: center; }
+                    }
+                    if root.error-text.is-empty && !root.loading && root.calls.length > 0 : VerticalLayout {
+                        spacing: 8px;
+                        for call[index] in root.calls : Rectangle {
+                            height: 84px;
+                            border-radius: 12px;
+                            border-width: 1px;
+                            border-color: Theme.border;
+                            background: Theme.surface;
+
+                            HorizontalLayout {
+                                padding: 12px;
+                                spacing: 8px;
+                                alignment: center;
+
+                                HorizontalLayout {
+                                    spacing: 12px;
+                                    horizontal-stretch: 1;
+                                    Rectangle {
+                                        width: 40px;
+                                        height: 40px;
+                                        border-radius: 20px;
+                                        background: Theme.hover;
+                                        Text { text: call.peer-initial; color: Theme.foreground; font-size: 16px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; width: 100%; height: 100%; }
+                                    }
+                                    VerticalLayout {
+                                        spacing: 3px;
+                                        horizontal-stretch: 1;
+                                        Text { text: call.peer-name; color: Theme.foreground; font-size: 14px; overflow: elide; }
+                                        Text { text: call.direction-status; color: Theme.muted; font-size: 12px; overflow: elide; }
+                                        Text {
+                                            text: call.completed && !call.duration.is-empty ? "\{call.started-at} · \{call.duration}" : call.started-at;
+                                            color: Theme.muted;
+                                            font-size: 12px;
+                                            overflow: elide;
+                                        }
+                                    }
+                                }
+
+                                FHTextButton {
+                                    text: "☎";
+                                    enabled: !root.busy;
+                                    clicked => { root.audio-call-requested(call.peer-account-id); }
+                                }
+                                FHTextButton {
+                                    text: "Удалить";
+                                    enabled: !root.busy;
+                                    clicked => {
+                                        root.confirm-clear-all = false;
+                                        root.confirm-call-id = call.id;
+                                        root.confirmation-open = true;
+                                    }
+                                }
+                            }
+
+                            TouchArea {
+                                x: 0px;
+                                y: 0px;
+                                width: parent.width - 144px;
+                                height: parent.height;
+                                mouse-cursor: pointer;
+                                clicked => { root.profile-requested(call.peer-account-id); }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if root.confirmation-open : Rectangle {
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: parent.height;
+        background: #00000080;
+
+        Rectangle {
+            width: min(parent.width - 32px, 420px);
+            height: confirmation-content.preferred-height;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            border-radius: 12px;
+            border-width: 1px;
+            border-color: Theme.border;
+            background: Theme.surface;
+
+            confirmation-content := VerticalLayout {
+                padding: 20px;
+                spacing: 12px;
+                Text {
+                    text: root.confirm-clear-all ? "Очистить историю" : "Удалить запись";
+                    color: Theme.foreground;
+                    font-size: 16px;
+                    font-weight: 600;
+                }
+                Text {
+                    text: root.confirm-clear-all ? "Удалить все записи звонков этого аккаунта?" : "Удалить эту запись из вашей истории звонков?";
+                    color: Theme.muted;
+                    font-size: 14px;
+                    wrap: word-wrap;
+                }
+                HorizontalLayout {
+                    alignment: end;
+                    spacing: 8px;
+                    FHTextButton {
+                        text: "Отмена";
+                        enabled: !root.busy;
+                        clicked => { root.confirmation-open = false; }
+                    }
+                    FHPrimaryButton {
+                        text: root.busy ? "Удаление…" : "Удалить";
+                        enabled: !root.busy;
+                        busy: root.busy;
+                        clicked => {
+                            if root.confirm-clear-all {
+                                root.clear-history-requested();
+                            } else {
+                                root.delete-call-requested(root.confirm-call-id);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,91 @@
+import { Theme } from "../theme.slint";
+import { ChatAction, ChatReaction } from "chat-controls.slint";
+import { ScrollView } from "std-widgets.slint";
+
+export struct ChatMenuItem {
+    id: string,
+    label: string,
+    enabled: bool,
+    danger: bool,
+}
+
+export component MessageActionMenu inherits Rectangle {
+    in property <bool> open: false;
+    in property <length> anchor-x: 0px;
+    in property <length> anchor-y: 0px;
+    in property <string> title: "";
+    in property <[ChatMenuItem]> items;
+    in property <[ChatReaction]> reactions;
+    in property <string> empty-reactions-label: "";
+    private property <length> menu-height: max(56px,
+        20px + (root.title.is-empty ? 0px : 16px) +
+        (root.reactions.length > 0 ? 34px : (root.empty-reactions-label.is-empty ? 0px : 16px)) +
+        max(root.items.length * 34px, 16px));
+
+    callback action-selected(string);
+    callback reaction-selected(string);
+    callback close-requested();
+
+    if root.open : Rectangle {
+        x: 0px;
+        y: 0px;
+        width: 100%;
+        height: 100%;
+        background: transparent;
+        TouchArea { clicked => { root.close-requested(); } }
+        Rectangle {
+            x: max(8px, min(root.anchor-x, parent.width - min(parent.width - 16px, 240px) - 8px));
+            y: max(8px, min(root.anchor-y, parent.height - min(parent.height - 16px, menu-height) - 8px));
+            width: min(parent.width - 16px, 240px);
+            height: min(parent.height - 16px, menu-height);
+            background: Theme.surface;
+            border-width: 1px;
+            border-color: Theme.border;
+            border-radius: 10px;
+
+            VerticalLayout {
+                padding: 6px;
+                spacing: 3px;
+                if !root.title.is-empty : Text { text: root.title; color: Theme.muted; font-size: 10px; }
+                if root.reactions.length > 0 : HorizontalLayout {
+                    spacing: 3px;
+                    for reaction[index] in root.reactions : ChatAction {
+                        label: reaction.emoji;
+                        active: reaction.mine;
+                        accessible-name: reaction.emoji + " " + reaction.count-label;
+                        enabled: true;
+                        clicked => {
+                            root.reaction-selected(reaction.emoji);
+                            root.close-requested();
+                        }
+                    }
+                }
+                if root.reactions.length == 0 && !root.empty-reactions-label.is-empty : Text {
+                    text: root.empty-reactions-label;
+                    color: Theme.muted;
+                    font-size: 10px;
+                }
+                ScrollView {
+                    width: 100%;
+                    vertical-stretch: 1;
+                    vertical-scrollbar-policy: as-needed;
+                    VerticalLayout {
+                        width: 100%;
+                        spacing: 2px;
+                        for item[index] in root.items : ChatAction {
+                            label: item.label;
+                            danger: item.danger;
+                            enabled: item.enabled;
+                            width: 100%;
+                            clicked => {
+                                root.action-selected(item.id);
+                                root.close-requested();
+                            }
+                        }
+                    }
+                }
+            }
+
+        }
+    }
+}

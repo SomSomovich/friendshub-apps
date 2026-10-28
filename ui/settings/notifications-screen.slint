@@ -1,0 +1,97 @@
+import { Theme } from "../theme.slint";
+import { FHPrimaryButton } from "../components.slint";
+import { SettingsCard, SettingsChoice, SettingsFrame, SettingsOption, SettingsToggle } from "common.slint";
+
+export component NotificationsSettingsScreen inherits Rectangle {
+    in property <bool> sound-enabled: true;
+    in property <string> sound-value: "chime";
+    in property <[SettingsOption]> sound-options: [
+        { value: "chime", label: "Перезвон" },
+        { value: "ping", label: "Сигнал" },
+        { value: "pop", label: "Щелчок" },
+        { value: "none", label: "Без звука" },
+    ];
+    in property <string> os-permission: "prompt";
+    in property <string> push-status: "";
+    in property <bool> permission-request-supported: true;
+    in property <bool> busy: false;
+
+    callback back-requested();
+    callback sound-enabled-changed(bool);
+    callback sound-changed(string);
+    callback preview-sound-requested(string);
+    callback request-system-notification-permission();
+    callback open-system-notification-settings();
+
+    width: 100%;
+    height: 100%;
+    background: Theme.background;
+
+    SettingsFrame {
+        title: "Уведомления";
+        back-requested => { root.back-requested(); }
+
+        SettingsCard {
+            title: "Звук сообщений";
+            description: "Короткий сигнал при новом сообщении.";
+
+            SettingsToggle {
+                label: "Включён";
+                checked: root.sound-enabled;
+                enabled: !root.busy;
+                changed(value) => {
+                    root.sound-enabled-changed(value);
+                    if value { root.preview-sound-requested(root.sound-value); }
+                }
+            }
+
+            SettingsChoice {
+                label: "Звук сообщений";
+                value: root.sound-value;
+                options: root.sound-options;
+                enabled: root.sound-enabled && !root.busy;
+                changed(value) => {
+                    root.sound-changed(value);
+                    root.preview-sound-requested(value);
+                }
+            }
+
+        }
+
+        SettingsCard {
+            title: "Системные уведомления";
+            description: "Разрешение ОС показывать уведомления вне приложения.";
+
+            Text {
+                text: root.os-permission == "granted" ? "Разрешено" :
+                    root.os-permission == "denied" ? "Запрещено — измените разрешение в настройках системы" :
+                    root.os-permission == "unsupported" ? "Системные уведомления недоступны на этой платформе" :
+                    "Разрешение ещё не запрошено";
+                color: root.os-permission == "denied" ? Theme.danger : Theme.muted;
+                font-size: 12px;
+                wrap: word-wrap;
+                width: 100%;
+            }
+
+            if !root.push-status.is-empty : Text {
+                text: root.push-status;
+                color: Theme.muted;
+                font-size: 12px;
+                wrap: word-wrap;
+                width: 100%;
+            }
+
+            if root.os-permission == "prompt" : FHPrimaryButton {
+                text: "Запросить разрешение";
+                enabled: root.permission-request-supported && !root.busy;
+                busy: root.busy;
+                clicked => { root.request-system-notification-permission(); }
+            }
+            if root.os-permission == "denied" : FHPrimaryButton {
+                text: "Открыть настройки уведомлений";
+                enabled: !root.busy;
+                clicked => { root.open-system-notification-settings(); }
+            }
+        }
+    }
+}

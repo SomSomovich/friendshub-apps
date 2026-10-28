@@ -1,0 +1,70 @@
+import { Theme } from "../theme.slint";
+
+export struct ChatReaction {
+    emoji: string,
+    count-label: string,
+    mine: bool,
+}
+
+export struct ChatAttachmentView {
+    id: string,
+    label: string,
+    size-label: string,
+    state-label: string,
+    preview-image: image,
+    has-preview: bool,
+    unavailable: bool,
+}
+
+export component ChatAction inherits Rectangle {
+    in property <string> label;
+    in property <string> accessible-name: "";
+    in property <bool> enabled: true;
+    in property <bool> active: false;
+    in property <bool> danger: false;
+    callback clicked();
+
+    min-width: 32px;
+    height: 32px;
+    background: root.active ? Theme.hover : transparent;
+    border-width: root.active ? 1px : 0px;
+    border-color: root.active ? Theme.accent : Theme.border;
+    border-radius: 8px;
+    opacity: root.enabled ? 1 : 0.5;
+    accessible-role: button;
+    accessible-label: root.accessible-name.is-empty ? root.label : root.accessible-name;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.clicked(); } }
+    forward-focus: key-scope;
+
+    Text {
+        text: root.label;
+        color: root.danger ? Theme.danger : (root.active ? Theme.accent : Theme.muted);
+        font-size: 12px;
+        font-weight: 500;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        width: 100%;
+        height: 100%;
+        accessible-role: none;
+    }
+
+    hit-area := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+
+    key-scope := FocusScope {
+        x: 0;
+        width: 0;
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+}

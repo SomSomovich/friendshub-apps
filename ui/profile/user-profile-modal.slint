@@ -1,0 +1,335 @@
+import { Theme } from "../theme.slint";
+import { FHInput, FHTextButton, FHPrimaryButton } from "../components.slint";
+import { ScrollView } from "std-widgets.slint";
+
+export struct PublicProfileField {
+    label: string,
+    value: string,
+}
+
+export component UserProfileModal inherits Rectangle {
+    in property <bool> open: false;
+    in property <bool> loading: false;
+    in property <bool> unavailable: false;
+    in property <bool> busy: false;
+    in property <string> error-text: "";
+    in property <string> username;
+    in property <string> alias;
+    in property <string> fh-number;
+    in property <string> status-text;
+    in property <string> status-emoji;
+    in property <bool> is-contact: false;
+    in property <bool> is-blocked: false;
+    in property <bool> has-avatar: false;
+    in property <image> avatar-image;
+    in property <string> avatar-initials;
+    in property <[PublicProfileField]> fields;
+    in property <bool> alias-editor-open: false;
+    in-out property <string> alias-draft;
+
+    callback close-requested();
+    callback avatar-open-requested();
+    callback write-requested();
+    callback call-requested(bool);
+    callback contact-toggle-requested();
+    callback block-toggle-requested();
+    callback alias-editor-requested();
+    callback alias-save-requested(string);
+    callback alias-cancel-requested();
+
+    visible: root.open || root.alias-editor-open;
+    background: transparent;
+
+    Rectangle {
+        width: 100%;
+        height: 100%;
+        background: #000000;
+        opacity: 0.5;
+    }
+
+    TouchArea {
+        width: 100%;
+        height: 100%;
+        clicked => { root.close-requested(); }
+    }
+
+    VerticalLayout {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: min(parent.width - 24px, 448px);
+        height: min(modal-content.preferred-height, parent.height - 32px);
+        max-height: parent.height - 32px;
+        alignment: center;
+
+        Rectangle {
+            width: 100%;
+            height: modal-content.preferred-height;
+            background: Theme.background;
+            border-width: 1px;
+            border-color: Theme.border;
+            border-radius: 16px;
+            clip: true;
+
+            modal-content := VerticalLayout {
+                spacing: 0px;
+
+                HorizontalLayout {
+                    padding: 16px;
+                    spacing: 12px;
+
+                    Text {
+                        text: "Профиль";
+                        color: Theme.foreground;
+                        font-size: 16px;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+
+                    if root.is-contact : FHTextButton {
+                        text: "Изменить имя";
+                        clicked => { root.alias-editor-requested(); }
+                    }
+
+                    FHTextButton {
+                        text: "Закрыть";
+                        clicked => { root.close-requested(); }
+                    }
+                }
+
+                Rectangle { height: 1px; background: Theme.border; }
+
+                ScrollView {
+                    vertical-stretch: 1;
+                    vertical-scrollbar-policy: as-needed;
+                    content-width: parent.width;
+                    content-height: profile-body.preferred-height;
+
+                    profile-body := VerticalLayout {
+                        width: parent.width;
+
+                        if !root.error-text.is-empty : Rectangle {
+                            width: 100%;
+                            background: Theme.surface;
+                            VerticalLayout {
+                                padding: 12px;
+                                Text {
+                                    text: root.error-text;
+                                    color: Theme.danger;
+                                    font-size: 12px;
+                                    wrap: word-wrap;
+                                    width: 100%;
+                                }
+                            }
+                        }
+
+                        if root.loading : VerticalLayout {
+                            padding: 16px;
+                            spacing: 14px;
+
+                            Text { text: "Загружаем профиль…"; color: Theme.muted; font-size: 14px; }
+                            Rectangle { height: 14px; background: Theme.surface; border-radius: 7px; }
+                            Rectangle { width: 60%; height: 12px; background: Theme.surface; border-radius: 6px; }
+                            Rectangle { height: 40px; background: Theme.surface; border-radius: 8px; }
+                        }
+
+                        if root.unavailable : VerticalLayout {
+                            padding: 16px;
+                            Text { text: "Профиль недоступен."; color: Theme.muted; font-size: 14px; wrap: word-wrap; }
+                        }
+
+                        if !root.loading && !root.unavailable : VerticalLayout {
+                            padding: 16px;
+                            spacing: 14px;
+
+                            HorizontalLayout {
+                                spacing: 12px;
+
+                                Rectangle {
+                                    width: 64px;
+                                    height: 64px;
+                                    background: Theme.hover;
+                                    border-radius: 32px;
+                                    clip: true;
+
+                                    if root.has-avatar : Image {
+                                        width: 100%;
+                                        height: 100%;
+                                        source: root.avatar-image;
+                                        image-fit: cover;
+                                    }
+
+                                    if !root.has-avatar : Text {
+                                        text: root.avatar-initials;
+                                        color: Theme.foreground;
+                                        font-size: 20px;
+                                        font-weight: 600;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                        width: 100%;
+                                        height: 100%;
+                                    }
+
+                                    if root.has-avatar : TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => { root.avatar-open-requested(); }
+                                    }
+                                }
+
+                                VerticalLayout {
+                                    spacing: 3px;
+                                    vertical-stretch: 0;
+
+                                    if !root.alias.is-empty : Text {
+                                        text: root.alias;
+                                        color: Theme.foreground;
+                                        font-size: 16px;
+                                        font-weight: 600;
+                                        overflow: elide;
+                                    }
+
+                                    if !root.alias.is-empty && root.alias != root.username : Text {
+                                        text: root.username;
+                                        color: Theme.muted;
+                                        font-size: 12px;
+                                        overflow: elide;
+                                    }
+
+                                    if root.alias.is-empty || root.alias == root.username : Text {
+                                        text: root.username;
+                                        color: Theme.foreground;
+                                        font-size: 16px;
+                                        font-weight: 600;
+                                        overflow: elide;
+                                    }
+
+                                    Text { text: root.fh-number; color: Theme.muted; font-size: 14px; }
+
+                                    if !root.status-text.is-empty || !root.status-emoji.is-empty : Text {
+                                        text: "\{root.status-emoji} \{root.status-text}";
+                                        color: Theme.muted;
+                                        font-size: 14px;
+                                        overflow: elide;
+                                    }
+                                }
+                            }
+
+                            if root.fields.length > 0 : Rectangle {
+                                background: Theme.surface;
+                                border-width: 1px;
+                                border-color: Theme.border;
+                                border-radius: 8px;
+
+                                VerticalLayout {
+                                    padding: 12px;
+                                    spacing: 10px;
+
+                                    for field in root.fields : VerticalLayout {
+                                        spacing: 2px;
+                                        Text { text: field.label; color: Theme.muted; font-size: 12px; wrap: word-wrap; }
+                                        Text { text: field.value; color: Theme.foreground; font-size: 14px; wrap: word-wrap; }
+                                    }
+                                }
+                            }
+
+                            if root.is-blocked : Rectangle {
+                                background: Theme.surface;
+                                border-radius: 8px;
+                                VerticalLayout {
+                                    padding: 12px;
+                                    Text { text: "Аккаунт заблокирован: сообщения между вами не доставляются."; color: Theme.muted; font-size: 12px; wrap: word-wrap; }
+                                }
+                            }
+
+                            HorizontalLayout {
+                                spacing: 8px;
+                                FHPrimaryButton {
+                                    text: "Написать";
+                                    enabled: !root.busy;
+                                    clicked => { root.write-requested(); }
+                                }
+                                FHTextButton {
+                                    text: "Аудиозвонок";
+                                    enabled: !root.busy;
+                                    clicked => { root.call-requested(false); }
+                                }
+                                FHTextButton {
+                                    text: "Видеозвонок";
+                                    enabled: !root.busy;
+                                    clicked => { root.call-requested(true); }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Rectangle { height: 1px; background: Theme.border; }
+
+                if !root.loading && !root.unavailable : HorizontalLayout {
+                    padding: 12px;
+                    spacing: 8px;
+
+                    FHTextButton {
+                        text: root.is-contact ? "Убрать из друзей" : "Добавить в друзья";
+                        enabled: !root.busy;
+                        clicked => { root.contact-toggle-requested(); }
+                    }
+
+                    FHTextButton {
+                        text: root.is-blocked ? "Разблокировать" : "Заблокировать";
+                        enabled: !root.busy;
+                        clicked => { root.block-toggle-requested(); }
+                    }
+                }
+            }
+        }
+    }
+
+    if root.alias-editor-open : Rectangle {
+        width: 100%;
+        height: 100%;
+        background: #000000;
+        opacity: 0.5;
+    }
+
+    if root.alias-editor-open : TouchArea {
+        width: 100%;
+        height: 100%;
+        clicked => { root.alias-cancel-requested(); }
+    }
+
+    if root.alias-editor-open : Rectangle {
+        x: (root.width - min(root.width - 32px, 384px)) / 2;
+        y: (root.height - alias-content.preferred-height) / 2;
+        width: min(root.width - 32px, 384px);
+        height: alias-content.preferred-height;
+        background: Theme.background;
+        border-width: 1px;
+        border-color: Theme.border;
+        border-radius: 12px;
+
+        alias-content := VerticalLayout {
+            padding: 16px;
+            spacing: 12px;
+
+            Text { text: "Имя друга"; color: Theme.foreground; font-size: 16px; font-weight: 600; }
+            FHInput {
+                label: "Как отображать этого друга";
+                placeholder: "Имя";
+                value <=> root.alias-draft;
+            }
+
+            HorizontalLayout {
+                alignment: end;
+                spacing: 8px;
+
+                FHTextButton { text: "Отмена"; clicked => { root.alias-cancel-requested(); } }
+                FHPrimaryButton {
+                    text: "Сохранить";
+                    enabled: !root.alias-draft.is-empty && !root.busy;
+                    clicked => { root.alias-save-requested(root.alias-draft); }
+                }
+            }
+        }
+    }
+}

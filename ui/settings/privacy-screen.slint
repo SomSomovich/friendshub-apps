@@ -1,0 +1,443 @@
+import { Theme } from "../theme.slint";
+import { FHPrimaryButton, FHTextButton } from "../components.slint";
+import { SettingsCard, SettingsChoice, SettingsDivider, SettingsFrame, SettingsToggle } from "common.slint";
+
+export struct SettingsContact {
+    id: string,
+    name: string,
+}
+
+export struct SettingsPrivacyException {
+    id: string,
+    name: string,
+    kind: string,
+}
+
+component ContactChoiceRow inherits Rectangle {
+    in property <string> account-id;
+    in property <string> name;
+    in property <string> selected-id;
+    callback selected(string);
+
+    width: 100%;
+    height: 38px;
+    border-radius: 8px;
+    border-width: 1px;
+    border-color: root.account-id == root.selected-id ? Theme.accent : Theme.border;
+    background: root.account-id == root.selected-id ? Theme.hover : transparent;
+    accessible-role: radio-button;
+    accessible-label: root.name;
+    accessible-checkable: true;
+    accessible-checked: root.account-id == root.selected-id;
+    accessible-action-default => { root.selected(root.account-id); }
+    forward-focus: keyboard-scope;
+
+    states [
+        focus when keyboard-scope.has-focus : {
+            root.border-width: 2px;
+            root.border-color: Theme.accent;
+        }
+    ]
+
+    Text {
+        x: 12px;
+        width: parent.width - 24px;
+        height: parent.height;
+        text: root.name;
+        color: Theme.foreground;
+        font-size: 13px;
+        vertical-alignment: center;
+        wrap: word-wrap;
+    }
+
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.selected(root.account-id); }
+    }
+
+    keyboard-scope := FocusScope {
+        x: 0;
+        width: 0;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.selected(root.account-id);
+                return accept;
+            }
+            return reject;
+        }
+    }
+}
+
+component ExceptionRow inherits Rectangle {
+    in property <string> name;
+    in property <string> detail;
+    in property <string> remove-label;
+    in property <string> item-id;
+    in property <bool> enabled: true;
+    callback remove(string);
+
+    width: 100%;
+    height: max(44px, content.preferred-height);
+    background: Theme.background;
+    border-width: 1px;
+    border-color: Theme.border;
+    border-radius: 8px;
+
+    content := HorizontalLayout {
+        padding: 8px;
+        spacing: 8px;
+        alignment: center;
+
+        VerticalLayout {
+            spacing: 3px;
+            horizontal-stretch: 1;
+            vertical-stretch: 0;
+
+        Text {
+            text: root.name;
+            color: Theme.foreground;
+            font-size: 13px;
+            width: 100%;
+            wrap: word-wrap;
+        }
+
+        Text {
+            text: root.detail;
+            color: Theme.muted;
+            font-size: 11px;
+            width: 100%;
+            wrap: word-wrap;
+        }
+        }
+
+        FHTextButton {
+            text: root.remove-label;
+            enabled: root.enabled;
+            clicked => { root.remove(root.item-id); }
+        }
+    }
+}
+
+export component PrivacySettingsScreen inherits Rectangle {
+    in property <string> dm-policy: "everyone";
+    in property <string> group-add-policy: "everyone";
+    in property <bool> invisible: false;
+    in property <bool> allow-nudges: true;
+    in property <bool> profile-hidden: false;
+    in property <bool> hidden-from-search: false;
+    in property <[SettingsContact]> contacts: [];
+    in property <[SettingsPrivacyException]> presence-exceptions: [];
+    in property <[SettingsPrivacyException]> profile-exceptions: [];
+    in property <[SettingsPrivacyException]> group-add-exceptions: [];
+    in property <[SettingsContact]> blocked-accounts: [];
+    in-out property <string> presence-contact-id: "";
+    in-out property <string> presence-kind: "always_visible";
+    in-out property <string> profile-contact-id: "";
+    in-out property <string> group-contact-id: "";
+    in-out property <string> block-contact-id: "";
+    in property <bool> busy: false;
+
+    callback back-requested();
+    callback dm-policy-changed(string);
+    callback group-add-policy-changed(string);
+    callback invisible-changed(bool);
+    callback nudges-changed(bool);
+    callback profile-hidden-changed(bool);
+    callback hidden-from-search-changed(bool);
+    callback presence-exception-added(string, string);
+    callback presence-exception-removed(string, string);
+    callback profile-exception-added(string);
+    callback profile-exception-removed(string);
+    callback group-add-exception-added(string);
+    callback group-add-exception-removed(string);
+    callback account-blocked(string);
+    callback account-unblocked(string);
+
+    width: 100%;
+    height: 100%;
+    background: Theme.background;
+
+    SettingsFrame {
+        title: "Приватность";
+        back-requested => { root.back-requested(); }
+
+        SettingsCard {
+            title: "Кто может писать вам";
+            description: "Знакомые — люди, с которыми у вас уже есть общий личный или групповой чат. Это не только сохранённые контакты.";
+
+            SettingsChoice {
+                label: "Кто может писать вам";
+                value: root.dm-policy;
+                enabled: !root.busy;
+                options: [
+                    { value: "everyone", label: "Все" },
+                    { value: "contacts_only", label: "Только знакомые" },
+                ];
+                changed(value) => {
+                    root.dm-policy-changed(value);
+                }
+            }
+        }
+
+        SettingsCard {
+            title: "Кто может добавлять вас в группы";
+            description: "Разрешение на прямое добавление в группу.";
+
+            SettingsChoice {
+                label: "Кто может добавлять вас в группы";
+                value: root.group-add-policy;
+                enabled: !root.busy;
+                options: [
+                    { value: "everyone", label: "Все" },
+                    { value: "nobody", label: "Только люди из исключений" },
+                ];
+                changed(value) => {
+                    root.group-add-policy-changed(value);
+                }
+            }
+
+            if root.group-add-policy == "nobody" : Rectangle {
+                width: 100%;
+                height: exceptions-content.preferred-height;
+
+                exceptions-content := VerticalLayout {
+                    spacing: 8px;
+
+                    Text {
+                        text: "Эти люди могут добавлять вас в группы, когда выбраны только исключения.";
+                        color: Theme.muted;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                        width: 100%;
+                    }
+
+                    if root.group-add-exceptions.length == 0 : Text {
+                        text: "Исключений пока нет.";
+                        color: Theme.muted;
+                        font-size: 12px;
+                    }
+
+                    for exception in root.group-add-exceptions : ExceptionRow {
+                        name: exception.name;
+                        detail: "Может добавлять вас в группы";
+                        remove-label: "Убрать";
+                        item-id: exception.id;
+                        enabled: !root.busy;
+                        remove(id) => { root.group-add-exception-removed(id); }
+                    }
+
+                    Text {
+                        text: "Добавить друга";
+                        color: Theme.muted;
+                        font-size: 12px;
+                    }
+
+                    for contact in root.contacts : ContactChoiceRow {
+                        account-id: contact.id;
+                        name: contact.name;
+                        selected-id: root.group-contact-id;
+                        selected(id) => { root.group-contact-id = id; }
+                    }
+
+                    FHPrimaryButton {
+                        text: "Добавить в исключения";
+                        enabled: !root.busy && !root.group-contact-id.is-empty;
+                        busy: root.busy;
+                        clicked => { root.group-add-exception-added(root.group-contact-id); }
+                    }
+                }
+            }
+        }
+
+        SettingsCard {
+            title: "Невидимка";
+            description: "Скрывает ваш онлайн-статус и время последнего визита. Текущее состояние синхронизируется с сервером.";
+
+            SettingsToggle {
+                label: "Невидимка";
+                description: "Скрыть онлайн-статус и время последнего визита";
+                checked: root.invisible;
+                enabled: !root.busy;
+                changed(value) => { root.invisible-changed(value); }
+            }
+        }
+
+        SettingsCard {
+            title: "Разрешить встряхивания";
+            description: "Собеседники смогут отправлять вам короткий сигнал со встряхиванием интерфейса.";
+
+            SettingsToggle {
+                label: "Разрешить встряхивания";
+                checked: root.allow-nudges;
+                enabled: !root.busy;
+                changed(value) => { root.nudges-changed(value); }
+            }
+        }
+
+        SettingsCard {
+            title: "Видимость профиля";
+            description: "Отдельно управляйте доступом к профилю и показом в глобальном поиске.";
+
+            SettingsToggle {
+                label: "Скрыть профиль от незнакомцев";
+                description: "Профиль будет недоступен тем, кого нет в исключениях.";
+                checked: root.profile-hidden;
+                enabled: !root.busy;
+                changed(value) => { root.profile-hidden-changed(value); }
+            }
+
+            SettingsToggle {
+                label: "Не показывать в поиске";
+                description: "Профиль не появится в результатах глобального поиска.";
+                checked: root.hidden-from-search;
+                enabled: !root.busy;
+                changed(value) => { root.hidden-from-search-changed(value); }
+            }
+
+            SettingsDivider {}
+
+            Text {
+                text: "Кому профиль всё равно виден";
+                color: Theme.foreground;
+                font-size: 13px;
+                font-weight: 500;
+            }
+
+            Text {
+                text: "Эти друзья смогут открыть ваш профиль, даже если он скрыт.";
+                color: Theme.muted;
+                font-size: 12px;
+                wrap: word-wrap;
+                width: 100%;
+            }
+
+            if root.profile-exceptions.length == 0 : Text {
+                text: "Исключений пока нет.";
+                color: Theme.muted;
+                font-size: 12px;
+            }
+
+            for exception in root.profile-exceptions : ExceptionRow {
+                name: exception.name;
+                detail: "Видит ваш профиль";
+                remove-label: "Убрать";
+                item-id: exception.id;
+                enabled: !root.busy;
+                remove(id) => { root.profile-exception-removed(id); }
+            }
+
+            Text {
+                text: "Добавить друга";
+                color: Theme.muted;
+                font-size: 12px;
+            }
+
+            for contact in root.contacts : ContactChoiceRow {
+                account-id: contact.id;
+                name: contact.name;
+                selected-id: root.profile-contact-id;
+                selected(id) => { root.profile-contact-id = id; }
+            }
+
+            FHPrimaryButton {
+                text: "Добавить в исключения профиля";
+                enabled: !root.busy && !root.profile-contact-id.is-empty;
+                busy: root.busy;
+                clicked => { root.profile-exception-added(root.profile-contact-id); }
+            }
+        }
+
+        SettingsCard {
+            title: "Исключения для присутствия";
+            description: "Кому видно ваше присутствие независимо от режима.";
+
+            if root.presence-exceptions.length == 0 : Text {
+                text: "Исключений пока нет.";
+                color: Theme.muted;
+                font-size: 12px;
+            }
+
+            for exception in root.presence-exceptions : ExceptionRow {
+                name: exception.name;
+                detail: exception.kind == "always_visible" ? "Всегда видит" : "Никогда не видит";
+                remove-label: "Убрать";
+                item-id: exception.id;
+                enabled: !root.busy;
+                remove(id) => { root.presence-exception-removed(id, exception.kind); }
+            }
+
+            SettingsChoice {
+                label: "Правило";
+                value: root.presence-kind;
+                enabled: !root.busy;
+                options: [
+                    { value: "always_visible", label: "Всегда видит" },
+                    { value: "always_invisible", label: "Никогда не видит" },
+                ];
+                changed(value) => { root.presence-kind = value; }
+            }
+
+            Text {
+                text: "Выберите контакт";
+                color: Theme.muted;
+                font-size: 12px;
+            }
+
+            for contact in root.contacts : ContactChoiceRow {
+                account-id: contact.id;
+                name: contact.name;
+                selected-id: root.presence-contact-id;
+                selected(id) => { root.presence-contact-id = id; }
+            }
+
+            FHPrimaryButton {
+                text: "Добавить исключение";
+                enabled: !root.busy && !root.presence-contact-id.is-empty;
+                busy: root.busy;
+                clicked => { root.presence-exception-added(root.presence-contact-id, root.presence-kind); }
+            }
+        }
+
+        SettingsCard {
+            title: "Заблокированные";
+            description: "Сообщения от них не доходят ни в одну сторону.";
+
+            if root.blocked-accounts.length == 0 : Text {
+                text: "Заблокированных нет.";
+                color: Theme.muted;
+                font-size: 12px;
+            }
+
+            for account in root.blocked-accounts : ExceptionRow {
+                name: account.name;
+                detail: account.id;
+                remove-label: "Разблокировать";
+                item-id: account.id;
+                enabled: !root.busy;
+                remove(id) => { root.account-unblocked(id); }
+            }
+
+            SettingsDivider {}
+
+            Text {
+                text: "Выберите контакт, чтобы заблокировать его";
+                color: Theme.muted;
+                font-size: 12px;
+            }
+
+            for contact in root.contacts : ContactChoiceRow {
+                account-id: contact.id;
+                name: contact.name;
+                selected-id: root.block-contact-id;
+                selected(id) => { root.block-contact-id = id; }
+            }
+
+            FHPrimaryButton {
+                text: "Заблокировать";
+                enabled: !root.busy && !root.block-contact-id.is-empty;
+                busy: root.busy;
+                clicked => { root.account-blocked(root.block-contact-id); }
+            }
+        }
+    }
+}
