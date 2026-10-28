@@ -20,6 +20,7 @@ export component ChannelScreen inherits Rectangle {
     in property <string> title: "Канал";
     in property <[ChannelPost]> posts;
     in property <[ChannelPost]> pinned-posts;
+    in-out property <string> scroll-to-post-id: "";
     in property <[PollViewModel]> polls;
     in property <[ChatReaction]> reaction-options;
     in property <bool> polls-loading: false;
@@ -98,7 +99,7 @@ export component ChannelScreen inherits Rectangle {
             horizontal-stretch: 1;
         }
 
-        ScrollView {
+        channel-scroll := ScrollView {
             width: 100%;
             vertical-stretch: 1;
             vertical-scrollbar-policy: as-needed;
@@ -170,6 +171,20 @@ export component ChannelScreen inherits Rectangle {
                 }
 
                 for post[index] in root.posts : Rectangle {
+                    property <bool> is-scroll-target: root.scroll-to-post-id == post.id;
+                    changed is-scroll-target => {
+                        if is-scroll-target {
+                            channel-scroll.content-y = -self.y;
+                            root.scroll-to-post-id = "";
+                        }
+                    }
+                    init => {
+                        if is-scroll-target {
+                            channel-scroll.content-y = -self.y;
+                            root.scroll-to-post-id = "";
+                        }
+                    }
+
                     width: 100%;
                     height: post-layout.preferred-height;
                     background: Theme.surface;

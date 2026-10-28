@@ -278,6 +278,16 @@ pub struct BlockedContact {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContactItem {
+    pub target_account_id: String,
+    pub local_username: String,
+    pub user_id: i64,
+    pub fh_number: String,
+    pub username: String,
+    pub avatar_url: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IdRequest {
     /// Native `contacts_block` / `contacts_unblock` operations read `id`.
     pub id: String,
@@ -360,14 +370,17 @@ pub struct AddContactRequest {
     pub local_username: String,
 }
 
+pub fn list_contacts(client: &Client) -> Result<Vec<ContactItem>> {
+    client.contacts_list()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoveContactRequest {
     pub id: String,
 }
 
-pub fn add_contact(client: &Client, request: &AddContactRequest) -> Result<()> {
-    let _: serde_json::Value = client.contacts_add(request)?;
-    Ok(())
+pub fn add_contact(client: &Client, request: &AddContactRequest) -> Result<ContactItem> {
+    client.contacts_add(request)
 }
 
 pub fn remove_contact(client: &Client, request: &RemoveContactRequest) -> Result<()> {

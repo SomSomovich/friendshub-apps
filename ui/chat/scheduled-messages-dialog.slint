@@ -19,6 +19,7 @@ export component ScheduledMessagesDialog inherits Rectangle {
     in property <string> empty-description: "Запланированные сообщения появятся здесь.";
     in property <string> retry-label: "Повторить";
     in property <string> cancel-label: "Отменить";
+    in property <string> cancel-busy-label: "Отменяем…";
     in property <string> cancelling-id: "";
     in property <[ScheduledMessageView]> messages;
 
@@ -95,7 +96,7 @@ export component ScheduledMessagesDialog inherits Rectangle {
                                     Text { text: message.device-count-label; color: Theme.muted; font-size: 10px; }
                                 }
                                 ChatAction {
-                                    label: message.busy || root.cancelling-id == message.id ? "Отменяем…" : root.cancel-label;
+                                    label: message.busy || root.cancelling-id == message.id ? root.cancel-busy-label : root.cancel-label;
                                     enabled: root.cancelling-id.is-empty && !message.busy;
                                     clicked => { root.cancel-requested(message.id); }
                                 }

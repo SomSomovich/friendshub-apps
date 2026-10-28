@@ -17,6 +17,7 @@ import { FolderEditorDialog } from "chat/folder-editor-dialog.slint";
 import { ChatSearchResult } from "chat/chat-search-panel.slint";
 import { ChatMenuItem } from "chat/message-action-menu.slint";
 import { PollDraftOption } from "chat/create-poll-dialog.slint";
+import { ScheduledMessagesDialog, ScheduledMessageView } from "chat/scheduled-messages-dialog.slint";
 import { PollViewModel } from "chat/poll-card.slint";
 import { ChannelScreen, ChannelPost } from "channel/channel-screen.slint";
 import { ConversationSettingsScreen, ConversationMember, ConversationInvite, ConversationOption, ChannelAnalytic } from "channel/conversation-settings.slint";
@@ -167,8 +168,16 @@ export component MainWindow inherits Window {
     in property <string> chat-delete-confirm-delete-label: "";
     in property <string> chat-delete-confirm-busy-label: "";
     in property <string> chat-delete-confirm-error-text: "";
+    in property <bool> scheduled-dialog-open: false;
+    in property <bool> scheduled-dialog-loading: false;
+    in property <string> scheduled-dialog-error: "";
+    in property <string> scheduled-dialog-cancelling-id: "";
+    in property <string> scheduled-dialog-account-id: "";
+    in property <string> scheduled-dialog-conversation-id: "";
+    in property <[ScheduledMessageView]> scheduled-dialog-messages: [];
     in property <[ChannelPost]> channel-posts: [];
     in property <[ChannelPost]> pinned-channel-posts: [];
+    in-out property <string> channel-scroll-to-post-id: "";
     in property <[ChatReaction]> channel-reaction-options: [];
     in property <bool> channel-loading: false;
     in property <bool> channel-has-older: false;
@@ -242,6 +251,7 @@ export component MainWindow inherits Window {
     in property <[PublicProfileField]> user-profile-fields: [];
     in property <bool> user-profile-alias-editor-open: false;
     in-out property <string> user-profile-alias-draft: "";
+    in property <bool> user-profile-alias-save-enabled: false;
     in property <[CallHistoryRow]> calls: [];
     in property <bool> calls-loading: false;
     in property <string> calls-error-text: "";
@@ -345,6 +355,14 @@ export component MainWindow inherits Window {
     in property <bool> conversation-settings-confirmation-visible: false;
     in property <string> conversation-settings-confirmation-title: "";
     in property <string> conversation-settings-confirmation-description: "";
+    in property <bool> conversation-settings-confirmation-show-ban-option: false;
+    in-out property <bool> conversation-settings-confirmation-ban-on-remove: false;
+    in-out property <bool> conversation-settings-member-tag-editor-open: false;
+    in-out property <int> conversation-settings-member-tag-editor-index: -1;
+    in-out property <string> conversation-settings-member-tag-editor-draft: "";
+    in-out property <string> conversation-settings-member-tag-editor-error-text: "";
+    in-out property <bool> conversation-settings-member-tag-editor-has-existing-tag: false;
+    in property <bool> conversation-settings-member-tag-save-enabled: false;
     in-out property <string> conversation-settings-title-draft: "";
     in-out property <string> conversation-settings-description-draft: "";
     in-out property <string> conversation-settings-handle-draft: "";
@@ -725,6 +743,7 @@ export component MainWindow inherits Window {
             title: root.conversation-title;
             posts: root.channel-posts;
             pinned-posts: root.pinned-channel-posts;
+            scroll-to-post-id <=> root.channel-scroll-to-post-id;
             polls: root.polls;
             reaction-options: root.channel-reaction-options;
             polls-loading: root.polls-loading;
@@ -808,6 +827,14 @@ export component MainWindow inherits Window {
             confirmation-visible: root.conversation-settings-confirmation-visible;
             confirmation-title: root.conversation-settings-confirmation-title;
             confirmation-description: root.conversation-settings-confirmation-description;
+            confirmation-show-ban-option: root.conversation-settings-confirmation-show-ban-option;
+            confirmation-ban-on-remove <=> root.conversation-settings-confirmation-ban-on-remove;
+            member-tag-editor-open <=> root.conversation-settings-member-tag-editor-open;
+            member-tag-editor-index <=> root.conversation-settings-member-tag-editor-index;
+            member-tag-editor-draft <=> root.conversation-settings-member-tag-editor-draft;
+            member-tag-editor-error-text <=> root.conversation-settings-member-tag-editor-error-text;
+            member-tag-editor-has-existing-tag <=> root.conversation-settings-member-tag-editor-has-existing-tag;
+            member-tag-editor-save-enabled: root.conversation-settings-member-tag-save-enabled;
             title-draft <=> root.conversation-settings-title-draft;
             description-draft <=> root.conversation-settings-description-draft;
             handle-draft <=> root.conversation-settings-handle-draft;
@@ -825,6 +852,9 @@ export component MainWindow inherits Window {
             linked-group-save-requested(id) => { root.ui-action("conversation-settings", "link-group", id, "", ""); }
             member-add-requested(id) => { root.ui-action("conversation-settings", "add-member", id, "", ""); }
             member-action-requested(index, action) => { root.ui-action("conversation-settings", "member-action", "\{index}", action, ""); }
+            member-tag-save-requested(index, tag) => { root.ui-action("conversation-settings", "member-tag-save", "\{index}", tag, ""); }
+            member-tag-draft-changed(value) => { root.ui-action("conversation-settings", "member-tag-draft-changed", value, "", ""); }
+            member-tag-remove-requested(index) => { root.ui-action("conversation-settings", "member-tag-remove", "\{index}", "", ""); }
             banned-member-action-requested(index, action) => { root.ui-action("conversation-settings", "banned-member-action", "\{index}", action, ""); }
             invite-create-requested(kind) => { root.ui-action("invites", "create", kind, "", ""); }
             invite-copy-requested(index) => { root.ui-action("invites", "copy", "\{index}", "", ""); }
@@ -942,6 +972,7 @@ export component MainWindow inherits Window {
             avatar-initials: root.user-profile-avatar-initials;
             fields: root.user-profile-fields;
             alias-editor-open: root.user-profile-alias-editor-open;
+            alias-save-enabled: root.user-profile-alias-save-enabled;
             alias-draft <=> root.user-profile-alias-draft;
             close-requested => { root.ui-action("profile", "close-modal", "", "", ""); }
             avatar-open-requested => { root.ui-action("profile", "avatar-open", "", "", ""); }
@@ -951,6 +982,7 @@ export component MainWindow inherits Window {
             block-toggle-requested => { root.ui-action("profile", "block-toggle", "", "", ""); }
             alias-editor-requested => { root.ui-action("profile", "alias-editor", "", "", ""); }
             alias-save-requested(value) => { root.ui-action("profile", "alias-save", value, "", ""); }
+            alias-draft-changed(value) => { root.ui-action("profile", "alias-draft-changed", value, "", ""); }
             alias-cancel-requested => { root.ui-action("profile", "alias-cancel", "", "", ""); }
         }
 
@@ -1317,5 +1349,28 @@ export component MainWindow inherits Window {
         minutes-changed(value) => { root.ui-action("account-settings", "status-minutes-changed", value, "", ""); }
         continue-requested => { root.ui-action("account-settings", "status-duration-selected", root.settings-account-status-duration-hours, root.settings-account-status-duration-minutes, ""); }
         close-requested => { root.ui-action("account-settings", "status-duration-cancelled", "", "", ""); }
+    }
+
+    ScheduledMessagesDialog {
+        open: root.scheduled-dialog-open
+            && root.screen == "chat"
+            && root.settings-active-account-id == root.scheduled-dialog-account-id
+            && root.selected-conversation-id == root.scheduled-dialog-conversation-id;
+        loading: root.scheduled-dialog-loading;
+        error-text: root.scheduled-dialog-error;
+        cancelling-id: root.scheduled-dialog-cancelling-id;
+        messages: root.scheduled-dialog-messages;
+        title: root.language == "ru" ? "Отложенная отправка" : "Scheduled messages";
+        loading-label: root.language == "ru" ? "Загрузка…" : "Loading…";
+        empty-title: root.language == "ru" ? "Отложенных сообщений нет" : "No scheduled messages";
+        empty-description: root.language == "ru"
+            ? "Запланированные сообщения появятся здесь."
+            : "Scheduled messages will appear here.";
+        retry-label: root.language == "ru" ? "Повторить" : "Retry";
+        cancel-label: root.language == "ru" ? "Отменить" : "Cancel";
+        cancel-busy-label: root.language == "ru" ? "Отменяем…" : "Cancelling…";
+        refresh-requested => { root.ui-action("chat", "scheduled-refresh", "", "", ""); }
+        cancel-requested(id) => { root.ui-action("chat", "scheduled-cancel", id, "", ""); }
+        close-requested => { root.ui-action("chat", "scheduled-close", "", "", ""); }
     }
 }

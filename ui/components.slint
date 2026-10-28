@@ -44,10 +44,12 @@ export component FHInput inherits VerticalLayout {
     in property <string> label;
     in property <string> placeholder;
     in-out property <string> value;
+    in property <bool> enabled: true;
     in property <bool> password: false;
     in-out property <bool> password-visible: false;
     in property <string> helper: "";
     in property <string> error: "";
+    callback value-edited(string);
 
     spacing: 6px;
     horizontal-stretch: 1;
@@ -90,6 +92,8 @@ export component FHInput inherits VerticalLayout {
             vertical-alignment: center;
             accessible-label: root.label;
             accessible-placeholder-text: root.placeholder;
+            enabled: root.enabled;
+            edited => { root.value-edited(root.value); }
 
             cursor-position-changed(position) => {
                 if position.x + self.x < 12px {

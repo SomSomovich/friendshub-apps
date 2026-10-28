@@ -6,7 +6,7 @@
 //! properties through `MainWindow`; those missing bindings are intentionally
 //! not emulated here.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -30,9 +30,14 @@ const REACTIONS_PAGE_SIZE: i64 = 200;
 const CONTACT_SEARCH_LIMIT: i64 = 30;
 const MAX_AVATAR_BYTES: usize = 5 * 1024 * 1024;
 const MAX_AVATAR_BASE64_BYTES: usize = MAX_AVATAR_BYTES.div_ceil(3) * 4;
+const MAX_GROUP_TAG_CHARS: usize = 9;
 
 static STATE: OnceLock<Mutex<ControllerState>> = OnceLock::new();
 static CONTACT_SEARCH_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
+static GROUP_MEMBER_TAG_GENERATION: AtomicU64 = AtomicU64::new(0);
+static CONVERSATION_SETTINGS_REQUEST_ID: AtomicU64 = AtomicU64::new(0);
+static CHANNEL_LIST_REQUEST_ID: AtomicU64 = AtomicU64::new(0);
+static CHANNEL_POST_OPEN_REQUEST_ID: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Default)]
 struct ControllerState {
@@ -43,6 +48,7 @@ struct ControllerState {
     channel_editing_post_id: Option<String>,
     channel_has_older: bool,
     group_members: Vec<community_api::GroupMember>,
+    group_members_conversation_id: Option<String>,
     channel_members: Vec<community_api::ChannelMember>,
     group_bans: Vec<community_api::GroupBan>,
     invites: Vec<community_api::Invite>,
@@ -60,6 +66,8 @@ struct ControllerState {
     dating_cursor: Option<discovery_dating::DiscoverCursor>,
     dating_search_started: bool,
     pending_delete: Option<(String, bool)>,
+    pending_member_removal: Option<(String, String)>,
+    pending_member_unban: Option<(String, String)>,
 }
 
 fn state() -> &'static Mutex<ControllerState> {
@@ -102,6 +110,10 @@ fn channel_success(window: &MainWindow) {
     success(window);
 }
 
+fn request_channel_post_scroll(window: &MainWindow, post_id: &str) {
+    window.set_channel_scroll_to_post_id(post_id.into());
+}
+
 fn report_spawn_failure(ctx: &AppContext) {
     ctx.apply_ui(|window| {
         window.set_conversations_error("Не удалось запустить операцию.".into());
@@ -129,6 +141,30 @@ fn route_conversation(route: &str) -> Option<(String, bool)> {
 fn selected_conversation(window: &MainWindow) -> Option<String> {
     let id = window.get_selected_conversation_id().to_string();
     (!id.is_empty()).then_some(id)
+}
+
+fn settings_load_is_current(
+    ctx: &AppContext,
+    window: &MainWindow,
+    account_id: &str,
+    conversation_id: &str,
+    is_channel: bool,
+    request_id: u64,
+) -> bool {
+    if CONVERSATION_SETTINGS_REQUEST_ID.load(Ordering::SeqCst) != request_id
+        || !ctx
+            .active_session()
+            .is_some_and(|session| session.account.id == account_id)
+        || selected_conversation(window).as_deref() != Some(conversation_id)
+    {
+        return false;
+    }
+    let route = window.get_route().to_string();
+    let path = route.split('?').next().unwrap_or(&route);
+    path.ends_with("/settings")
+        && route_conversation(&route).is_some_and(|(id, route_is_channel)| {
+            id == conversation_id && route_is_channel == is_channel
+        })
 }
 
 fn model<T: Clone + 'static>(items: Vec<T>) -> ModelRc<T> {
@@ -330,7 +366,11 @@ fn looking_for_label(looking_for: discovery_dating::DiscoverLookingFor) -> &'sta
     }
 }
 
-fn group_member_row(member: &community_api::GroupMember, now: i64) -> ConversationMember {
+fn group_member_row(
+    member: &community_api::GroupMember,
+    now: i64,
+    actor_account_id: &str,
+) -> ConversationMember {
     ConversationMember {
         id: member.account_id.clone().into(),
         name: member.account_id.clone().into(),
@@ -343,10 +383,15 @@ fn group_member_row(member: &community_api::GroupMember, now: i64) -> Conversati
             || member
                 .moderator_muted_until
                 .is_some_and(|muted_until| muted_until > now),
+        can_moderate: member.account_id != actor_account_id && member.role != "owner",
     }
 }
 
-fn channel_member_row(member: &community_api::ChannelMember) -> ConversationMember {
+fn channel_member_row(
+    member: &community_api::ChannelMember,
+    actor_account_id: &str,
+    owner_account_id: &str,
+) -> ConversationMember {
     ConversationMember {
         id: member.actor_id.clone().into(),
         name: member.actor_id.clone().into(),
@@ -354,6 +399,9 @@ fn channel_member_row(member: &community_api::ChannelMember) -> ConversationMemb
         tag: "".into(),
         actor_type: member.actor_type.clone().into(),
         muted: false,
+        can_moderate: member.role != "owner"
+            && member.actor_id != owner_account_id
+            && (member.actor_type != "account" || member.actor_id != actor_account_id),
     }
 }
 
@@ -687,6 +735,9 @@ fn load_dating_profile(ctx: &AppContext) {
 }
 
 fn load_channel(ctx: &AppContext, account_id: String, conversation_id: String) {
+    let request_id = CHANNEL_LIST_REQUEST_ID.fetch_add(1, Ordering::SeqCst) + 1;
+    let completion_channel_id = conversation_id.clone();
+    let completion_account_id = account_id.clone();
     ctx.apply_ui(|window| {
         window.set_channel_loading(true);
         window.set_channel_busy(true);
@@ -719,30 +770,43 @@ fn load_channel(ctx: &AppContext, account_id: String, conversation_id: String) {
                 .collect::<Result<Vec<_>, CoreError>>()?;
             Ok((detail, posts, pinned, post_rows, pinned_rows, can_publish))
         },
-        move |window, result| match result {
-            Ok((detail, posts, pinned, post_rows, pinned_rows, can_publish)) => {
-                let has_older = posts.len() == CHANNEL_POST_PAGE_SIZE as usize;
-                if let Ok(mut state) = state().lock() {
-                    state.channel_posts = posts;
-                    state.pinned_posts = pinned;
-                    state.channel_has_older = has_older;
-                }
-                window.set_conversation_title(
-                    detail.title.unwrap_or_else(|| "Канал".to_owned()).into(),
-                );
-                window.set_channel_posts(channel_post_model(post_rows));
-                window.set_pinned_channel_posts(channel_post_model(pinned_rows));
-                window.set_channel_reaction_options(channel_reaction_options());
-                window.set_channel_can_publish(can_publish);
-                window.set_channel_has_older(has_older);
-                window.set_channel_loading(false);
-                window.set_channel_busy(false);
-                channel_success(&window);
+        move |window, result| {
+            if CHANNEL_LIST_REQUEST_ID.load(Ordering::SeqCst) != request_id
+                || window.get_selected_conversation_id().to_string() != completion_channel_id
+                || state()
+                    .lock()
+                    .map(|state| {
+                        state.account_id.as_deref() != Some(completion_account_id.as_str())
+                    })
+                    .unwrap_or(true)
+            {
+                return;
             }
-            Err(error) => {
-                window.set_channel_loading(false);
-                window.set_channel_busy(false);
-                channel_failure(&window, error);
+            match result {
+                Ok((detail, posts, pinned, post_rows, pinned_rows, can_publish)) => {
+                    let has_older = posts.len() == CHANNEL_POST_PAGE_SIZE as usize;
+                    if let Ok(mut state) = state().lock() {
+                        state.channel_posts = posts;
+                        state.pinned_posts = pinned;
+                        state.channel_has_older = has_older;
+                    }
+                    window.set_conversation_title(
+                        detail.title.unwrap_or_else(|| "Канал".to_owned()).into(),
+                    );
+                    window.set_channel_posts(channel_post_model(post_rows));
+                    window.set_pinned_channel_posts(channel_post_model(pinned_rows));
+                    window.set_channel_reaction_options(channel_reaction_options());
+                    window.set_channel_can_publish(can_publish);
+                    window.set_channel_has_older(has_older);
+                    window.set_channel_loading(false);
+                    window.set_channel_busy(false);
+                    channel_success(&window);
+                }
+                Err(error) => {
+                    window.set_channel_loading(false);
+                    window.set_channel_busy(false);
+                    channel_failure(&window, error);
+                }
             }
         },
     );
@@ -845,6 +909,16 @@ fn load_conversation_settings(
     conversation_id: String,
     is_channel: bool,
 ) {
+    let request_id = CONVERSATION_SETTINGS_REQUEST_ID.fetch_add(1, Ordering::SeqCst) + 1;
+    next_group_member_tag_generation();
+    if let Ok(mut state) = state().lock() {
+        state.pending_delete = None;
+        state.pending_member_removal = None;
+        state.pending_member_unban = None;
+        state.group_members.clear();
+        state.group_members_conversation_id = None;
+        state.group_bans.clear();
+    }
     ctx.apply_ui(|window| {
         window.set_conversation_settings_loading(true);
         window.set_conversation_settings_no_access(false);
@@ -852,8 +926,26 @@ fn load_conversation_settings(
         window.set_conversation_settings_error_text("".into());
         window.set_conversation_settings_profile_error_text("".into());
         window.set_conversation_settings_busy(false);
+        window.set_conversation_settings_member_tag_editor_open(false);
+        window.set_conversation_settings_member_tag_editor_index(-1);
+        window.set_conversation_settings_member_tag_editor_draft("".into());
+        window.set_conversation_settings_member_tag_editor_error_text("".into());
+        window.set_conversation_settings_member_tag_editor_has_existing_tag(false);
+        window.set_conversation_settings_member_tag_save_enabled(false);
+        window.set_conversation_settings_can_change_tags(false);
+        window.set_conversation_settings_confirmation_visible(false);
+        window.set_conversation_settings_confirmation_show_ban_option(false);
+        window.set_conversation_settings_confirmation_ban_on_remove(false);
+        window.set_conversation_settings_members(model(Vec::<ConversationMember>::new()));
+        window.set_conversation_settings_banned_members(model(Vec::<ConversationMember>::new()));
     });
     let worker_id = conversation_id.clone();
+    let completion_context = ctx.clone();
+    let completion_account_id = account_id.clone();
+    let completion_conversation_id = conversation_id.clone();
+    let spawn_failure_context = ctx.clone();
+    let spawn_failure_account_id = account_id.clone();
+    let spawn_failure_conversation_id = conversation_id.clone();
     let result = ctx.call(
         "friendshub-community-settings",
         move |client| {
@@ -888,258 +980,295 @@ fn load_conversation_settings(
                 ))
             }
         },
-        move |window, result| match result {
-            Ok(SettingsSnapshot::Channel {
-                detail,
-                members,
-                invites,
-                analytics,
-                available_bots,
-            }) => {
-                let actor_id = account_id.clone();
-                let self_member = members
-                    .iter()
-                    .find(|member| member.actor_type == "account" && member.actor_id == actor_id);
-                let is_owner = detail.owner_account_id == actor_id
-                    && self_member.is_some_and(|member| member.role == "owner");
-                let is_staff = is_owner || self_member.is_some_and(|member| member.role == "admin");
-                let cached_groups = state()
-                    .lock()
-                    .map(|state| state.available_groups.clone())
-                    .unwrap_or_default();
-                let linked_group_id = detail.linked_group_conversation_id.clone();
-                let member_rows: Vec<ConversationMember> =
-                    members.iter().map(channel_member_row).collect();
-                let invite_model = model(invite_rows(&invites));
-                let linked_group_model =
-                    model(group_options(&cached_groups, linked_group_id.as_deref()));
-                let bot_model = model(
-                    available_bots
+        move |window, result| {
+            if !settings_load_is_current(
+                &completion_context,
+                &window,
+                &completion_account_id,
+                &completion_conversation_id,
+                is_channel,
+                request_id,
+            ) {
+                return;
+            }
+            match result {
+                Ok(SettingsSnapshot::Channel {
+                    detail,
+                    members,
+                    invites,
+                    analytics,
+                    available_bots,
+                }) => {
+                    let actor_id = account_id.clone();
+                    let self_member = members.iter().find(|member| {
+                        member.actor_type == "account" && member.actor_id == actor_id
+                    });
+                    let is_owner = detail.owner_account_id == actor_id
+                        && self_member.is_some_and(|member| member.role == "owner");
+                    let is_staff =
+                        is_owner || self_member.is_some_and(|member| member.role == "admin");
+                    let cached_groups = state()
+                        .lock()
+                        .map(|state| state.available_groups.clone())
+                        .unwrap_or_default();
+                    let linked_group_id = detail.linked_group_conversation_id.clone();
+                    let member_rows: Vec<ConversationMember> = members
                         .iter()
-                        .map(|bot| {
-                            let present = members.iter().any(|member| {
-                                member.actor_type == "bot" && member.actor_id == bot.bot_id
-                            });
-                            let label = bot
-                                .handle
-                                .as_deref()
-                                .map(|handle| format!("@{handle}"))
-                                .unwrap_or_else(|| bot.bot_id.clone());
-                            conversation_option(bot.bot_id.clone(), label, present, present)
+                        .map(|member| {
+                            channel_member_row(member, &actor_id, detail.owner_account_id.as_str())
                         })
-                        .collect(),
-                );
-                let post_snapshots = state()
-                    .lock()
-                    .map(|state| state.channel_posts.clone())
-                    .unwrap_or_default();
-                let analytics_model = model(analytics_rows(&analytics, &post_snapshots));
-                if let Ok(mut state) = state().lock() {
-                    state.channel_members = members.clone();
-                    state.group_members.clear();
-                    state.group_bans.clear();
-                    state.invites = invites.clone();
-                    state.channel_analytics = analytics.clone();
-                    state.channel_linked_group_id = linked_group_id.clone();
-                    state.available_bots = available_bots.clone();
+                        .collect();
+                    let invite_model = model(invite_rows(&invites));
+                    let linked_group_model =
+                        model(group_options(&cached_groups, linked_group_id.as_deref()));
+                    let bot_model = model(
+                        available_bots
+                            .iter()
+                            .map(|bot| {
+                                let present = members.iter().any(|member| {
+                                    member.actor_type == "bot" && member.actor_id == bot.bot_id
+                                });
+                                let label = bot
+                                    .handle
+                                    .as_deref()
+                                    .map(|handle| format!("@{handle}"))
+                                    .unwrap_or_else(|| bot.bot_id.clone());
+                                conversation_option(bot.bot_id.clone(), label, present, present)
+                            })
+                            .collect(),
+                    );
+                    let post_snapshots = state()
+                        .lock()
+                        .map(|state| state.channel_posts.clone())
+                        .unwrap_or_default();
+                    let analytics_model = model(analytics_rows(&analytics, &post_snapshots));
+                    if let Ok(mut state) = state().lock() {
+                        state.channel_members = members.clone();
+                        state.group_members.clear();
+                        state.group_members_conversation_id = None;
+                        state.group_bans.clear();
+                        state.invites = invites.clone();
+                        state.channel_analytics = analytics.clone();
+                        state.channel_linked_group_id = linked_group_id.clone();
+                        state.available_bots = available_bots.clone();
+                    }
+                    window.set_conversation_title(
+                        detail
+                            .title
+                            .clone()
+                            .unwrap_or_else(|| "Канал".to_owned())
+                            .into(),
+                    );
+                    window.set_conversation_settings_kind("channel".into());
+                    window.set_conversation_settings_title("Настройки канала".into());
+                    window.set_conversation_settings_description(
+                        detail.description.clone().unwrap_or_default().into(),
+                    );
+                    window.set_conversation_settings_handle(
+                        detail.handle.clone().unwrap_or_default().into(),
+                    );
+                    window.set_conversation_settings_title_draft(
+                        detail.title.unwrap_or_else(|| "Канал".to_owned()).into(),
+                    );
+                    window.set_conversation_settings_description_draft(
+                        detail.description.unwrap_or_default().into(),
+                    );
+                    window.set_conversation_settings_handle_draft(
+                        detail.handle.unwrap_or_default().into(),
+                    );
+                    window.set_conversation_settings_linked_group_id(
+                        linked_group_id.clone().unwrap_or_default().into(),
+                    );
+                    window.set_conversation_settings_linked_group_draft(
+                        linked_group_id.unwrap_or_default().into(),
+                    );
+                    window.set_conversation_settings_linked_group_state_known(true);
+                    window.set_conversation_settings_members(model(member_rows));
+                    window.set_conversation_settings_banned_members(model(
+                        Vec::<ConversationMember>::new(),
+                    ));
+                    window.set_conversation_settings_available_members(model(Vec::<
+                        ConversationOption,
+                    >::new(
+                    )));
+                    window.set_conversation_settings_invites(invite_model);
+                    window.set_conversation_settings_linked_groups(linked_group_model);
+                    window.set_conversation_settings_available_bots(bot_model);
+                    window.set_conversation_settings_analytics(analytics_model);
+                    window.set_conversation_settings_loading(false);
+                    window.set_conversation_settings_no_access(!is_staff);
+                    window.set_conversation_settings_members_unavailable(false);
+                    window.set_conversation_settings_can_edit_profile(is_owner);
+                    window.set_conversation_settings_can_manage_members(is_owner);
+                    // Role and mute editors are still unavailable; tags use their
+                    // own input dialog and are only supported for groups.
+                    window.set_conversation_settings_can_manage_roles(false);
+                    window.set_conversation_settings_can_mute_members(false);
+                    window.set_conversation_settings_can_change_tags(false);
+                    window.set_conversation_settings_can_remove_members(is_owner);
+                    window.set_conversation_settings_can_ban_members(false);
+                    window.set_conversation_settings_can_manage_invites(is_staff);
+                    window.set_conversation_settings_can_view_analytics(is_staff);
+                    window.set_conversation_settings_is_owner(is_owner);
+                    window.set_conversation_settings_is_public(detail.is_public);
+                    window.set_conversation_settings_public_state_draft(detail.is_public);
+                    window.set_conversation_settings_public_state_known(true);
+                    window.set_conversation_settings_has_photo(detail.avatar_url.is_some());
+                    window.set_conversation_settings_profile_save_enabled(is_owner);
+                    window.set_conversation_settings_confirmation_visible(false);
+                    window.set_conversation_settings_busy(false);
+                    success(&window);
                 }
-                window.set_conversation_title(
-                    detail
-                        .title
-                        .clone()
-                        .unwrap_or_else(|| "Канал".to_owned())
-                        .into(),
-                );
-                window.set_conversation_settings_kind("channel".into());
-                window.set_conversation_settings_title("Настройки канала".into());
-                window.set_conversation_settings_description(
-                    detail.description.clone().unwrap_or_default().into(),
-                );
-                window.set_conversation_settings_handle(
-                    detail.handle.clone().unwrap_or_default().into(),
-                );
-                window.set_conversation_settings_title_draft(
-                    detail.title.unwrap_or_else(|| "Канал".to_owned()).into(),
-                );
-                window.set_conversation_settings_description_draft(
-                    detail.description.unwrap_or_default().into(),
-                );
-                window.set_conversation_settings_handle_draft(
-                    detail.handle.unwrap_or_default().into(),
-                );
-                window.set_conversation_settings_linked_group_id(
-                    linked_group_id.clone().unwrap_or_default().into(),
-                );
-                window.set_conversation_settings_linked_group_draft(
-                    linked_group_id.unwrap_or_default().into(),
-                );
-                window.set_conversation_settings_linked_group_state_known(true);
-                window.set_conversation_settings_members(model(member_rows));
-                window.set_conversation_settings_banned_members(model(
-                    Vec::<ConversationMember>::new(),
-                ));
-                window.set_conversation_settings_available_members(model(
-                    Vec::<ConversationOption>::new(),
-                ));
-                window.set_conversation_settings_invites(invite_model);
-                window.set_conversation_settings_linked_groups(linked_group_model);
-                window.set_conversation_settings_available_bots(bot_model);
-                window.set_conversation_settings_analytics(analytics_model);
-                window.set_conversation_settings_loading(false);
-                window.set_conversation_settings_no_access(!is_staff);
-                window.set_conversation_settings_members_unavailable(false);
-                window.set_conversation_settings_can_edit_profile(is_owner);
-                window.set_conversation_settings_can_manage_members(is_owner);
-                // The native settings callback has no role editor, mute duration,
-                // or tag payload, so those controls cannot be enabled safely.
-                window.set_conversation_settings_can_manage_roles(false);
-                window.set_conversation_settings_can_mute_members(false);
-                window.set_conversation_settings_can_change_tags(false);
-                window.set_conversation_settings_can_remove_members(is_owner);
-                window.set_conversation_settings_can_ban_members(false);
-                window.set_conversation_settings_can_manage_invites(is_staff);
-                window.set_conversation_settings_can_view_analytics(is_staff);
-                window.set_conversation_settings_is_owner(is_owner);
-                window.set_conversation_settings_is_public(detail.is_public);
-                window.set_conversation_settings_public_state_draft(detail.is_public);
-                window.set_conversation_settings_public_state_known(true);
-                window.set_conversation_settings_has_photo(detail.avatar_url.is_some());
-                window.set_conversation_settings_profile_save_enabled(is_owner);
-                window.set_conversation_settings_confirmation_visible(false);
-                window.set_conversation_settings_busy(false);
-                success(&window);
-            }
-            Ok(SettingsSnapshot::Group {
-                detail,
-                members,
-                bans,
-                invites,
-            }) => {
-                let actor_id = account_id.clone();
-                let self_member = members.iter().find(|member| member.account_id == actor_id);
-                let is_owner = detail.owner_account_id == actor_id
-                    && self_member.is_some_and(|member| member.role == "owner");
-                let permissions = self_member
-                    .map(|member| member.permissions)
-                    .unwrap_or_default();
-                let has_permission = |bit| is_owner || permissions & bit != 0;
-                let is_staff = is_owner || self_member.is_some_and(|member| member.role == "admin");
-                let now = now_seconds();
-                let member_rows: Vec<ConversationMember> = members
-                    .iter()
-                    .map(|member| group_member_row(member, now))
-                    .collect();
-                let banned_rows: Vec<ConversationMember> = bans
-                    .iter()
-                    .map(|ban| ConversationMember {
-                        id: ban.account_id.clone().into(),
-                        name: ban.account_id.clone().into(),
-                        role: "Заблокирован".into(),
-                        tag: ban.reason.clone().unwrap_or_default().into(),
-                        actor_type: "account".into(),
-                        muted: false,
-                    })
-                    .collect();
-                let invite_model = model(invite_rows(&invites));
-                if let Ok(mut state) = state().lock() {
-                    state.group_members = members.clone();
-                    state.channel_members.clear();
-                    state.group_bans = bans.clone();
-                    state.invites = invites.clone();
+                Ok(SettingsSnapshot::Group {
+                    detail,
+                    members,
+                    bans,
+                    invites,
+                }) => {
+                    let actor_id = account_id.clone();
+                    let self_member = members.iter().find(|member| member.account_id == actor_id);
+                    let is_owner = detail.owner_account_id == actor_id
+                        && self_member.is_some_and(|member| member.role == "owner");
+                    let permissions = self_member
+                        .map(|member| member.permissions)
+                        .unwrap_or_default();
+                    let has_permission = |bit| is_owner || permissions & bit != 0;
+                    let is_staff =
+                        is_owner || self_member.is_some_and(|member| member.role == "admin");
+                    let now = now_seconds();
+                    let member_rows: Vec<ConversationMember> = members
+                        .iter()
+                        .map(|member| group_member_row(member, now, &actor_id))
+                        .collect();
+                    let banned_rows: Vec<ConversationMember> = bans
+                        .iter()
+                        .map(|ban| ConversationMember {
+                            id: ban.account_id.clone().into(),
+                            name: ban.account_id.clone().into(),
+                            role: "Заблокирован".into(),
+                            tag: ban.reason.clone().unwrap_or_default().into(),
+                            actor_type: "account".into(),
+                            muted: false,
+                            can_moderate: false,
+                        })
+                        .collect();
+                    let invite_model = model(invite_rows(&invites));
+                    if let Ok(mut state) = state().lock() {
+                        state.group_members = members.clone();
+                        state.group_members_conversation_id =
+                            Some(completion_conversation_id.clone());
+                        state.channel_members.clear();
+                        state.group_bans = bans.clone();
+                        state.invites = invites.clone();
+                    }
+                    window.set_conversation_title(
+                        detail
+                            .title
+                            .clone()
+                            .unwrap_or_else(|| "Группа".to_owned())
+                            .into(),
+                    );
+                    window.set_conversation_settings_kind("group".into());
+                    window.set_conversation_settings_title("Настройки группы".into());
+                    window.set_conversation_settings_description(
+                        detail.description.clone().unwrap_or_default().into(),
+                    );
+                    window.set_conversation_settings_handle(
+                        detail.handle.clone().unwrap_or_default().into(),
+                    );
+                    window.set_conversation_settings_title_draft(
+                        detail.title.unwrap_or_else(|| "Группа".to_owned()).into(),
+                    );
+                    window.set_conversation_settings_description_draft(
+                        detail.description.unwrap_or_default().into(),
+                    );
+                    window.set_conversation_settings_handle_draft(
+                        detail.handle.unwrap_or_default().into(),
+                    );
+                    window.set_conversation_settings_linked_group_id("".into());
+                    window.set_conversation_settings_linked_group_draft("".into());
+                    window.set_conversation_settings_linked_group_state_known(false);
+                    window.set_conversation_settings_members(model(member_rows));
+                    window.set_conversation_settings_banned_members(model(banned_rows));
+                    window.set_conversation_settings_available_members(model(Vec::<
+                        ConversationOption,
+                    >::new(
+                    )));
+                    window.set_conversation_settings_invites(invite_model);
+                    window.set_conversation_settings_linked_groups(model(
+                        Vec::<ConversationOption>::new(),
+                    ));
+                    window.set_conversation_settings_available_bots(model(
+                        Vec::<ConversationOption>::new(),
+                    ));
+                    window
+                        .set_conversation_settings_analytics(model(Vec::<ChannelAnalytic>::new()));
+                    window.set_conversation_settings_loading(false);
+                    window.set_conversation_settings_no_access(!is_staff);
+                    window.set_conversation_settings_members_unavailable(false);
+                    window.set_conversation_settings_can_edit_profile(has_permission(
+                        community_api::group_permissions::CHANGE_PROFILE,
+                    ));
+                    window.set_conversation_settings_can_manage_members(is_staff);
+                    // Role and mute editors are still unavailable; tags use their
+                    // own input dialog.
+                    window.set_conversation_settings_can_manage_roles(false);
+                    window.set_conversation_settings_can_mute_members(false);
+                    window.set_conversation_settings_can_change_tags(has_permission(
+                        community_api::group_permissions::CHANGE_TAGS,
+                    ));
+                    window.set_conversation_settings_can_remove_members(has_permission(
+                        community_api::group_permissions::BAN_USERS,
+                    ));
+                    window.set_conversation_settings_can_ban_members(has_permission(
+                        community_api::group_permissions::BAN_USERS,
+                    ));
+                    window.set_conversation_settings_can_manage_invites(has_permission(
+                        community_api::group_permissions::MANAGE_INVITES,
+                    ));
+                    window.set_conversation_settings_can_view_analytics(false);
+                    window.set_conversation_settings_is_owner(is_owner);
+                    window.set_conversation_settings_is_public(detail.is_public);
+                    window.set_conversation_settings_public_state_draft(detail.is_public);
+                    window.set_conversation_settings_public_state_known(true);
+                    window.set_conversation_settings_has_photo(detail.avatar_url.is_some());
+                    window.set_conversation_settings_profile_save_enabled(has_permission(
+                        community_api::group_permissions::CHANGE_PROFILE,
+                    ));
+                    window.set_conversation_settings_confirmation_visible(false);
+                    window.set_conversation_settings_busy(false);
+                    success(&window);
                 }
-                window.set_conversation_title(
-                    detail
-                        .title
-                        .clone()
-                        .unwrap_or_else(|| "Группа".to_owned())
-                        .into(),
-                );
-                window.set_conversation_settings_kind("group".into());
-                window.set_conversation_settings_title("Настройки группы".into());
-                window.set_conversation_settings_description(
-                    detail.description.clone().unwrap_or_default().into(),
-                );
-                window.set_conversation_settings_handle(
-                    detail.handle.clone().unwrap_or_default().into(),
-                );
-                window.set_conversation_settings_title_draft(
-                    detail.title.unwrap_or_else(|| "Группа".to_owned()).into(),
-                );
-                window.set_conversation_settings_description_draft(
-                    detail.description.unwrap_or_default().into(),
-                );
-                window.set_conversation_settings_handle_draft(
-                    detail.handle.unwrap_or_default().into(),
-                );
-                window.set_conversation_settings_linked_group_id("".into());
-                window.set_conversation_settings_linked_group_draft("".into());
-                window.set_conversation_settings_linked_group_state_known(false);
-                window.set_conversation_settings_members(model(member_rows));
-                window.set_conversation_settings_banned_members(model(banned_rows));
-                window.set_conversation_settings_available_members(model(
-                    Vec::<ConversationOption>::new(),
-                ));
-                window.set_conversation_settings_invites(invite_model);
-                window.set_conversation_settings_linked_groups(model(
-                    Vec::<ConversationOption>::new(),
-                ));
-                window.set_conversation_settings_available_bots(model(
-                    Vec::<ConversationOption>::new(),
-                ));
-                window.set_conversation_settings_analytics(model(Vec::<ChannelAnalytic>::new()));
-                window.set_conversation_settings_loading(false);
-                window.set_conversation_settings_no_access(!is_staff);
-                window.set_conversation_settings_members_unavailable(false);
-                window.set_conversation_settings_can_edit_profile(has_permission(
-                    community_api::group_permissions::CHANGE_PROFILE,
-                ));
-                window.set_conversation_settings_can_manage_members(is_staff);
-                // Native callbacks do not carry editable permissions, mute
-                // duration, or a tag value; keep those controls unavailable.
-                window.set_conversation_settings_can_manage_roles(false);
-                window.set_conversation_settings_can_mute_members(false);
-                window.set_conversation_settings_can_change_tags(false);
-                window.set_conversation_settings_can_remove_members(has_permission(
-                    community_api::group_permissions::BAN_USERS,
-                ));
-                window.set_conversation_settings_can_ban_members(has_permission(
-                    community_api::group_permissions::BAN_USERS,
-                ));
-                window.set_conversation_settings_can_manage_invites(has_permission(
-                    community_api::group_permissions::MANAGE_INVITES,
-                ));
-                window.set_conversation_settings_can_view_analytics(false);
-                window.set_conversation_settings_is_owner(is_owner);
-                window.set_conversation_settings_is_public(detail.is_public);
-                window.set_conversation_settings_public_state_draft(detail.is_public);
-                window.set_conversation_settings_public_state_known(true);
-                window.set_conversation_settings_has_photo(detail.avatar_url.is_some());
-                window.set_conversation_settings_profile_save_enabled(has_permission(
-                    community_api::group_permissions::CHANGE_PROFILE,
-                ));
-                window.set_conversation_settings_confirmation_visible(false);
-                window.set_conversation_settings_busy(false);
-                success(&window);
-            }
-            Ok(SettingsSnapshot::Unsupported(title)) => {
-                window.set_conversation_settings_loading(false);
-                window.set_conversation_settings_no_access(false);
-                window.set_conversation_title(title.into());
-                window.set_conversations_error(
-                    "Эти настройки не поддерживаются для данного типа беседы.".into(),
-                );
-            }
-            Err(error) => {
-                window.set_conversation_settings_loading(false);
-                window.set_conversation_settings_no_access(false);
-                window.set_conversation_settings_error_text(error.user_message().into());
-                failure(&window, error);
+                Ok(SettingsSnapshot::Unsupported(title)) => {
+                    window.set_conversation_settings_loading(false);
+                    window.set_conversation_settings_no_access(false);
+                    window.set_conversation_title(title.into());
+                    window.set_conversations_error(
+                        "Эти настройки не поддерживаются для данного типа беседы.".into(),
+                    );
+                }
+                Err(error) => {
+                    window.set_conversation_settings_loading(false);
+                    window.set_conversation_settings_no_access(false);
+                    window.set_conversation_settings_error_text(error.user_message().into());
+                    failure(&window, error);
+                }
             }
         },
     );
     if result.is_err() {
-        let _ = conversation_id;
-        ctx.apply_ui(|window| {
+        let spawn_failure_guard_context = spawn_failure_context.clone();
+        spawn_failure_context.apply_ui(move |window| {
+            if !settings_load_is_current(
+                &spawn_failure_guard_context,
+                &window,
+                &spawn_failure_account_id,
+                &spawn_failure_conversation_id,
+                is_channel,
+                request_id,
+            ) {
+                return;
+            }
             window.set_conversation_settings_loading(false);
             window.set_conversation_settings_error_text(
                 "Не удалось запустить загрузку настроек.".into(),
@@ -1188,8 +1317,6 @@ fn load_existing_groups(ctx: &AppContext, _account_id: String) {
                     .filter(|item| item.kind == "group")
                     .collect::<Vec<_>>();
                 if let Ok(mut state) = state().lock() {
-                    state.group_members.clear();
-                    state.channel_members.clear();
                     state.available_groups = groups;
                 }
                 let groups = state()
@@ -2194,6 +2321,8 @@ fn handle_channel(ctx: &AppContext, action: &str, arg1: &str, arg2: &str) -> boo
             true
         }
         "load-older" => {
+            let request_id = CHANNEL_LIST_REQUEST_ID.load(Ordering::SeqCst);
+            let completion_channel_id = conversation_id.clone();
             let before = state()
                 .lock()
                 .ok()
@@ -2222,24 +2351,56 @@ fn handle_channel(ctx: &AppContext, action: &str, arg1: &str, arg2: &str) -> boo
                         .collect::<Result<Vec<_>, CoreError>>()?;
                     Ok((page, rows))
                 },
-                move |window, result| match result {
-                    Ok((page, rows)) => {
-                        let has_older = page.len() == CHANNEL_POST_PAGE_SIZE as usize;
-                        if let Ok(mut state) = state().lock() {
-                            state.channel_posts.extend(page);
-                            state.channel_has_older = has_older;
-                        }
-                        let mut all_rows: Vec<UiChannelPost> =
-                            window.get_channel_posts().iter().collect();
-                        all_rows.extend(rows.into_iter().map(UiChannelPost::from));
-                        window.set_channel_posts(model(all_rows));
-                        window.set_channel_has_older(has_older);
-                        window.set_channel_busy(false);
-                        channel_success(&window);
+                move |window, result| {
+                    if CHANNEL_LIST_REQUEST_ID.load(Ordering::SeqCst) != request_id
+                        || window.get_selected_conversation_id().to_string()
+                            != completion_channel_id
+                    {
+                        return;
                     }
-                    Err(error) => {
-                        window.set_channel_busy(false);
-                        channel_failure(&window, error);
+                    match result {
+                        Ok((page, rows)) => {
+                            let has_older = page.len() == CHANNEL_POST_PAGE_SIZE as usize;
+                            if let Ok(mut state) = state().lock() {
+                                let mut seen_ids: HashSet<String> = state
+                                    .channel_posts
+                                    .iter()
+                                    .map(|post| post.id.clone())
+                                    .collect();
+                                state.channel_posts.extend(
+                                    page.into_iter()
+                                        .filter(|post| seen_ids.insert(post.id.clone())),
+                                );
+                                state
+                                    .channel_posts
+                                    .sort_by(|left, right| right.id.cmp(&left.id));
+                                state
+                                    .channel_posts
+                                    .dedup_by(|left, right| left.id == right.id);
+                                state.channel_has_older = has_older;
+                            }
+                            let mut all_rows: Vec<UiChannelPost> =
+                                window.get_channel_posts().iter().collect();
+                            let mut seen_ids: HashSet<String> =
+                                all_rows.iter().map(|row| row.id.to_string()).collect();
+                            all_rows.extend(
+                                rows.into_iter()
+                                    .map(UiChannelPost::from)
+                                    .filter(|row| seen_ids.insert(row.id.to_string())),
+                            );
+                            all_rows.sort_by(|left, right| {
+                                right.id.to_string().cmp(&left.id.to_string())
+                            });
+                            all_rows.dedup_by(|left, right| left.id == right.id);
+                            window.set_channel_posts(model(all_rows));
+                            window.set_channel_has_older(has_older);
+                            window.set_channel_busy(false);
+                            channel_success(&window);
+                        }
+                        Err(error) => {
+                            window.set_channel_busy(false);
+                            channel_failure(&window, error);
+                        }
                     }
                 },
             );
@@ -2252,11 +2413,109 @@ fn handle_channel(ctx: &AppContext, action: &str, arg1: &str, arg2: &str) -> boo
             }
             true
         }
-        "post-delete" | "post-pin" | "post-reaction" | "post-edit" | "post-open"
-        | "post-discussion" => {
-            if action == "post-open" {
-                return false;
+        "post-open" => {
+            let open_request_id = CHANNEL_POST_OPEN_REQUEST_ID.fetch_add(1, Ordering::SeqCst) + 1;
+            let Some(post) = cached_pinned_post(&conversation_id, arg1) else {
+                return true;
+            };
+            if state()
+                .lock()
+                .map(|state| {
+                    state
+                        .channel_posts
+                        .iter()
+                        .any(|item| item.id == post.id && item.channel_id == conversation_id)
+                })
+                .unwrap_or(false)
+            {
+                request_channel_post_scroll(&window, &post.id);
+                return true;
             }
+
+            let post_id = post.id;
+            let channel_list_request_id = CHANNEL_LIST_REQUEST_ID.load(Ordering::SeqCst);
+            let completion_channel_id = conversation_id;
+            let worker_account_id = account_id.clone();
+            let completion_account_id = account_id;
+            let result = ctx.call(
+                "friendshub-channel-open-pinned-post",
+                move |client| {
+                    let post = community_api::channel_post(client, &post_id)?;
+                    let row = map_channel_post_data(client, &post, &worker_account_id)?;
+                    Ok((post, row))
+                },
+                move |window, result| {
+                    if CHANNEL_POST_OPEN_REQUEST_ID.load(Ordering::SeqCst) != open_request_id
+                        || CHANNEL_LIST_REQUEST_ID.load(Ordering::SeqCst) != channel_list_request_id
+                        || window.get_screen().to_string() != "channel"
+                        || window.get_selected_conversation_id().to_string()
+                            != completion_channel_id
+                    {
+                        return;
+                    }
+                    let account_matches = state()
+                        .lock()
+                        .map(|state| {
+                            state.account_id.as_deref() == Some(completion_account_id.as_str())
+                        })
+                        .unwrap_or(false);
+                    if !account_matches {
+                        return;
+                    }
+
+                    match result {
+                        Ok((post, row)) if post.channel_id == completion_channel_id => {
+                            let insertion_index = {
+                                let Ok(mut state) = state().lock() else {
+                                    return;
+                                };
+                                if let Some(index) = state
+                                    .channel_posts
+                                    .iter()
+                                    .position(|item| item.id == post.id)
+                                {
+                                    index
+                                } else {
+                                    state.channel_posts.push(post.clone());
+                                    state
+                                        .channel_posts
+                                        .sort_by(|left, right| right.id.cmp(&left.id));
+                                    state
+                                        .channel_posts
+                                        .iter()
+                                        .position(|item| item.id == post.id)
+                                        .unwrap_or(state.channel_posts.len())
+                                }
+                            };
+                            let mut rows: Vec<UiChannelPost> =
+                                window.get_channel_posts().iter().collect();
+                            if !rows.iter().any(|item| item.id.to_string() == post.id) {
+                                rows.insert(
+                                    insertion_index.min(rows.len()),
+                                    UiChannelPost::from(row),
+                                );
+                                window.set_channel_posts(model(rows));
+                            }
+                            request_channel_post_scroll(&window, &post.id);
+                            channel_success(&window);
+                        }
+                        Ok(_) => {
+                            window.set_channel_error_text(
+                                "Не удалось открыть закреплённую публикацию.".into(),
+                            );
+                        }
+                        Err(error) => channel_failure(&window, error),
+                    }
+                },
+            );
+            if result.is_err() {
+                window
+                    .set_channel_error_text("Не удалось загрузить закреплённую публикацию.".into());
+                report_spawn_failure(ctx);
+            }
+            true
+        }
+        "post-delete" | "post-pin" | "post-reaction" | "post-edit" | "post-discussion" => {
             let Some(post) = cached_post(&conversation_id, arg1) else {
                 return true;
             };
@@ -2352,6 +2611,16 @@ fn cached_post(conversation_id: &str, index: &str) -> Option<community_api::Chan
         .cloned()
 }
 
+fn cached_pinned_post(conversation_id: &str, index: &str) -> Option<community_api::ChannelPost> {
+    let index = index.parse::<usize>().ok()?;
+    let state = state().lock().ok()?;
+    state
+        .pinned_posts
+        .get(index)
+        .filter(|post| post.channel_id == conversation_id)
+        .cloned()
+}
+
 fn mutate_channel_post(
     ctx: &AppContext,
     conversation_id: String,
@@ -2422,7 +2691,7 @@ fn handle_conversation_settings(
     arg2: &str,
     arg3: &str,
 ) -> bool {
-    let Some(_account_id) = account_id(ctx) else {
+    let Some(actor_account_id) = account_id(ctx) else {
         return false;
     };
     let Some(window) = ctx.ui.upgrade() else {
@@ -2507,19 +2776,82 @@ fn handle_conversation_settings(
             });
             true
         }
+        "member-tag-draft-changed" if !is_channel => {
+            let enabled = window.get_conversation_settings_member_tag_editor_open()
+                && !window.get_conversation_settings_busy()
+                && !window.get_conversation_settings_loading()
+                && window.get_conversation_settings_can_change_tags()
+                && valid_group_member_tag(arg1);
+            window.set_conversation_settings_member_tag_save_enabled(enabled);
+            true
+        }
+        "member-tag-save" | "member-tag-remove" if !is_channel => {
+            if window.get_conversation_settings_busy()
+                || window.get_conversation_settings_loading()
+                || !window.get_conversation_settings_can_change_tags()
+            {
+                return true;
+            }
+            let Some(member) = cached_group_member(&conversation_id, arg1) else {
+                return true;
+            };
+            if action == "member-tag-remove" {
+                mutate_group_member_tag(ctx, conversation_id, member.account_id, None);
+                return true;
+            }
+            let tag = arg2.trim();
+            if !valid_group_member_tag(tag) {
+                window.set_conversation_settings_member_tag_editor_error_text(
+                    "Тег должен содержать от 1 до 9 символов и не содержать <, >, & или управляющие символы.".into(),
+                );
+                return true;
+            }
+            mutate_group_member_tag(
+                ctx,
+                conversation_id,
+                member.account_id,
+                Some(tag.to_owned()),
+            );
+            true
+        }
         "member-action" if !is_channel => {
-            let Some(member) = cached_group_member(arg1) else {
+            let Some(member) = cached_group_member(&conversation_id, arg1) else {
                 return true;
             };
             match arg2 {
                 "remove" => {
-                    let id = conversation_id.clone();
-                    settings_mutation(ctx, move |client| {
-                        community_api::remove_group_member(client, &id, &member.account_id)
-                    });
+                    if !window.get_conversation_settings_can_remove_members()
+                        || member.account_id == actor_account_id
+                        || member.role == "owner"
+                    {
+                        return true;
+                    }
+                    if let Ok(mut state) = state().lock() {
+                        state.pending_delete = None;
+                        state.pending_member_unban = None;
+                        state.pending_member_removal =
+                            Some((conversation_id.clone(), member.account_id));
+                    }
+                    window.set_conversation_settings_confirmation_title(
+                        "Исключить участника?".into(),
+                    );
+                    window.set_conversation_settings_confirmation_description(
+                        "Участник будет удалён из группы.".into(),
+                    );
+                    window.set_conversation_settings_confirmation_show_ban_option(
+                        window.get_conversation_settings_can_ban_members(),
+                    );
+                    window.set_conversation_settings_confirmation_ban_on_remove(false);
+                    window.set_conversation_settings_confirmation_visible(true);
                     true
                 }
                 "unmute" => {
+                    if !window.get_conversation_settings_can_mute_members()
+                        || member.account_id == actor_account_id
+                        || member.role == "owner"
+                    {
+                        return true;
+                    }
                     let id = conversation_id.clone();
                     settings_mutation(ctx, move |client| {
                         community_api::mute_group_member(client, &id, &member.account_id, None)
@@ -2573,13 +2905,24 @@ fn handle_conversation_settings(
             }
         }
         "banned-member-action" if !is_channel && arg2 == "unban" => {
-            let Some(account_to_unban) = cached_group_ban(arg1) else {
+            if !window.get_conversation_settings_can_ban_members() {
+                return true;
+            }
+            let Some(account_to_unban) = cached_group_ban(&conversation_id, arg1) else {
                 return true;
             };
-            let id = conversation_id.clone();
-            settings_mutation(ctx, move |client| {
-                community_api::unban_group_member(client, &id, &account_to_unban)
-            });
+            if let Ok(mut state) = state().lock() {
+                state.pending_delete = None;
+                state.pending_member_removal = None;
+                state.pending_member_unban = Some((conversation_id.clone(), account_to_unban));
+            }
+            window.set_conversation_settings_confirmation_title("Разблокировать участника?".into());
+            window.set_conversation_settings_confirmation_description(
+                "Участник сможет снова вступить в группу.".into(),
+            );
+            window.set_conversation_settings_confirmation_show_ban_option(false);
+            window.set_conversation_settings_confirmation_ban_on_remove(false);
+            window.set_conversation_settings_confirmation_visible(true);
             true
         }
         "owner-transfer" => {
@@ -2587,7 +2930,7 @@ fn handle_conversation_settings(
             let target = if is_channel {
                 index.and_then(cached_channel_owner)
             } else {
-                index.and_then(cached_group_owner)
+                index.and_then(|index| cached_group_owner(&conversation_id, index))
             };
             let Some(new_owner) = target else {
                 return true;
@@ -2645,9 +2988,13 @@ fn handle_conversation_settings(
         }
         "delete" => {
             if let Ok(mut state) = state().lock() {
+                state.pending_member_removal = None;
+                state.pending_member_unban = None;
                 state.pending_delete = Some((conversation_id, is_channel));
             }
             ctx.apply_ui(move |window| {
+                window.set_conversation_settings_confirmation_show_ban_option(false);
+                window.set_conversation_settings_confirmation_ban_on_remove(false);
                 window.set_conversation_settings_confirmation_title(
                     if is_channel {
                         "Удалить канал?"
@@ -2669,6 +3016,84 @@ fn handle_conversation_settings(
             true
         }
         "confirm" => {
+            let pending_member_removal = state()
+                .lock()
+                .ok()
+                .and_then(|mut state| state.pending_member_removal.take());
+            if let Some((id, target_account_id)) = pending_member_removal {
+                let context_matches = selected_conversation(&window).as_deref()
+                    == Some(id.as_str())
+                    && window.get_conversation_kind() == "group"
+                    && window.get_conversation_settings_can_remove_members()
+                    && actor_account_id != target_account_id;
+                let target_is_moderatable = state()
+                    .lock()
+                    .map(|state| {
+                        state.group_members_conversation_id.as_deref() == Some(id.as_str())
+                            && state.group_members.iter().any(|member| {
+                                member.account_id == target_account_id && member.role != "owner"
+                            })
+                    })
+                    .unwrap_or(false);
+                if !context_matches || !target_is_moderatable {
+                    window.set_conversation_settings_confirmation_visible(false);
+                    window.set_conversation_settings_confirmation_show_ban_option(false);
+                    window.set_conversation_settings_confirmation_ban_on_remove(false);
+                    return true;
+                }
+                let ban_on_remove = window.get_conversation_settings_confirmation_ban_on_remove()
+                    && window.get_conversation_settings_can_ban_members();
+                ctx.apply_ui(|window| {
+                    window.set_conversation_settings_confirmation_visible(false);
+                    window.set_conversation_settings_confirmation_show_ban_option(false);
+                    window.set_conversation_settings_confirmation_ban_on_remove(false);
+                });
+                settings_mutation(ctx, move |client| {
+                    if ban_on_remove {
+                        community_api::ban_group_member(client, &id, &target_account_id, None)
+                    } else {
+                        community_api::remove_group_member(client, &id, &target_account_id)
+                    }
+                });
+                return true;
+            }
+
+            let pending_member_unban = state()
+                .lock()
+                .ok()
+                .and_then(|mut state| state.pending_member_unban.take());
+            if let Some((id, target_account_id)) = pending_member_unban {
+                let context_matches = selected_conversation(&window).as_deref()
+                    == Some(id.as_str())
+                    && window.get_conversation_kind() == "group"
+                    && window.get_conversation_settings_can_ban_members();
+                let target_is_banned = state()
+                    .lock()
+                    .map(|state| {
+                        state.group_members_conversation_id.as_deref() == Some(id.as_str())
+                            && state
+                                .group_bans
+                                .iter()
+                                .any(|ban| ban.account_id == target_account_id)
+                    })
+                    .unwrap_or(false);
+                if !context_matches || !target_is_banned {
+                    window.set_conversation_settings_confirmation_visible(false);
+                    window.set_conversation_settings_confirmation_show_ban_option(false);
+                    window.set_conversation_settings_confirmation_ban_on_remove(false);
+                    return true;
+                }
+                ctx.apply_ui(|window| {
+                    window.set_conversation_settings_confirmation_visible(false);
+                    window.set_conversation_settings_confirmation_show_ban_option(false);
+                    window.set_conversation_settings_confirmation_ban_on_remove(false);
+                });
+                settings_mutation(ctx, move |client| {
+                    community_api::unban_group_member(client, &id, &target_account_id)
+                });
+                return true;
+            }
+
             let pending = state()
                 .lock()
                 .ok()
@@ -2678,6 +3103,8 @@ fn handle_conversation_settings(
             };
             ctx.apply_ui(|window| {
                 window.set_conversation_settings_confirmation_visible(false);
+                window.set_conversation_settings_confirmation_show_ban_option(false);
+                window.set_conversation_settings_confirmation_ban_on_remove(false);
                 window.set_conversation_settings_busy(true);
                 window.set_conversation_settings_error_text("".into());
             });
@@ -2717,9 +3144,13 @@ fn handle_conversation_settings(
         "cancel-confirmation" => {
             if let Ok(mut state) = state().lock() {
                 state.pending_delete = None;
+                state.pending_member_removal = None;
+                state.pending_member_unban = None;
             }
             ctx.apply_ui(|window| {
                 window.set_conversation_settings_confirmation_visible(false);
+                window.set_conversation_settings_confirmation_show_ban_option(false);
+                window.set_conversation_settings_confirmation_ban_on_remove(false);
             });
             true
         }
@@ -2789,28 +3220,132 @@ fn settings_mutation(
     }
 }
 
-fn cached_group_member(index: &str) -> Option<community_api::GroupMember> {
-    state()
-        .lock()
-        .ok()?
+fn valid_group_member_tag(tag: &str) -> bool {
+    let tag = tag.trim();
+    (1..=MAX_GROUP_TAG_CHARS).contains(&tag.chars().count())
+        && !tag
+            .chars()
+            .any(|character| matches!(character, '<' | '>' | '&') || character.is_control())
+}
+
+fn mutate_group_member_tag(
+    ctx: &AppContext,
+    conversation_id: String,
+    member_account_id: String,
+    tag: Option<String>,
+) {
+    let Some(session) = ctx.active_session() else {
+        return;
+    };
+    let completion_account_id = session.account.id.clone();
+    let completion_conversation_id = conversation_id.clone();
+    let editor_generation = GROUP_MEMBER_TAG_GENERATION.load(Ordering::Relaxed);
+    let operation_conversation_id = conversation_id;
+    let completion_context = ctx.clone();
+    ctx.apply_ui(|window| {
+        window.set_conversation_settings_busy(true);
+        window.set_conversation_settings_error_text("".into());
+        window.set_conversation_settings_member_tag_editor_error_text("".into());
+    });
+
+    let result = ctx.call(
+        "friendshub-group-member-tag",
+        move |client| match tag {
+            Some(tag) => community_api::set_group_member_tag(
+                client,
+                &operation_conversation_id,
+                &member_account_id,
+                &tag,
+            ),
+            None => community_api::remove_group_member_tag(
+                client,
+                &operation_conversation_id,
+                &member_account_id,
+            ),
+        },
+        move |window, result| {
+            if !completion_context
+                .active_session()
+                .is_some_and(|session| session.account.id == completion_account_id)
+                || selected_conversation(&window).as_deref()
+                    != Some(completion_conversation_id.as_str())
+                || window.get_conversation_kind().as_str() != "group"
+                || GROUP_MEMBER_TAG_GENERATION.load(Ordering::Relaxed) != editor_generation
+            {
+                return;
+            }
+
+            window.set_conversation_settings_busy(false);
+            match result {
+                Ok(()) => {
+                    window.set_conversation_settings_member_tag_editor_open(false);
+                    window.set_conversation_settings_member_tag_editor_index(-1);
+                    window.set_conversation_settings_member_tag_editor_draft("".into());
+                    window.set_conversation_settings_member_tag_editor_error_text("".into());
+                    window.set_conversation_settings_member_tag_editor_has_existing_tag(false);
+                    window.set_conversation_settings_member_tag_save_enabled(false);
+                    success(&window);
+                    window.invoke_ui_action(
+                        "conversation-settings".into(),
+                        "retry".into(),
+                        "".into(),
+                        "".into(),
+                        "".into(),
+                    );
+                }
+                Err(error) => {
+                    let message = error.user_message();
+                    window.set_conversation_settings_member_tag_editor_error_text(message.into());
+                    failure(&window, error);
+                }
+            }
+        },
+    );
+    if result.is_err() {
+        ctx.apply_ui(|window| {
+            window.set_conversation_settings_busy(false);
+            window.set_conversation_settings_member_tag_editor_error_text(
+                "Не удалось запустить изменение тега.".into(),
+            );
+        });
+        report_spawn_failure(ctx);
+    }
+}
+
+fn next_group_member_tag_generation() -> u64 {
+    GROUP_MEMBER_TAG_GENERATION
+        .fetch_add(1, Ordering::Relaxed)
+        .wrapping_add(1)
+}
+
+fn cached_group_member(conversation_id: &str, index: &str) -> Option<community_api::GroupMember> {
+    let state = state().lock().ok()?;
+    if state.group_members_conversation_id.as_deref() != Some(conversation_id) {
+        return None;
+    }
+    state
         .group_members
         .get(index.parse::<usize>().ok()?)
         .cloned()
 }
 
-fn cached_group_ban(index: &str) -> Option<String> {
-    state()
-        .lock()
-        .ok()?
+fn cached_group_ban(conversation_id: &str, index: &str) -> Option<String> {
+    let state = state().lock().ok()?;
+    if state.group_members_conversation_id.as_deref() != Some(conversation_id) {
+        return None;
+    }
+    state
         .group_bans
         .get(index.parse::<usize>().ok()?)
         .map(|ban| ban.account_id.clone())
 }
 
-fn cached_group_owner(index: usize) -> Option<String> {
-    state()
-        .lock()
-        .ok()?
+fn cached_group_owner(conversation_id: &str, index: usize) -> Option<String> {
+    let state = state().lock().ok()?;
+    if state.group_members_conversation_id.as_deref() != Some(conversation_id) {
+        return None;
+    }
+    state
         .group_members
         .get(index)
         .map(|member| member.account_id.clone())

@@ -45,6 +45,11 @@ const CORE_REPOSITORY_URL: &str = "https://github.com/SomSomovich/friendshub-cor
 const NATIVE_RELEASES_URL: &str = "https://github.com/SomSomovich/friendshub-apps/releases";
 static PREFERENCES_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static USER_PROFILE_ID: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+static USER_PROFILE_ALIAS_GENERATION: AtomicU64 = AtomicU64::new(0);
+static USER_PROFILE_LOAD_GENERATION: AtomicU64 = AtomicU64::new(0);
+static USER_PROFILE_ALIAS_WRITE_GENERATION: AtomicU64 = AtomicU64::new(0);
+static USER_PROFILE_ALIAS_WRITES_PENDING: AtomicU64 = AtomicU64::new(0);
+static PRIVACY_LOAD_GENERATION: AtomicU64 = AtomicU64::new(0);
 static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -579,6 +584,16 @@ fn load_about(ctx: &AppContext) {
 }
 
 fn load_privacy(ctx: &AppContext) {
+    let load_generation = PRIVACY_LOAD_GENERATION
+        .fetch_add(1, Ordering::Relaxed)
+        .wrapping_add(1);
+    let Some(session) = ctx.active_session() else {
+        ctx.apply_ui(|window| window.set_privacy_busy(false));
+        return;
+    };
+    let account_id = session.account.id.clone();
+    let expected_core = session.core.clone();
+    let completion_context = ctx.clone();
     ctx.apply_ui(|window| window.set_privacy_busy(true));
     dispatch_core_completion(
         ctx,
@@ -594,9 +609,18 @@ fn load_privacy(ctx: &AppContext) {
                 profile::list_profile_exceptions(client),
                 profile::list_group_add_exceptions(client),
                 profile::list_blocked_contacts(client),
+                profile::list_contacts(client),
             ))
         },
-        |window, result| {
+        move |window, result| {
+            if PRIVACY_LOAD_GENERATION.load(Ordering::Relaxed) != load_generation
+                || !completion_context.active_session().is_some_and(|session| {
+                    session.account.id == account_id
+                        && std::sync::Arc::ptr_eq(&session.core, &expected_core)
+                })
+            {
+                return;
+            }
             window.set_privacy_busy(false);
             let (
                 privacy,
@@ -608,6 +632,7 @@ fn load_privacy(ctx: &AppContext) {
                 profile_exceptions,
                 group_exceptions,
                 blocked,
+                contacts,
             ) = match result {
                 Ok(results) => results,
                 Err(error) => {
@@ -626,6 +651,7 @@ fn load_privacy(ctx: &AppContext) {
                 profile_exceptions,
                 group_exceptions,
                 blocked,
+                contacts,
                 &window,
             );
         },
@@ -642,6 +668,7 @@ fn apply_privacy_result(
     profile_exceptions: Result<Vec<profile::ProfileException>, CoreError>,
     group_exceptions: Result<Vec<profile::GroupAddException>, CoreError>,
     blocked: Result<Vec<profile::BlockedContact>, CoreError>,
+    contacts: Result<Vec<profile::ContactItem>, CoreError>,
     window: &MainWindow,
 ) {
     match privacy {
@@ -724,9 +751,25 @@ fn apply_privacy_result(
         )),
         Err(error) => report_core_failure("load blocked accounts", error.into()),
     }
-    // No typed contact-list operation exists in the native feature wrapper.
-    // Preserve the exception and block lists, but do not invent contacts.
-    window.set_privacy_contacts(model(Vec::new()));
+    match contacts {
+        Ok(items) => window.set_privacy_contacts(model(
+            items
+                .into_iter()
+                .map(|item| SettingsContact {
+                    id: item.target_account_id.into(),
+                    name: if item.local_username.trim().is_empty() {
+                        item.username.into()
+                    } else {
+                        item.local_username.into()
+                    },
+                })
+                .collect(),
+        )),
+        Err(error) => {
+            report_core_failure("load privacy contacts", error.into());
+            window.set_privacy_contacts(model(Vec::new()));
+        }
+    }
 }
 
 fn dm_policy_name(policy: profile::DirectMessagePolicy) -> &'static str {
@@ -991,10 +1034,13 @@ fn handle_profile(ctx: &AppContext, action: &str, arg1: &str, _arg2: &str, _arg3
                 .ui
                 .upgrade()
                 .is_some_and(|window| window.get_route().starts_with("/app/user/"));
+            next_user_profile_alias_generation();
+            next_user_profile_load_generation();
             set_user_profile_id(None);
             ctx.apply_ui(|window| {
                 window.set_user_profile_open(false);
                 window.set_user_profile_alias_editor_open(false);
+                window.set_user_profile_alias_save_enabled(false);
                 window.set_user_profile_error_text(SharedString::default());
             });
             if deep_linked_profile {
@@ -1006,20 +1052,46 @@ fn handle_profile(ctx: &AppContext, action: &str, arg1: &str, _arg2: &str, _arg3
         "block-toggle" => toggle_public_profile_block(ctx),
         "contact-toggle" => toggle_public_profile_contact(ctx),
         "alias-editor" => {
+            let Some(window) = ctx.ui.upgrade() else {
+                return false;
+            };
+            if window.get_user_profile_loading()
+                || window.get_user_profile_busy()
+                || window.get_user_profile_unavailable()
+                || !window.get_user_profile_is_contact()
+            {
+                return true;
+            }
+            next_user_profile_alias_generation();
             ctx.apply_ui(|window| {
                 let alias = window.get_user_profile_alias();
-                window.set_user_profile_alias_draft(alias);
+                let draft = if alias.trim().is_empty() {
+                    window.get_user_profile_username()
+                } else {
+                    alias
+                };
+                let save_enabled =
+                    !draft.trim().is_empty() && draft.chars().count() <= MAX_USERNAME_CHARS;
+                window.set_user_profile_alias_draft(draft);
+                window.set_user_profile_alias_save_enabled(save_enabled);
                 window.set_user_profile_alias_editor_open(true);
+                window.set_user_profile_error_text(SharedString::default());
             });
             true
         }
+        "alias-draft-changed" => update_public_profile_alias_draft(ctx, arg1),
+        "alias-save" => save_public_profile_alias(ctx, arg1),
         "alias-cancel" => {
-            ctx.apply_ui(|window| window.set_user_profile_alias_editor_open(false));
+            next_user_profile_alias_generation();
+            ctx.apply_ui(|window| {
+                window.set_user_profile_alias_editor_open(false);
+                window.set_user_profile_alias_save_enabled(false);
+            });
             true
         }
         // Avatar viewing/sharing require adapters that are not installed.
         "message" => open_profile_conversation(ctx),
-        "share" | "avatar-open" | "alias-save" => false,
+        "share" | "avatar-open" => false,
         _ => false,
     }
 }
@@ -1046,7 +1118,10 @@ fn toggle_public_profile_contact(ctx: &AppContext) -> bool {
     let Some(profile_id) = user_profile_id() else {
         return false;
     };
-    if window.get_user_profile_busy() || window.get_user_profile_loading() {
+    if window.get_user_profile_busy()
+        || window.get_user_profile_loading()
+        || window.get_user_profile_unavailable()
+    {
         return true;
     }
 
@@ -1069,6 +1144,7 @@ fn toggle_public_profile_contact(ctx: &AppContext) -> bool {
     let completion_context = ctx.clone();
     let completion_profile_id = profile_id.clone();
     let completion_account_id = account_id.clone();
+    let completion_peer_username = username.clone();
     window.set_user_profile_busy(true);
     window.set_user_profile_error_text(SharedString::default());
 
@@ -1087,6 +1163,7 @@ fn toggle_public_profile_contact(ctx: &AppContext) -> bool {
                         local_username: username,
                     },
                 )
+                .map(|_| ())
             }
         },
         move |window, result| {
@@ -1102,6 +1179,13 @@ fn toggle_public_profile_contact(ctx: &AppContext) -> bool {
             window.set_user_profile_busy(false);
             match result {
                 Ok(()) => {
+                    if is_contact {
+                        crate::app::chat::update_direct_chat_title(
+                            &completion_context,
+                            &completion_profile_id,
+                            &completion_peer_username,
+                        );
+                    }
                     load_public_profile(&completion_context, &completion_profile_id);
                 }
                 Err(error) => {
@@ -1145,15 +1229,179 @@ fn open_profile_conversation(ctx: &AppContext) -> bool {
     )
 }
 
+fn update_public_profile_alias_draft(ctx: &AppContext, requested_alias: &str) -> bool {
+    let Some(window) = ctx.ui.upgrade() else {
+        return false;
+    };
+    if !window.get_user_profile_alias_editor_open()
+        || window.get_user_profile_busy()
+        || window.get_user_profile_loading()
+        || window.get_user_profile_unavailable()
+    {
+        return true;
+    }
+
+    let draft = requested_alias
+        .chars()
+        .take(MAX_USERNAME_CHARS)
+        .collect::<String>();
+    let save_enabled = !draft.trim().is_empty();
+    let alias_generation = USER_PROFILE_ALIAS_GENERATION.load(Ordering::Relaxed);
+    ctx.apply_ui(move |window| {
+        if USER_PROFILE_ALIAS_GENERATION.load(Ordering::Relaxed) == alias_generation
+            && window.get_user_profile_alias_editor_open()
+            && !window.get_user_profile_busy()
+            && !window.get_user_profile_loading()
+            && !window.get_user_profile_unavailable()
+        {
+            window.set_user_profile_alias_draft(draft.into());
+            window.set_user_profile_alias_save_enabled(save_enabled);
+            window.set_user_profile_error_text(SharedString::default());
+        }
+    });
+    true
+}
+
+fn save_public_profile_alias(ctx: &AppContext, requested_alias: &str) -> bool {
+    let Some(window) = ctx.ui.upgrade() else {
+        return false;
+    };
+    let Some(profile_id) = user_profile_id() else {
+        return false;
+    };
+    if window.get_user_profile_busy()
+        || window.get_user_profile_loading()
+        || window.get_user_profile_unavailable()
+    {
+        return true;
+    }
+    if !window.get_user_profile_is_contact() {
+        window.set_user_profile_error_text("Сначала добавьте пользователя в контакты.".into());
+        return true;
+    }
+    if !window.get_user_profile_alias_editor_open() {
+        return true;
+    }
+
+    let local_username = requested_alias.trim();
+    let username_length = local_username.chars().count();
+    if username_length == 0 || username_length > MAX_USERNAME_CHARS {
+        window
+            .set_user_profile_error_text("Имя друга должно содержать от 1 до 64 символов.".into());
+        return true;
+    }
+    let target_fh_number = window.get_user_profile_fh_number().to_string();
+    if target_fh_number.trim().is_empty() {
+        window.set_user_profile_error_text("Не удалось подготовить контакт.".into());
+        return true;
+    }
+    let Some(session) = ctx.active_session() else {
+        return false;
+    };
+    let account_id = session.account.id.clone();
+    let completion_account_id = account_id.clone();
+    let completion_profile_id = profile_id.clone();
+    let completion_context = ctx.clone();
+    let alias_generation = USER_PROFILE_ALIAS_GENERATION.load(Ordering::Relaxed);
+    let alias_write_generation = next_user_profile_alias_write_generation();
+    USER_PROFILE_ALIAS_WRITES_PENDING.fetch_add(1, Ordering::Relaxed);
+    let request = profile::AddContactRequest {
+        target_fh_number,
+        local_username: local_username.to_owned(),
+    };
+    window.set_user_profile_busy(true);
+    window.set_user_profile_error_text(SharedString::default());
+
+    let result = call_client(
+        session.core,
+        ctx.ui.clone(),
+        "friendshub-settings-profile-alias-save",
+        move |client| profile::add_contact(client, &request),
+        move |window, result| {
+            let latest_alias_write = USER_PROFILE_ALIAS_WRITE_GENERATION.load(Ordering::Relaxed)
+                == alias_write_generation;
+            USER_PROFILE_ALIAS_WRITES_PENDING.fetch_sub(1, Ordering::Relaxed);
+            if latest_alias_write {
+                next_user_profile_alias_write_generation();
+            }
+            let current_account_matches = completion_context
+                .active_session()
+                .is_some_and(|session| session.account.id == completion_account_id);
+            if !current_account_matches
+                || user_profile_id().as_deref() != Some(completion_profile_id.as_str())
+            {
+                return;
+            }
+
+            let same_alias_editor =
+                USER_PROFILE_ALIAS_GENERATION.load(Ordering::Relaxed) == alias_generation;
+            match result {
+                Ok(contact) => {
+                    if latest_alias_write {
+                        let profile_username = window.get_user_profile_username().to_string();
+                        let displayed_title = contact.local_username.clone();
+                        let alias = if contact.local_username == profile_username {
+                            SharedString::default()
+                        } else {
+                            contact.local_username.clone().into()
+                        };
+                        window.set_user_profile_alias(alias);
+                        crate::app::chat::update_direct_chat_title(
+                            &completion_context,
+                            &completion_profile_id,
+                            &displayed_title,
+                        );
+                    }
+                    if same_alias_editor {
+                        window.set_user_profile_busy(false);
+                        window.set_user_profile_alias_editor_open(false);
+                        window.set_user_profile_alias_save_enabled(false);
+                        window.set_user_profile_error_text(SharedString::default());
+                    }
+                }
+                Err(error) => {
+                    if same_alias_editor {
+                        window.set_user_profile_busy(false);
+                        window.set_user_profile_error_text(error.user_message().into());
+                    }
+                    report_core_failure("save profile contact alias", error);
+                }
+            }
+        },
+    );
+    if let Err(error) = result {
+        USER_PROFILE_ALIAS_WRITES_PENDING.fetch_sub(1, Ordering::Relaxed);
+        next_user_profile_alias_write_generation();
+        report_dispatch_failure("save profile contact alias", error);
+        ctx.apply_ui(|window| {
+            window.set_user_profile_busy(false);
+            window.set_user_profile_error_text("Не удалось запустить операцию.".into());
+        });
+        false
+    } else {
+        true
+    }
+}
+
 fn load_public_profile(ctx: &AppContext, id: &str) -> bool {
+    let profile_generation = next_user_profile_load_generation();
+    let alias_write_generation = USER_PROFILE_ALIAS_WRITE_GENERATION.load(Ordering::Relaxed);
+    next_user_profile_alias_generation();
+    let profile_changed = user_profile_id().as_deref() != Some(id);
     set_user_profile_id(Some(id.to_owned()));
-    ctx.apply_ui(|window| {
+    ctx.apply_ui(move |window| {
         window.set_user_profile_open(true);
         window.set_user_profile_loading(true);
         window.set_user_profile_unavailable(false);
         window.set_user_profile_busy(false);
         window.set_user_profile_error_text(SharedString::default());
         window.set_user_profile_alias_editor_open(false);
+        window.set_user_profile_alias_save_enabled(false);
+        if profile_changed {
+            window.set_user_profile_alias(SharedString::default());
+            window.set_user_profile_is_contact(false);
+            window.set_user_profile_fh_number(SharedString::default());
+        }
     });
     let Some(session) = ctx.active_session() else {
         ctx.apply_ui(|window| {
@@ -1175,15 +1423,27 @@ fn load_public_profile(ctx: &AppContext, id: &str) -> bool {
                 client,
                 &profile::GetPublicProfileRequest { id: profile_id },
             )?;
+            let contact_alias = if public_profile.is_contact {
+                profile::list_contacts(client).map(|contacts| {
+                    contacts
+                        .into_iter()
+                        .find(|contact| contact.target_account_id == public_profile.id)
+                        .map(|contact| contact.local_username)
+                        .filter(|alias| alias != &public_profile.username)
+                })
+            } else {
+                Ok(None)
+            };
             let avatar_bytes = public_profile
                 .avatar_url
                 .as_deref()
                 .filter(|url| !url.trim().is_empty())
                 .and_then(|_| load_profile_avatar_bytes(client, &public_profile.id));
-            Ok((public_profile, avatar_bytes))
+            Ok((public_profile, avatar_bytes, contact_alias))
         },
         move |window, result| {
             if user_profile_id().as_deref() != Some(completion_profile_id.as_str())
+                || USER_PROFILE_LOAD_GENERATION.load(Ordering::Relaxed) != profile_generation
                 || !completion_context
                     .active_session()
                     .is_some_and(|session| session.account.id == completion_account_id)
@@ -1192,7 +1452,14 @@ fn load_public_profile(ctx: &AppContext, id: &str) -> bool {
             }
             window.set_user_profile_loading(false);
             match result {
-                Ok((public_profile, avatar_bytes)) => {
+                Ok((public_profile, avatar_bytes, contact_alias)) => {
+                    let (contact_alias, alias_loaded) = match contact_alias {
+                        Ok(alias) => (alias, true),
+                        Err(error) => {
+                            eprintln!("[settings] load profile contact alias failed: {error}");
+                            (None, false)
+                        }
+                    };
                     let avatar_image = avatar_bytes
                         .as_deref()
                         .and_then(|bytes| slint::Image::load_from_data(bytes, Some("webp")).ok());
@@ -1208,7 +1475,13 @@ fn load_public_profile(ctx: &AppContext, id: &str) -> bool {
                     window.set_user_profile_unavailable(false);
                     window.set_user_profile_error_text(SharedString::default());
                     window.set_user_profile_username(public_profile.username.clone().into());
-                    window.set_user_profile_alias(SharedString::default());
+                    if USER_PROFILE_ALIAS_WRITE_GENERATION.load(Ordering::Relaxed)
+                        == alias_write_generation
+                        && USER_PROFILE_ALIAS_WRITES_PENDING.load(Ordering::Relaxed) == 0
+                        && alias_loaded
+                    {
+                        window.set_user_profile_alias(contact_alias.unwrap_or_default().into());
+                    }
                     window.set_user_profile_fh_number(public_profile.fh_number.into());
                     window.set_user_profile_status_text(
                         public_profile.custom_status_text.unwrap_or_default().into(),
@@ -1302,6 +1575,24 @@ fn set_user_profile_id(id: Option<String>) {
     if let Ok(mut stored) = user_profile_lock().lock() {
         *stored = id;
     }
+}
+
+fn next_user_profile_alias_generation() -> u64 {
+    USER_PROFILE_ALIAS_GENERATION
+        .fetch_add(1, Ordering::Relaxed)
+        .wrapping_add(1)
+}
+
+fn next_user_profile_load_generation() -> u64 {
+    USER_PROFILE_LOAD_GENERATION
+        .fetch_add(1, Ordering::Relaxed)
+        .wrapping_add(1)
+}
+
+fn next_user_profile_alias_write_generation() -> u64 {
+    USER_PROFILE_ALIAS_WRITE_GENERATION
+        .fetch_add(1, Ordering::Relaxed)
+        .wrapping_add(1)
 }
 
 fn user_profile_id() -> Option<String> {

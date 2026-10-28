@@ -19,11 +19,12 @@ use crate::features::{chat as chat_api, conversations as conversations_api, prof
 use crate::{
     ChatMenuItem, ChatMessage, ChatReaction, ChatSearchResult, ConversationRow, FilterTab,
     FolderConversationOption, FolderTab, MainWindow, PollDraftOption, PollOptionView,
-    PollViewModel,
+    PollViewModel, ScheduledMessageView,
 };
 
 const HISTORY_PAGE_SIZE: i64 = 200;
 const POLL_PAGE_SIZE: i64 = 500;
+const IDENTITY_LOOKUPS_CONCURRENCY: usize = 4;
 const ENVELOPE_TYPE_MESSAGE: i64 = 1;
 const ENVELOPE_TYPE_SYNC: i64 = 2;
 const ENVELOPE_TYPE_EDIT: i64 = 4;
@@ -33,10 +34,39 @@ const ENVELOPE_TYPE_REACTION: i64 = 6;
 static CONTROLLER_STATE: OnceLock<Mutex<ControllerState>> = OnceLock::new();
 static MESSAGE_ID_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static REQUEST_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+static IDENTITY_HYDRATION_GENERATION: AtomicU64 = AtomicU64::new(0);
+static SCHEDULED_REQUEST_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Default)]
 struct ControllerState {
     accounts: HashMap<String, AccountState>,
+    scheduled_dialog: ScheduledDialogState,
+}
+
+#[derive(Default)]
+struct ScheduledDialogState {
+    open: bool,
+    account_id: String,
+    conversation_id: String,
+    loading: bool,
+    error: String,
+    cancelling_id: String,
+    request_generation: u64,
+    messages: Vec<ScheduledMessageEntry>,
+}
+
+struct ScheduledMessageEntry {
+    key: String,
+    send_at: i64,
+    client_timestamp: i64,
+    envelope_ids: Vec<String>,
+}
+
+#[derive(Default)]
+struct ScheduledCancelOutcome {
+    completed_envelope_ids: Vec<String>,
+    already_started: bool,
+    failed: bool,
 }
 
 #[derive(Default)]
@@ -259,6 +289,7 @@ pub fn load(ctx: &AppContext, route: &str) {
     let session_for_completion = session.clone();
     let account_id_for_completion = account_id.clone();
     let requested_id = conversation_id.clone();
+    let identity_requested_id = conversation_id.clone();
     let route_for_completion = route_for_request.clone();
     let result = ctx.call(
         "friendshub-conversations-list",
@@ -280,6 +311,7 @@ pub fn load(ctx: &AppContext, route: &str) {
             }
             match result {
                 Ok((conversations, folders)) => {
+                    let conversations_for_identity = conversations.clone();
                     {
                         let mut state = state_lock();
                         let account = state
@@ -296,6 +328,15 @@ pub fn load(ctx: &AppContext, route: &str) {
                             load_conversation(&context, &id, false, Some(&route_for_completion));
                     }
                     apply_conversation_list(&context, window, &account_id_for_completion);
+                    hydrate_direct_chat_aliases(
+                        &context,
+                        session_for_completion.clone(),
+                        account_id_for_completion,
+                        route_for_completion,
+                        list_request_generation,
+                        conversations_for_identity,
+                        identity_requested_id.as_deref(),
+                    );
                 }
                 Err(error) => {
                     window.set_conversations_loading(false);
@@ -337,6 +378,171 @@ pub fn load(ctx: &AppContext, route: &str) {
     }
 }
 
+/// Resolve contact identities for direct conversation rows after the list is
+/// already visible. The web client follows the same detail-then-contact lookup;
+/// caching the peer on the chat state avoids repeating detail requests on later
+/// list refreshes.
+fn hydrate_direct_chat_aliases(
+    ctx: &AppContext,
+    session: ActiveSession,
+    account_id: String,
+    route: String,
+    list_generation: u64,
+    conversations: Vec<conversations_api::Conversation>,
+    selected_conversation_id: Option<&str>,
+) {
+    let state = state_lock();
+    let known_peer_ids = state
+        .accounts
+        .get(&account_id)
+        .map(|account| {
+            account
+                .chats
+                .iter()
+                .filter(|(_, chat)| chat.kind == "direct" && !chat.peer_account_id.is_empty())
+                .map(|(id, chat)| (id.clone(), chat.peer_account_id.clone()))
+                .collect::<HashMap<_, _>>()
+        })
+        .unwrap_or_default();
+    drop(state);
+
+    if !conversations.iter().any(|conversation| {
+        conversation.kind == "direct" && selected_conversation_id != Some(conversation.id.as_str())
+    }) {
+        return;
+    }
+
+    let account_id_for_call = account_id.clone();
+    let selected_conversation_id = selected_conversation_id.map(str::to_owned);
+    let identity_hydration_generation = IDENTITY_HYDRATION_GENERATION.load(Ordering::Relaxed);
+    let completion_context = ctx.clone();
+    let session_for_completion = session.clone();
+    let account_id_for_completion = account_id.clone();
+    let route_for_completion = route.clone();
+    let lookup_client = session.core.client();
+    let _ = ctx.call(
+        "friendshub-conversation-identities",
+        move |_client| {
+            let contacts = profile_settings::list_contacts(lookup_client.as_ref())
+                .unwrap_or_default()
+                .into_iter()
+                .map(|contact| {
+                    let title = if contact.local_username.trim().is_empty() {
+                        contact.username
+                    } else {
+                        contact.local_username
+                    };
+                    (contact.target_account_id, title)
+                })
+                .collect::<HashMap<_, _>>();
+            let mut resolved = Vec::new();
+            let mut unresolved = Vec::new();
+            for conversation in conversations.iter().filter(|conversation| {
+                conversation.kind == "direct"
+                    && selected_conversation_id.as_deref() != Some(conversation.id.as_str())
+            }) {
+                if let Some(peer_account_id) = known_peer_ids.get(&conversation.id) {
+                    resolved.push((conversation.id.clone(), peer_account_id.clone()));
+                } else {
+                    unresolved.push(conversation);
+                }
+            }
+
+            if !unresolved.is_empty() {
+                let worker_count = unresolved.len().min(IDENTITY_LOOKUPS_CONCURRENCY);
+                let chunk_size = unresolved.len().div_ceil(worker_count);
+                let queried = std::thread::scope(|scope| {
+                    let handles = unresolved
+                        .chunks(chunk_size)
+                        .map(|chunk| {
+                            let lookup_client = Arc::clone(&lookup_client);
+                            let account_id = &account_id_for_call;
+                            scope.spawn(move || {
+                                chunk
+                                    .iter()
+                                    .filter_map(|conversation| {
+                                        conversations_api::get(
+                                            lookup_client.as_ref(),
+                                            conversation.id.clone(),
+                                        )
+                                        .ok()
+                                        .and_then(|detail| {
+                                            detail
+                                                .members
+                                                .into_iter()
+                                                .find(|member| member != account_id)
+                                        })
+                                        .map(
+                                            |peer_account_id| {
+                                                (conversation.id.clone(), peer_account_id)
+                                            },
+                                        )
+                                    })
+                                    .collect::<Vec<_>>()
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                    handles
+                        .into_iter()
+                        .filter_map(|handle| handle.join().ok())
+                        .flatten()
+                        .collect::<Vec<_>>()
+                });
+                resolved.extend(queried);
+            }
+
+            Ok(resolved
+                .into_iter()
+                .map(|(conversation_id, peer_account_id)| {
+                    let title = contacts.get(&peer_account_id).cloned();
+                    (conversation_id, peer_account_id, title)
+                })
+                .collect::<Vec<_>>())
+        },
+        move |window, result| {
+            if IDENTITY_HYDRATION_GENERATION.load(Ordering::Relaxed)
+                != identity_hydration_generation
+                || !list_request_is_current(
+                    &completion_context,
+                    &window,
+                    &session_for_completion,
+                    &account_id_for_completion,
+                    &route_for_completion,
+                    list_generation,
+                )
+            {
+                return;
+            }
+            let Ok(resolved) = result else {
+                return;
+            };
+            {
+                let mut state = state_lock();
+                let account = state
+                    .accounts
+                    .entry(account_id_for_completion.clone())
+                    .or_default();
+                for (conversation_id, peer_account_id, title) in resolved {
+                    let chat = account.chats.entry(conversation_id.clone()).or_default();
+                    chat.kind = "direct".to_owned();
+                    chat.peer_account_id = peer_account_id;
+                    if let Some(title) = title {
+                        if let Some(conversation) = account
+                            .conversations
+                            .iter_mut()
+                            .find(|conversation| conversation.id == conversation_id)
+                        {
+                            conversation.title = Some(title.clone());
+                        }
+                        chat.title = title;
+                    }
+                }
+            }
+            apply_conversation_list(&completion_context, window, &account_id_for_completion);
+        },
+    );
+}
+
 /// Handle one action from the root UI dispatcher.
 pub fn handle(
     ctx: &AppContext,
@@ -367,6 +573,82 @@ pub fn peer_account_id(ctx: &AppContext, conversation_id: &str) -> Option<String
         .get(conversation_id)?;
     (chat.kind == "direct" && !chat.peer_account_id.trim().is_empty())
         .then(|| chat.peer_account_id.clone())
+}
+
+/// Update cached direct-chat titles for a contact whose local alias changed.
+pub fn update_direct_chat_title(ctx: &AppContext, peer_account_id: &str, title: &str) {
+    IDENTITY_HYDRATION_GENERATION.fetch_add(1, Ordering::Relaxed);
+    let Some(account_id) = active_account_id(ctx) else {
+        return;
+    };
+    let title = title.to_owned();
+    let selected_conversation = selected_conversation_id(ctx);
+    let (changed_conversation_ids, refresh_data) = {
+        let mut state = state_lock();
+        let Some(account) = state.accounts.get_mut(&account_id) else {
+            return;
+        };
+        let mut changed_conversation_ids = Vec::new();
+        for (conversation_id, chat) in &mut account.chats {
+            if chat.kind == "direct" && chat.peer_account_id == peer_account_id {
+                chat.title = title.clone();
+                changed_conversation_ids.push(conversation_id.clone());
+            }
+        }
+        for conversation in &mut account.conversations {
+            if changed_conversation_ids
+                .iter()
+                .any(|conversation_id| conversation_id == &conversation.id)
+            {
+                conversation.title = Some(title.clone());
+            }
+        }
+        let refresh_data = changed_conversation_ids.is_empty().then(|| {
+            (
+                account.conversations.clone(),
+                account.list_request_generation,
+            )
+        });
+        (changed_conversation_ids, refresh_data)
+    };
+    if changed_conversation_ids.is_empty() {
+        if let (Some(session), Some((conversations, list_generation))) =
+            (ctx.active_session(), refresh_data)
+            && session.account.id == account_id
+            && conversations
+                .iter()
+                .any(|conversation| conversation.kind == "direct")
+            && let Some(window) = ctx.ui.upgrade()
+            && is_conversation_screen(&window)
+        {
+            let route = window.get_route().to_string();
+            hydrate_direct_chat_aliases(
+                ctx,
+                session,
+                account_id,
+                route,
+                list_generation,
+                conversations,
+                selected_conversation.as_deref(),
+            );
+        }
+        return;
+    }
+
+    let context = ctx.clone();
+    ctx.apply_ui(move |window| {
+        if let Some(selected) = selected_conversation.as_deref()
+            && changed_conversation_ids
+                .iter()
+                .any(|conversation_id| conversation_id == selected)
+            && window.get_conversation_kind() == "direct"
+        {
+            window.set_conversation_title(title.into());
+        }
+        if is_conversation_screen(&window) {
+            apply_conversation_list(&context, window, &account_id);
+        }
+    });
 }
 
 fn handle_conversations(ctx: &AppContext, action: &str, arg1: &str, arg2: &str) -> bool {
@@ -1007,11 +1289,506 @@ fn handle_chat(ctx: &AppContext, action: &str, arg1: &str, arg2: &str) -> bool {
             unpin_current(ctx);
             true
         }
+        "more" => {
+            open_scheduled_dialog(ctx);
+            true
+        }
+        "scheduled-refresh" => {
+            refresh_scheduled_dialog(ctx);
+            true
+        }
+        "scheduled-cancel" => {
+            cancel_scheduled_message_group(ctx, arg1);
+            true
+        }
+        "scheduled-close" => {
+            close_scheduled_dialog(ctx);
+            true
+        }
         // The native core wrappers list and cancel scheduled messages but do
         // not expose scheduled sending.
         "schedule" => false,
         _ => false,
     }
+}
+
+fn open_scheduled_dialog(ctx: &AppContext) {
+    let Some(session) = ctx.active_session() else {
+        return;
+    };
+    let Some(conversation_id) = selected_conversation_id(ctx) else {
+        return;
+    };
+    let Some(window) = ctx.ui.upgrade() else {
+        return;
+    };
+    if window.get_screen().as_str() != "chat"
+        || !is_chat_route_visible(&window, &conversation_id, false, None)
+        || conversation_id_from_route(window.get_route().as_str()).as_deref()
+            != Some(conversation_id.as_str())
+    {
+        return;
+    }
+
+    {
+        let mut state = state_lock();
+        state.scheduled_dialog = ScheduledDialogState {
+            open: true,
+            account_id: session.account.id.clone(),
+            conversation_id: conversation_id.clone(),
+            ..ScheduledDialogState::default()
+        };
+    }
+    load_scheduled_messages(ctx, session, conversation_id);
+}
+
+fn refresh_scheduled_dialog(ctx: &AppContext) {
+    let Some(session) = ctx.active_session() else {
+        return;
+    };
+    let Some(conversation_id) = selected_conversation_id(ctx) else {
+        return;
+    };
+    let account_id = session.account.id.clone();
+    let Some(window) = ctx.ui.upgrade() else {
+        return;
+    };
+    if !is_scheduled_chat_visible(&window, &conversation_id) {
+        return;
+    }
+    {
+        let state = state_lock();
+        let dialog = &state.scheduled_dialog;
+        if !dialog.open
+            || dialog.account_id != account_id
+            || dialog.conversation_id != conversation_id
+            || dialog.loading
+            || !dialog.cancelling_id.is_empty()
+        {
+            return;
+        }
+    }
+    load_scheduled_messages(ctx, session, conversation_id);
+}
+
+fn load_scheduled_messages(ctx: &AppContext, session: ActiveSession, conversation_id: String) {
+    let account_id = session.account.id.clone();
+    let Some(window) = ctx.ui.upgrade() else {
+        return;
+    };
+    if !same_active_session(ctx, &session) || !is_scheduled_chat_visible(&window, &conversation_id)
+    {
+        return;
+    }
+    let generation = SCHEDULED_REQUEST_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+    {
+        let mut state = state_lock();
+        let dialog = &mut state.scheduled_dialog;
+        if !dialog.open
+            || dialog.account_id != account_id
+            || dialog.conversation_id != conversation_id
+            || !dialog.cancelling_id.is_empty()
+        {
+            return;
+        }
+        dialog.request_generation = generation;
+        dialog.loading = true;
+        dialog.error.clear();
+    }
+
+    let context_for_completion = ctx.clone();
+    let session_for_completion = session.clone();
+    let account_id_for_completion = account_id.clone();
+    let conversation_id_for_completion = conversation_id.clone();
+    let context_for_error = ctx.clone();
+    let session_for_error = session.clone();
+    let account_id_for_error = account_id.clone();
+    let conversation_id_for_error = conversation_id.clone();
+    let context_for_loading = ctx.clone();
+    let session_for_loading = session.clone();
+    let account_id_for_loading = account_id.clone();
+    let conversation_id_for_loading = conversation_id.clone();
+    let lookup_client = session.core.client();
+    let result = ctx.call(
+        "friendshub-chat-scheduled-list",
+        move |_client| conversations_api::list_scheduled(lookup_client.as_ref()),
+        move |window, result| {
+            if !scheduled_request_is_current(
+                &context_for_completion,
+                &window,
+                &session_for_completion,
+                &account_id_for_completion,
+                &conversation_id_for_completion,
+                generation,
+            ) {
+                return;
+            }
+            let mut state = state_lock();
+            let dialog = &mut state.scheduled_dialog;
+            dialog.loading = false;
+            match result {
+                Ok(envelopes) => {
+                    dialog.error.clear();
+                    dialog.messages =
+                        group_scheduled_envelopes(envelopes, &conversation_id_for_completion);
+                }
+                Err(error) => {
+                    dialog.error = error.user_message().to_owned();
+                    dialog.messages.clear();
+                }
+            }
+            apply_scheduled_dialog(window, dialog);
+        },
+    );
+    if let Err(error) = result {
+        ctx.apply_ui(move |window| {
+            if !scheduled_request_is_current(
+                &context_for_error,
+                &window,
+                &session_for_error,
+                &account_id_for_error,
+                &conversation_id_for_error,
+                generation,
+            ) {
+                return;
+            }
+            let mut state = state_lock();
+            let dialog = &mut state.scheduled_dialog;
+            dialog.loading = false;
+            dialog.error = if error.kind() == std::io::ErrorKind::NotConnected {
+                "Войдите в аккаунт, чтобы загрузить отложенные сообщения.".to_owned()
+            } else {
+                "Не удалось запустить загрузку отложенных сообщений.".to_owned()
+            };
+            dialog.messages.clear();
+            apply_scheduled_dialog(window, dialog);
+        });
+    } else {
+        ctx.apply_ui(move |window| {
+            if scheduled_dialog_matches(
+                &context_for_loading,
+                &window,
+                &session_for_loading,
+                &account_id_for_loading,
+                &conversation_id_for_loading,
+                generation,
+            ) {
+                let state = state_lock();
+                apply_scheduled_dialog(window, &state.scheduled_dialog);
+            }
+        });
+    }
+}
+
+fn cancel_scheduled_message_group(ctx: &AppContext, group_key: &str) {
+    let Some(session) = ctx.active_session() else {
+        return;
+    };
+    let Some(conversation_id) = selected_conversation_id(ctx) else {
+        return;
+    };
+    let account_id = session.account.id.clone();
+    let Some(window) = ctx.ui.upgrade() else {
+        return;
+    };
+    if !is_scheduled_chat_visible(&window, &conversation_id) {
+        return;
+    }
+
+    let (envelope_ids, generation) = {
+        let mut state = state_lock();
+        let dialog = &mut state.scheduled_dialog;
+        if !dialog.open
+            || dialog.account_id != account_id
+            || dialog.conversation_id != conversation_id
+            || dialog.loading
+            || !dialog.cancelling_id.is_empty()
+        {
+            return;
+        }
+        let Some(message) = dialog
+            .messages
+            .iter()
+            .find(|message| message.key == group_key)
+        else {
+            return;
+        };
+        let envelope_ids = message.envelope_ids.clone();
+        let generation = SCHEDULED_REQUEST_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+        dialog.request_generation = generation;
+        dialog.cancelling_id = group_key.to_owned();
+        dialog.error.clear();
+        (envelope_ids, generation)
+    };
+    if envelope_ids.is_empty() {
+        return;
+    }
+    let context_for_loading = ctx.clone();
+    let session_for_loading = session.clone();
+    let account_id_for_loading = account_id.clone();
+    let conversation_id_for_loading = conversation_id.clone();
+    ctx.apply_ui(move |window| {
+        if scheduled_dialog_matches(
+            &context_for_loading,
+            &window,
+            &session_for_loading,
+            &account_id_for_loading,
+            &conversation_id_for_loading,
+            generation,
+        ) {
+            let state = state_lock();
+            apply_scheduled_dialog(window, &state.scheduled_dialog);
+        }
+    });
+
+    let context_for_completion = ctx.clone();
+    let session_for_completion = session.clone();
+    let account_id_for_completion = account_id.clone();
+    let conversation_id_for_completion = conversation_id.clone();
+    let lookup_client = session.core.client();
+    let result = ctx.call(
+        "friendshub-chat-scheduled-cancel",
+        move |_client| {
+            let mut outcome = ScheduledCancelOutcome::default();
+            for envelope_id in envelope_ids {
+                match conversations_api::cancel_scheduled(
+                    lookup_client.as_ref(),
+                    envelope_id.clone(),
+                ) {
+                    Ok(()) => outcome.completed_envelope_ids.push(envelope_id),
+                    Err(error) => match CoreCallFailure::from(error) {
+                        CoreCallFailure::Server { status: 404 } => {
+                            outcome.already_started = true;
+                        }
+                        _ => outcome.failed = true,
+                    },
+                }
+            }
+            Ok::<_, CoreError>(outcome)
+        },
+        move |window, result| {
+            if !scheduled_request_is_current(
+                &context_for_completion,
+                &window,
+                &session_for_completion,
+                &account_id_for_completion,
+                &conversation_id_for_completion,
+                generation,
+            ) {
+                return;
+            }
+            let refresh_after_cancel = {
+                let mut state = state_lock();
+                let dialog = &mut state.scheduled_dialog;
+                dialog.loading = false;
+                dialog.cancelling_id.clear();
+                match result {
+                    Ok(outcome) => {
+                        let completed = outcome
+                            .completed_envelope_ids
+                            .into_iter()
+                            .collect::<HashSet<_>>();
+                        for message in &mut dialog.messages {
+                            message.envelope_ids.retain(|id| !completed.contains(id));
+                        }
+                        dialog
+                            .messages
+                            .retain(|message| !message.envelope_ids.is_empty());
+                        outcome.already_started || outcome.failed
+                    }
+                    Err(_) => true,
+                }
+            };
+            if refresh_after_cancel {
+                load_scheduled_messages(
+                    &context_for_completion,
+                    session_for_completion,
+                    conversation_id_for_completion,
+                );
+            } else {
+                let state = state_lock();
+                apply_scheduled_dialog(window, &state.scheduled_dialog);
+            }
+        },
+    );
+    if let Err(error) = result {
+        let context = ctx.clone();
+        let session_for_error = session;
+        ctx.apply_ui(move |window| {
+            if !scheduled_request_is_current(
+                &context,
+                &window,
+                &session_for_error,
+                &account_id,
+                &conversation_id,
+                generation,
+            ) {
+                return;
+            }
+            let mut state = state_lock();
+            let dialog = &mut state.scheduled_dialog;
+            dialog.loading = false;
+            dialog.cancelling_id.clear();
+            dialog.error = if error.kind() == std::io::ErrorKind::NotConnected {
+                "Войдите в аккаунт, чтобы отменить отложенные сообщения.".to_owned()
+            } else {
+                "Не удалось запустить отмену отложенных сообщений.".to_owned()
+            };
+            dialog.messages.clear();
+            apply_scheduled_dialog(window, dialog);
+        });
+    }
+}
+
+fn close_scheduled_dialog(ctx: &AppContext) {
+    let generation = SCHEDULED_REQUEST_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+    let mut state = state_lock();
+    state.scheduled_dialog = ScheduledDialogState {
+        request_generation: generation,
+        ..ScheduledDialogState::default()
+    };
+    drop(state);
+    ctx.apply_ui(|window| {
+        let state = state_lock();
+        apply_scheduled_dialog(window, &state.scheduled_dialog);
+    });
+}
+
+fn is_scheduled_chat_visible(window: &MainWindow, conversation_id: &str) -> bool {
+    window.get_screen().as_str() == "chat"
+        && is_chat_route_visible(window, conversation_id, false, None)
+        && conversation_id_from_route(window.get_route().as_str()).as_deref()
+            == Some(conversation_id)
+}
+
+fn scheduled_dialog_matches(
+    ctx: &AppContext,
+    window: &MainWindow,
+    session: &ActiveSession,
+    account_id: &str,
+    conversation_id: &str,
+    generation: u64,
+) -> bool {
+    if !same_active_session(ctx, session) || !is_scheduled_chat_visible(window, conversation_id) {
+        return false;
+    }
+    let state = state_lock();
+    let dialog = &state.scheduled_dialog;
+    dialog.open
+        && dialog.account_id == account_id
+        && dialog.conversation_id == conversation_id
+        && dialog.request_generation == generation
+}
+
+fn scheduled_request_is_current(
+    ctx: &AppContext,
+    window: &MainWindow,
+    session: &ActiveSession,
+    account_id: &str,
+    conversation_id: &str,
+    generation: u64,
+) -> bool {
+    scheduled_dialog_matches(
+        ctx,
+        window,
+        session,
+        account_id,
+        conversation_id,
+        generation,
+    )
+}
+
+fn apply_scheduled_dialog(window: MainWindow, dialog: &ScheduledDialogState) {
+    let language = window.get_language();
+    let messages = dialog
+        .messages
+        .iter()
+        .map(|message| ScheduledMessageView {
+            id: message.key.clone().into(),
+            send_at_label: format!(
+                "{} · {}",
+                utc_day_label(message.send_at).trim_end_matches(" UTC"),
+                utc_time_label(message.send_at),
+            )
+            .into(),
+            device_count_label: scheduled_device_count_label(
+                message.envelope_ids.len(),
+                language.as_str(),
+            )
+            .into(),
+            busy: dialog.cancelling_id == message.key,
+        })
+        .collect::<Vec<_>>();
+    window.set_scheduled_dialog_open(dialog.open);
+    window.set_scheduled_dialog_loading(dialog.loading);
+    window.set_scheduled_dialog_error(dialog.error.clone().into());
+    window.set_scheduled_dialog_cancelling_id(dialog.cancelling_id.clone().into());
+    window.set_scheduled_dialog_account_id(dialog.account_id.clone().into());
+    window.set_scheduled_dialog_conversation_id(dialog.conversation_id.clone().into());
+    window.set_scheduled_dialog_messages(ModelRc::new(VecModel::from(messages)));
+}
+
+fn scheduled_device_count_label(count: usize, language: &str) -> String {
+    if language != "ru" {
+        return format!("{count} {}", if count == 1 { "device" } else { "devices" });
+    }
+    let last_two = count % 100;
+    let noun = if (11..=14).contains(&last_two) {
+        "устройств"
+    } else {
+        match count % 10 {
+            1 => "устройство",
+            2..=4 => "устройства",
+            _ => "устройств",
+        }
+    };
+    format!("{count} {noun}")
+}
+
+fn group_scheduled_envelopes(
+    envelopes: Vec<conversations_api::ScheduledEnvelope>,
+    conversation_id: &str,
+) -> Vec<ScheduledMessageEntry> {
+    let mut device_occurrences = HashMap::<(String, i64), usize>::new();
+    let mut groups = HashMap::<String, ScheduledMessageEntry>::new();
+    for envelope in envelopes {
+        if envelope.conversation_id.as_deref() != Some(conversation_id) {
+            continue;
+        }
+        let message_key = json!([
+            envelope.conversation_id,
+            envelope.recipient_account_id,
+            envelope.envelope_type,
+            envelope.client_timestamp,
+            envelope.send_at,
+        ])
+        .to_string();
+        let device_key = (message_key.clone(), envelope.recipient_device_number);
+        let occurrence = device_occurrences.entry(device_key).or_default();
+        let group_key = json!([message_key, *occurrence]).to_string();
+        *occurrence += 1;
+        groups
+            .entry(group_key.clone())
+            .or_insert_with(|| ScheduledMessageEntry {
+                key: group_key,
+                send_at: envelope.send_at,
+                client_timestamp: envelope.client_timestamp,
+                envelope_ids: Vec::new(),
+            })
+            .envelope_ids
+            .push(envelope.envelope_id);
+    }
+    let mut messages = groups.into_values().collect::<Vec<_>>();
+    for message in &mut messages {
+        message.envelope_ids.sort();
+    }
+    messages.sort_by(|left, right| {
+        left.send_at
+            .cmp(&right.send_at)
+            .then_with(|| left.client_timestamp.cmp(&right.client_timestamp))
+            .then_with(|| left.key.cmp(&right.key))
+    });
+    messages
 }
 
 fn open_message_menu(ctx: &AppContext, index_text: &str) {
@@ -1071,11 +1848,19 @@ fn select_message_menu_action(ctx: &AppContext, index_text: &str, action: &str) 
             .accounts
             .get(&account_id)
             .and_then(|account| account.chats.get(&conversation_id))
-            .and_then(|chat| chat.messages.get(index))
-            .map(|message| (message.id.clone(), message.body.clone(), message.own))
+            .and_then(|chat| {
+                chat.messages.get(index).map(|message| {
+                    (
+                        message.id.clone(),
+                        message.body.clone(),
+                        message.own,
+                        chat.pins.iter().any(|id| id == &message.id),
+                    )
+                })
+            })
     };
     close_message_menu(ctx);
-    let Some((message_id, body, own)) = selected else {
+    let Some((message_id, body, own, is_pinned)) = selected else {
         return;
     };
     match action {
@@ -1093,7 +1878,122 @@ fn select_message_menu_action(ctx: &AppContext, index_text: &str, action: &str) 
             apply_selected_chat(ctx);
         }
         "delete" if own => request_message_delete_confirmation(ctx, &conversation_id, &message_id),
+        "pin" if !is_pinned => mutate_message_pin(ctx, &conversation_id, &message_id, true),
+        "unpin" if is_pinned => mutate_message_pin(ctx, &conversation_id, &message_id, false),
         _ => {}
+    }
+}
+
+fn mutate_message_pin(ctx: &AppContext, conversation_id: &str, message_id: &str, should_pin: bool) {
+    let Some(session) = ctx.active_session() else {
+        return;
+    };
+    let account_id = session.account.id.clone();
+    let Some(is_pinned) = state_lock()
+        .accounts
+        .get(&account_id)
+        .and_then(|account| account.chats.get(conversation_id))
+        .and_then(|chat| {
+            chat.messages
+                .iter()
+                .any(|message| message.id == message_id)
+                .then(|| chat.pins.iter().any(|id| id == message_id))
+        })
+    else {
+        return;
+    };
+    if is_pinned == should_pin {
+        return;
+    }
+
+    let request_key = format!("message-pin:{message_id}");
+    let request_generation = begin_chat_request(&account_id, conversation_id, &request_key);
+    let conversation_id_for_call = conversation_id.to_owned();
+    let message_id_for_call = message_id.to_owned();
+    let account_id_for_completion = account_id.clone();
+    let conversation_id_for_completion = conversation_id.to_owned();
+    let message_id_for_completion = message_id.to_owned();
+    let account_id_for_spawn_error = account_id.clone();
+    let conversation_id_for_spawn_error = conversation_id.to_owned();
+    let context = ctx.clone();
+    let session_for_completion = session.clone();
+    let session_for_spawn_error = session;
+    let result = ctx.call(
+        "friendshub-message-pin",
+        move |client| {
+            if should_pin {
+                conversations_api::pin(client, conversation_id_for_call, message_id_for_call)
+            } else {
+                conversations_api::unpin(client, conversation_id_for_call, message_id_for_call)
+            }
+        },
+        move |window, result| {
+            if !same_active_session(&context, &session_for_completion)
+                || !chat_request_generation_is_current(
+                    &account_id_for_completion,
+                    &conversation_id_for_completion,
+                    &request_key,
+                    request_generation,
+                )
+            {
+                return;
+            }
+            let visible =
+                is_chat_route_visible(&window, &conversation_id_for_completion, false, None);
+            let mut state = state_lock();
+            let Some(chat) = state
+                .accounts
+                .get_mut(&account_id_for_completion)
+                .and_then(|account| account.chats.get_mut(&conversation_id_for_completion))
+            else {
+                return;
+            };
+            match result {
+                Ok(()) => {
+                    if should_pin {
+                        if !chat.pins.contains(&message_id_for_completion) {
+                            chat.pins.insert(0, message_id_for_completion);
+                            chat.selected_pin = 0;
+                        }
+                    } else {
+                        chat.pins.retain(|id| id != &message_id_for_completion);
+                        chat.selected_pin = 0;
+                    }
+                    chat.error.clear();
+                }
+                Err(error) => chat.error = error.user_message().to_owned(),
+            }
+            if visible {
+                apply_chat_models(window, chat);
+            }
+        },
+    );
+    if result.is_err() {
+        if same_active_session(ctx, &session_for_spawn_error)
+            && chat_request_generation_is_current(
+                &account_id_for_spawn_error,
+                &conversation_id_for_spawn_error,
+                &format!("message-pin:{message_id}"),
+                request_generation,
+            )
+        {
+            let visible = ctx.ui.upgrade().is_some_and(|window| {
+                is_chat_route_visible(&window, &conversation_id_for_spawn_error, false, None)
+            });
+            let mut state = state_lock();
+            if let Some(chat) = state
+                .accounts
+                .get_mut(&account_id_for_spawn_error)
+                .and_then(|account| account.chats.get_mut(&conversation_id_for_spawn_error))
+            {
+                chat.error = "Не удалось запустить изменение закреплённого сообщения.".to_owned();
+                if visible {
+                    if let Some(window) = ctx.ui.upgrade() {
+                        apply_chat_models(window, chat);
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -2166,15 +3066,34 @@ fn load_conversation_data(
         )
         .ok()
     };
-    let title = detail
-        .title
-        .clone()
-        .or_else(|| {
-            peer_profile
-                .as_ref()
-                .map(|profile| profile.username.clone())
-        })
-        .unwrap_or_else(|| fallback_conversation_title(&detail.kind, &detail.id));
+    let peer_alias = if detail.kind == "direct" && !peer_account_id.is_empty() {
+        profile_settings::list_contacts(client)
+            .ok()
+            .and_then(|contacts| {
+                contacts
+                    .into_iter()
+                    .find(|contact| contact.target_account_id == peer_account_id)
+            })
+            .map(|contact| contact.local_username)
+            .filter(|alias| !alias.trim().is_empty())
+    } else {
+        None
+    };
+    let title = if detail.kind == "direct" {
+        peer_alias
+            .or_else(|| detail.title.clone())
+            .or_else(|| {
+                peer_profile
+                    .as_ref()
+                    .map(|profile| profile.username.clone())
+            })
+            .unwrap_or_else(|| fallback_conversation_title(&detail.kind, &detail.id))
+    } else {
+        detail
+            .title
+            .clone()
+            .unwrap_or_else(|| fallback_conversation_title(&detail.kind, &detail.id))
+    };
     let subtitle = if detail.kind == "direct" {
         peer_profile
             .as_ref()
@@ -3360,7 +4279,7 @@ fn unpin_current(ctx: &AppContext) {
         return;
     };
     let message_id_for_ui = message_id.clone();
-    let request_key = format!("unpin:{message_id}");
+    let request_key = format!("message-pin:{message_id}");
     let request_generation = begin_chat_request(&account_id, &conversation_id, &request_key);
     let conv_id = conversation_id.clone();
     let session_for_completion = session;
@@ -4396,22 +5315,38 @@ fn apply_chat_models(window: MainWindow, chat: &mut ChatState) {
         .flatten()
         .and_then(|index| chat.messages.get(index));
     let menu_items = selected_message
-        .filter(|message| message.own)
-        .map(|_| {
-            vec![
-                ChatMenuItem {
+        .map(|message| {
+            let mut items = Vec::with_capacity(if message.own { 3 } else { 1 });
+            let enabled = !chat.busy && !chat.loading;
+            if message.own {
+                items.push(ChatMenuItem {
                     id: "edit".into(),
                     label: localized("Изменить", "Edit").into(),
-                    enabled: !chat.busy && !chat.loading,
+                    enabled,
                     danger: false,
-                },
-                ChatMenuItem {
+                });
+            }
+            let is_pinned = chat.pins.iter().any(|id| id == &message.id);
+            items.push(ChatMenuItem {
+                id: if is_pinned { "unpin" } else { "pin" }.into(),
+                label: if is_pinned {
+                    localized("Открепить", "Unpin")
+                } else {
+                    localized("Закрепить", "Pin")
+                }
+                .into(),
+                enabled,
+                danger: false,
+            });
+            if message.own {
+                items.push(ChatMenuItem {
                     id: "delete".into(),
                     label: localized("Удалить", "Delete").into(),
-                    enabled: !chat.busy && !chat.loading,
+                    enabled,
                     danger: true,
-                },
-            ]
+                });
+            }
+            items
         })
         .unwrap_or_default();
     let quick_reactions = ["👍", "❤️", "😂", "😮", "😢", "🔥"]

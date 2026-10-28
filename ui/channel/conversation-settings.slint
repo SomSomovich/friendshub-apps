@@ -10,6 +10,7 @@ export struct ConversationMember {
     tag: string,
     actor-type: string,
     muted: bool,
+    can-moderate: bool,
 }
 
 export struct ConversationInvite {
@@ -68,9 +69,12 @@ export component ConversationSettingsScreen inherits Rectangle {
     in property <bool> profile-save-enabled: true;
     in property <image> photo-image;
     in property <bool> busy: false;
+    in property <bool> member-tag-editor-save-enabled: false;
     in property <bool> confirmation-visible: false;
     in property <string> confirmation-title: "";
     in property <string> confirmation-description: "";
+    in property <bool> confirmation-show-ban-option: false;
+    in-out property <bool> confirmation-ban-on-remove: false;
     in-out property <string> title-draft: "";
     in-out property <string> description-draft: "";
     in-out property <string> handle-draft: "";
@@ -78,6 +82,11 @@ export component ConversationSettingsScreen inherits Rectangle {
     in-out property <string> selected-member-id: "";
     in-out property <int> selected-owner-index: -1;
     in-out property <bool> public-state-draft: false;
+    in-out property <bool> member-tag-editor-open: false;
+    in-out property <int> member-tag-editor-index: -1;
+    in-out property <string> member-tag-editor-draft: "";
+    in-out property <string> member-tag-editor-error-text: "";
+    in-out property <bool> member-tag-editor-has-existing-tag: false;
 
     callback back-requested();
     callback retry-requested();
@@ -89,6 +98,9 @@ export component ConversationSettingsScreen inherits Rectangle {
     callback linked-group-save-requested(string);
     callback member-add-requested(string);
     callback member-action-requested(int, string);
+    callback member-tag-save-requested(int, string);
+    callback member-tag-draft-changed(string);
+    callback member-tag-remove-requested(int);
     callback banned-member-action-requested(int, string);
     callback invite-create-requested(string);
     callback invite-copy-requested(int);
@@ -344,14 +356,25 @@ export component ConversationSettingsScreen inherits Rectangle {
                                 }
                                 FlexboxLayout {
                                     spacing: 4px;
-                                    if root.can-manage-roles : ChatAction { label: member.role == "admin" ? "Изменить права" : "Сделать администратором"; enabled: !root.busy; clicked => { root.member-action-requested(index, member.role == "admin" ? "edit_rights" : "make_admin"); } }
-                                    if root.can-mute-members : ChatAction { label: member.muted ? "Снять заглушение" : "Заглушить"; enabled: !root.busy; clicked => { root.member-action-requested(index, member.muted ? "unmute" : "mute"); } }
-                                    if root.can-change-tags : ChatAction { label: "Тег"; enabled: !root.busy; clicked => { root.member-action-requested(index, "tag"); } }
-                                    if root.can-remove-members : ChatAction { label: "Исключить"; danger: true; enabled: !root.busy; clicked => { root.member-action-requested(index, "remove"); } }
+                                    if root.can-manage-roles && member.can-moderate : ChatAction { label: member.role == "admin" ? "Изменить права" : "Сделать администратором"; enabled: !root.busy; clicked => { root.member-action-requested(index, member.role == "admin" ? "edit_rights" : "make_admin"); } }
+                                    if root.can-mute-members && member.can-moderate : ChatAction { label: member.muted ? "Снять заглушение" : "Заглушить"; enabled: !root.busy; clicked => { root.member-action-requested(index, member.muted ? "unmute" : "mute"); } }
+                                    if root.can-change-tags && member.actor-type == "account" : ChatAction {
+                                        label: member.tag.is-empty ? "Добавить тег" : "Изменить тег";
+                                        enabled: !root.busy;
+                                        clicked => {
+                                            root.member-tag-editor-index = index;
+                                            root.member-tag-editor-draft = member.tag;
+                                            root.member-tag-editor-has-existing-tag = !member.tag.is-empty;
+                                            root.member-tag-editor-error-text = "";
+                                            root.member-tag-editor-open = true;
+                                            root.member-tag-draft-changed(root.member-tag-editor-draft);
+                                        }
+                                    }
+                                    if root.can-remove-members && member.can-moderate : ChatAction { label: "Исключить"; danger: true; enabled: !root.busy; clicked => { root.member-action-requested(index, "remove"); } }
                                 }
                             }
                         }
-                        if root.kind == "group" && root.can-mute-members : VerticalLayout {
+                        if root.kind == "group" && root.can-ban-members : VerticalLayout {
                             spacing: 6px;
                             Text { text: "Заблокированные участники"; color: Theme.foreground; font-size: 13px; font-weight: 600; }
                             for banned-member[index] in root.banned-members : Rectangle {
@@ -506,6 +529,12 @@ export component ConversationSettingsScreen inherits Rectangle {
                     padding: 20px; spacing: 12px;
                     Text { text: root.confirmation-title; color: Theme.foreground; font-size: 16px; font-weight: 600; }
                     Text { text: root.confirmation-description; color: Theme.muted; font-size: 13px; wrap: word-wrap; }
+                    if root.confirmation-show-ban-option : ChatAction {
+                        label: root.confirmation-ban-on-remove ? "☑ Заблокировать при исключении" : "☐ Заблокировать при исключении";
+                        active: root.confirmation-ban-on-remove;
+                        enabled: !root.busy;
+                        clicked => { root.confirmation-ban-on-remove = !root.confirmation-ban-on-remove; }
+                    }
                     HorizontalLayout {
                         alignment: end; spacing: 8px;
                         ChatAction { label: "Отмена"; clicked => { root.confirmation-cancelled(); } }
@@ -514,4 +543,122 @@ export component ConversationSettingsScreen inherits Rectangle {
                 }
             }
         }
+
+    if root.member-tag-editor-open : Rectangle {
+        x: 0px;
+        y: 0px;
+        width: 100%;
+        height: 100%;
+        background: #99000000;
+
+        TouchArea {
+            clicked => {
+                if !root.busy {
+                    root.member-tag-editor-open = false;
+                    root.member-tag-editor-error-text = "";
+                }
+            }
+        }
+
+        Rectangle {
+            x: (parent.width - min(parent.width - 32px, 420px)) / 2;
+            y: (parent.height - member-tag-card.preferred-height) / 2;
+            width: min(parent.width - 32px, 420px);
+            height: member-tag-card.preferred-height;
+            background: Theme.surface;
+            border-width: 1px;
+            border-color: Theme.border;
+            border-radius: 12px;
+            clip: true;
+
+            member-tag-card := VerticalLayout {
+                padding: 20px;
+                spacing: 12px;
+
+                Text {
+                    text: "Тег участника";
+                    color: Theme.foreground;
+                    font-size: 16px;
+                    font-weight: 600;
+                }
+
+                VerticalLayout {
+                    spacing: 6px;
+                    Text { text: "Тег"; color: Theme.muted; font-size: 12px; font-weight: 600; }
+                    Rectangle {
+                        width: 100%;
+                        height: 40px;
+                        background: Theme.background;
+                        border-width: 1px;
+                        border-color: tag-input.has-focus ? Theme.accent : Theme.border;
+                        border-radius: 8px;
+                        clip: true;
+                        if root.member-tag-editor-draft.is-empty : Text {
+                            x: 12px;
+                            width: parent.width - 24px;
+                            height: parent.height;
+                            text: "Например, Модератор";
+                            color: Theme.muted;
+                            font-size: 14px;
+                            vertical-alignment: center;
+                            accessible-role: none;
+                        }
+                        tag-input := TextInput {
+                            x: 12px;
+                            width: parent.width - 24px;
+                            height: parent.height;
+                            text <=> root.member-tag-editor-draft;
+                            enabled: !root.busy;
+                            font-size: 14px;
+                            color: Theme.foreground;
+                            accessible-label: "Тег участника";
+                            accessible-placeholder-text: "Например, Модератор";
+                            edited => {
+                                root.member-tag-editor-error-text = "";
+                                root.member-tag-draft-changed(root.member-tag-editor-draft);
+                            }
+                        }
+                    }
+                    Text {
+                        text: root.member-tag-editor-error-text.is-empty
+                            ? "От 1 до 9 символов; нельзя использовать <, > и &."
+                            : root.member-tag-editor-error-text;
+                        color: root.member-tag-editor-error-text.is-empty ? Theme.muted : Theme.danger;
+                        font-size: 11px;
+                        wrap: word-wrap;
+                    }
+                }
+
+                HorizontalLayout {
+                    alignment: end;
+                    spacing: 8px;
+                    if root.member-tag-editor-has-existing-tag : ChatAction {
+                        label: "Удалить тег";
+                        danger: true;
+                        enabled: !root.busy;
+                        clicked => { root.member-tag-remove-requested(root.member-tag-editor-index); }
+                    }
+                    ChatAction {
+                        label: "Отмена";
+                        enabled: !root.busy;
+                        clicked => {
+                            root.member-tag-editor-open = false;
+                            root.member-tag-editor-error-text = "";
+                        }
+                    }
+                    ChatAction {
+                        label: root.busy ? "Сохраняем…" : "Сохранить";
+                        active: true;
+                        enabled: !root.busy && root.member-tag-editor-save-enabled;
+                        clicked => {
+                            root.member-tag-save-requested(
+                                root.member-tag-editor-index,
+                                root.member-tag-editor-draft,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
