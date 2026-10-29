@@ -6,3 +6,24 @@ rust-version.workspace = true
 
 [dependencies]
 friendshub-apps = { path = "../.." }
+
+[target.'cfg(target_os = "ios")'.dependencies]
+# Enable UIKit's native share-sheet and iPad popover bindings in the
+# friendshub-apps crate when the iOS launcher is built.
+objc2-ui-kit = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "UIActivity",
+    "UIActivityViewController",
+    "UIApplication",
+    "UIScene",
+    "UISceneDefinitions",
+    "UIWindowScene",
+    "UIWindow",
+    "UIResponder",
+    "UIView",
+    "UIViewController",
+    "UIPresentationController",
+    "UIPopoverPresentationController",
+    "objc2-core-foundation",
+    "block2",
+] }

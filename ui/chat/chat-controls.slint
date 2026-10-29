@@ -18,6 +18,7 @@ export struct ChatAttachmentView {
 
 export component ChatAction inherits Rectangle {
     in property <string> label;
+    in property <length> label-font-size: 12px;
     in property <string> accessible-name: "";
     in property <bool> enabled: true;
     in property <bool> active: false;
@@ -40,7 +41,7 @@ export component ChatAction inherits Rectangle {
     Text {
         text: root.label;
         color: root.danger ? Theme.danger : (root.active ? Theme.accent : Theme.muted);
-        font-size: 12px;
+        font-size: root.label-font-size;
         font-weight: 500;
         horizontal-alignment: center;
         vertical-alignment: center;

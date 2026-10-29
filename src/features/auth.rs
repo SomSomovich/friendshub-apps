@@ -144,10 +144,7 @@ pub struct DeviceInitResult {
     pub kyber_one_time_prekeys: usize,
 }
 
-pub fn device_init_initialize(
-    client: &Client,
-    name: &str,
-) -> CoreResult<DeviceInitResult> {
+pub fn device_init_initialize(client: &Client, name: &str) -> CoreResult<DeviceInitResult> {
     client.device_init_initialize(&DeviceInitRequest { name })
 }
 
@@ -201,10 +198,6 @@ pub struct TotpDisableResult {
 }
 
 /// Disable TOTP using the account password and current TOTP or backup code.
-pub fn twofa_disable(
-    client: &Client,
-    password: &str,
-    code: &str,
-) -> CoreResult<TotpDisableResult> {
+pub fn twofa_disable(client: &Client, password: &str, code: &str) -> CoreResult<TotpDisableResult> {
     client.twofa_disable(&TotpDisableRequest { password, code })
 }

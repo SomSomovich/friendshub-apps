@@ -8,6 +8,7 @@ export struct SettingsAccount {
     fh-number: string,
     avatar: image,
     has-avatar: bool,
+    pending-removal: bool,
 }
 
 component AccountRow inherits Rectangle {
@@ -17,6 +18,7 @@ component AccountRow inherits Rectangle {
     in property <image> avatar;
     in property <bool> has-avatar: false;
     in property <bool> active: false;
+    in property <bool> pending-removal: false;
     in property <bool> enabled: true;
     callback switch-account(string);
     callback remove-account(string);
@@ -77,20 +79,20 @@ component AccountRow inherits Rectangle {
             }
         }
 
-        if root.active : Text {
+        if root.active && !root.pending-removal : Text {
             text: "активный";
             color: Theme.accent;
             font-size: 11px;
             font-weight: 600;
         }
-        if !root.active : FHTextButton {
+        if !root.active && !root.pending-removal : FHTextButton {
             text: "Переключить";
             enabled: root.enabled;
             clicked => { root.switch-account(root.account-id); }
         }
 
         FHTextButton {
-            text: "Удалить";
+            text: root.pending-removal ? "Повторить очистку" : "Удалить";
             enabled: root.enabled;
             clicked => { root.remove-account(root.account-id); }
         }
@@ -145,9 +147,13 @@ export component AccountsSettingsScreen inherits Rectangle {
                 avatar: account.avatar;
                 has-avatar: account.has-avatar;
                 active: account.id == root.active-account-id;
+                pending-removal: account.pending-removal;
                 enabled: !root.busy && (root.busy-account-id.is-empty || root.busy-account-id == account.id);
                 switch-account(id) => { root.switch-account-requested(id); }
-                remove-account(id) => { root.pending-remove-id = id; }
+                remove-account(id) => {
+                    if account.pending-removal { root.remove-account-requested(id); }
+                    else { root.pending-remove-id = id; }
+                }
             }
 
             if !root.pending-remove-id.is-empty : Rectangle {

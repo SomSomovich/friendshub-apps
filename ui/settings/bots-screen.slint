@@ -172,7 +172,7 @@ export component BotsSettingsScreen inherits Rectangle {
     callback close-token-requested();
     callback retry-requested();
 
-    private property <bool> token-revealed: false;
+    in-out property <bool> token-revealed: false;
 
     width: 100%;
     height: 100%;

@@ -5,7 +5,8 @@
 //! DTOs are intentionally not `Debug` so they are not accidentally exposed by
 //! routine diagnostic formatting.
 
-use friendshub_core::{Client, error::Result};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
+use friendshub_core::{Client, error::Error, error::Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -66,6 +67,48 @@ pub fn fetch_history_page(
 /// Decrypt one history envelope using the account/device crypto state in core.
 pub fn decrypt_envelope(client: &Client, envelope: &HistoryEnvelope) -> Result<DecryptResponse> {
     client.messages_decrypt(envelope)
+}
+
+/// Decrypt one Sender Key group message using the conversation sender-key
+/// state owned by `friendshub-core`.
+///
+/// Conversation-history rows expose ciphertext as hex, while the existing
+/// core group-decrypt operation accepts the same bytes in WEB's base64 field.
+/// The returned JSON value is the decrypted message payload.
+pub fn decrypt_group_message(
+    client: &Client,
+    sender_account_id: impl Into<String>,
+    sender_device_number: i64,
+    ciphertext_hex: &str,
+) -> Result<Value> {
+    let ciphertext = decode_hex(ciphertext_hex)
+        .ok_or_else(|| Error::InvalidPayload("group ciphertext is not valid hex".into()))?;
+    client.poll_crypto_decrypt_poll_payload(&DecryptPollPayloadRequest {
+        sender_account_id: sender_account_id.into(),
+        sender_device_number,
+        encrypted_meta: STANDARD.encode(ciphertext),
+    })
+}
+
+fn decode_hex(value: &str) -> Option<Vec<u8>> {
+    if value.len() % 2 != 0 {
+        return None;
+    }
+
+    fn digit(byte: u8) -> Option<u8> {
+        match byte {
+            b'0'..=b'9' => Some(byte - b'0'),
+            b'a'..=b'f' => Some(byte - b'a' + 10),
+            b'A'..=b'F' => Some(byte - b'A' + 10),
+            _ => None,
+        }
+    }
+
+    value
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| Some((digit(pair[0])? << 4) | digit(pair[1])?))
+        .collect()
 }
 
 /// Fetch one page and decrypt each envelope in the order returned by core.
@@ -133,6 +176,28 @@ pub fn send_message(client: &Client, request: &SendMessageRequest) -> Result<Sen
     client.messages_send_message(request)
 }
 
+/// Send a message through core's encrypted direct-message fanout with a
+/// scheduled delivery timestamp. Core still owns encryption, device fanout,
+/// envelope upload, and own-device sync.
+pub fn send_scheduled_message(
+    client: &Client,
+    request: &SendMessageRequest,
+    send_at: i64,
+) -> Result<SendMessageResponse> {
+    let core_request = friendshub_core::api::messages::ScheduledSendMessageRequest {
+        request: friendshub_core::api::messages::SendMessageRequest {
+            recipient_account_id: request.recipient_account_id.clone(),
+            plaintext_hex: request.plaintext_hex.clone(),
+            device_number: request.device_number,
+            conversation_id: request.conversation_id.clone(),
+            refresh_devices: request.refresh_devices,
+            sync: request.sync,
+        },
+        send_at: Some(send_at),
+    };
+    client.messages_send_message(&core_request)
+}
+
 /// Request for core's group SenderKey fanout.
 #[derive(Serialize)]
 pub struct SendGroupMessageRequest {
@@ -163,6 +228,136 @@ pub fn send_group_message(
     request: &SendGroupMessageRequest,
 ) -> Result<SendGroupMessageResponse> {
     client.groups_send_send_group_message(request)
+}
+
+/// One non-retryable native chat message created after its attachment keys
+/// have been persisted and fanned out.
+pub struct AttachmentMessageRequest {
+    pub conversation_id: String,
+    pub sender_account_id: String,
+    pub message_id: String,
+    pub caption: String,
+    pub attachment_ids: Vec<String>,
+    pub created_at: i64,
+}
+
+#[derive(Clone, Copy, Default)]
+pub struct AttachmentMessageDelivery {
+    pub recipient_failures: usize,
+    pub sync_failures: usize,
+}
+
+/// Build and send a chat payload that references completed uploads.
+///
+/// This wrapper deliberately sends exactly once. Callers must not retry it
+/// after any ambiguous transport failure because the server may have accepted
+/// the envelope before the error reached the client.
+pub fn send_attachment_message(
+    client: &Client,
+    request: &AttachmentMessageRequest,
+) -> Result<AttachmentMessageDelivery> {
+    if request.attachment_ids.is_empty() {
+        return Err(Error::InvalidPayload(
+            "attachment message requires at least one attachment".into(),
+        ));
+    }
+    let detail = crate::features::conversations::get(client, request.conversation_id.clone())?;
+    let draft = serde_json::json!({
+        "text": request.caption,
+        "replyTo": null,
+        "forwardFrom": null,
+        "attachmentIds": request.attachment_ids,
+    });
+    let payload = friendshub_core::message_payload::build_message_payload(
+        &request.message_id,
+        &draft,
+        request.created_at as f64,
+    )
+    .map_err(Error::InvalidPayload)?;
+    let plaintext_hex = encode_hex(&serde_json::to_vec(&payload).map_err(Error::from)?);
+
+    let (recipient_failures, sync_failures, delivered) = match detail.kind.as_str() {
+        "direct" => {
+            let recipient = detail
+                .members
+                .iter()
+                .find(|member| member.as_str() != request.sender_account_id)
+                .cloned()
+                .ok_or_else(|| Error::InvalidPayload("direct conversation has no peer".into()))?;
+            let response = send_message(
+                client,
+                &SendMessageRequest {
+                    recipient_account_id: recipient,
+                    plaintext_hex,
+                    device_number: None,
+                    conversation_id: Some(request.conversation_id.clone()),
+                    refresh_devices: false,
+                    sync: true,
+                },
+            )?;
+            (
+                response.device_errors.len(),
+                response.sync_errors.len(),
+                !response.envelopes.is_empty(),
+            )
+        }
+        "group" => {
+            let response = send_group_message(
+                client,
+                &SendGroupMessageRequest {
+                    conversation_id: request.conversation_id.clone(),
+                    plaintext_hex,
+                    sync: true,
+                },
+            )?;
+            (
+                response.device_errors.len(),
+                response.sync_errors.len(),
+                !response.envelopes.is_empty(),
+            )
+        }
+        _ => {
+            return Err(Error::InvalidPayload(
+                "this conversation does not accept chat messages".into(),
+            ));
+        }
+    };
+    if !delivered {
+        return Err(Error::InvalidPayload(
+            "attachment message was not delivered to any recipient device".into(),
+        ));
+    }
+    Ok(AttachmentMessageDelivery {
+        recipient_failures,
+        sync_failures,
+    })
+}
+
+fn encode_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        encoded.push(HEX[(byte >> 4) as usize] as char);
+        encoded.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    encoded
+}
+
+/// Send a message through core's encrypted group fanout at a later Unix time.
+pub fn send_scheduled_group_message(
+    client: &Client,
+    request: &SendGroupMessageRequest,
+    send_at: i64,
+) -> Result<SendGroupMessageResponse> {
+    let core_request = friendshub_core::api::groups_send::ScheduledSendGroupRequest {
+        request: friendshub_core::api::groups_send::SendGroupRequest {
+            conversation_id: request.conversation_id.clone(),
+            plaintext_hex: request.plaintext_hex.clone(),
+            sync: request.sync,
+        },
+        send_at: Some(send_at),
+    };
+    client.groups_send_send_group_message(&core_request)
 }
 
 // -----------------------------------------------------------------------------

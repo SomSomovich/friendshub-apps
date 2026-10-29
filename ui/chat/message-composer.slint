@@ -9,6 +9,7 @@ export component MessageComposer inherits Rectangle {
     in property <bool> editing: false;
     in property <bool> can-poll: true;
     in property <bool> can-schedule: true;
+    in property <string> language: "ru";
     in property <string> error-text: "";
     callback draft-changed(string);
     callback send-requested(string);
@@ -80,7 +81,7 @@ export component MessageComposer inherits Rectangle {
             spacing: 4px;
             if !root.editing : ChatAction {
                 label: "☺";
-                accessible-name: "Эмодзи";
+                accessible-name: root.language == "ru" ? "Эмодзи" : "Emoji";
                 enabled: root.enabled && !root.busy;
                 clicked => { root.emoji-picker-requested(); }
             }

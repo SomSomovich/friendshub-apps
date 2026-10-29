@@ -24,8 +24,12 @@ target_sdk_version = 35
 [package.metadata.android.application]
 label = "FriendsHub"
 
+[[package.metadata.android.uses_permission]]
+name = "android.permission.RECORD_AUDIO"
+
 [dependencies]
 friendshub-apps = { path = "../.." }
 
 [target.'cfg(target_os = "android")'.dependencies]
+friendshub-core.workspace = true
 slint = { workspace = true, features = ["backend-android-activity-06"] }

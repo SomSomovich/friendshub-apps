@@ -11,6 +11,7 @@ export component AboutSettingsScreen inherits Rectangle {
     in property <bool> update-busy: false;
     in property <string> update-status: "";
     in property <bool> busy: false;
+    in property <string> logout-error: "";
 
     callback back-requested();
     callback open-url-requested(string);
@@ -58,8 +59,8 @@ export component AboutSettingsScreen inherits Rectangle {
 
             Text {
                 text: root.updater-supported
-                    ? "Проверить и установить актуальную версию приложения."
-                    : "Автоматическое обновление пока не настроено. Релизы доступны по ссылке ниже.";
+                    ? "Проверить наличие новой версии. Загрузка и установка выполняются вручную со страницы релизов."
+                    : "Проверка версии недоступна. Релизы доступны по ссылке ниже.";
                 color: Theme.muted;
                 font-size: 12px;
                 wrap: word-wrap;
@@ -110,7 +111,7 @@ export component AboutSettingsScreen inherits Rectangle {
                 font-weight: 500;
             }
             Text {
-                text: "Загрузки появятся после первого релиза.";
+                text: "Загрузка и установка выполняются вручную.";
                 color: Theme.muted;
                 font-size: 12px;
                 wrap: word-wrap;
@@ -161,6 +162,14 @@ export component AboutSettingsScreen inherits Rectangle {
         SettingsCard {
             title: "Сессия";
 
+            if !root.logout-error.is-empty : Text {
+                text: root.logout-error;
+                color: Theme.danger;
+                font-size: 12px;
+                wrap: word-wrap;
+                width: 100%;
+            }
+
             if !root.confirm-logout-open : FHPrimaryButton {
                 text: "Выйти";
                 enabled: !root.busy;
@@ -192,7 +201,6 @@ export component AboutSettingsScreen inherits Rectangle {
                             busy: root.busy;
                             clicked => {
                                 root.logout-requested();
-                                root.confirm-logout-open = false;
                             }
                         }
                         FHTextButton {

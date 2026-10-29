@@ -4,7 +4,8 @@
 //! notification sound preferences are app-local and stored under `data_dir`.
 //! Account-scoped settings use typed core wrappers, while app-local interface
 //! preferences use the local settings file. Slint state is updated only on its
-//! event loop; core operations and account-store I/O run on workers.
+//! event loop. Core operations run on workers; profile metadata is persisted
+//! only after its completion is accepted for the current account session.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
@@ -22,8 +23,15 @@ use slint::{Color, ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
 use crate::app::{ActiveSession, AppContext, call_client};
 use crate::core::{CoreCallFailure, CoreClient};
-use crate::features::{auth, bots, conversations, discovery_dating, profile_settings as profile};
+use crate::features::{
+    auth, bots, conversations, discovery_dating, history_sync, profile_settings as profile,
+};
 use crate::platform::accounts::AccountStore;
+use crate::platform::file_picker::{
+    ExtensionFilter, PickOutcome, PickRequest, PickedFile, PickerError, SelectionMode,
+};
+use crate::platform::notification_sound;
+use crate::platform::notifications::{self, PermissionState, RequestOutcome};
 use crate::{
     MainWindow, OwnProfileField, PublicProfileField, SecurityDevice, SecurityEvent,
     SecuritySession, SettingsAccount, SettingsBot, SettingsContact, SettingsOption,
@@ -50,7 +58,11 @@ static USER_PROFILE_LOAD_GENERATION: AtomicU64 = AtomicU64::new(0);
 static USER_PROFILE_ALIAS_WRITE_GENERATION: AtomicU64 = AtomicU64::new(0);
 static USER_PROFILE_ALIAS_WRITES_PENDING: AtomicU64 = AtomicU64::new(0);
 static PRIVACY_LOAD_GENERATION: AtomicU64 = AtomicU64::new(0);
+static TWOFACTOR_FLOW_GENERATION: AtomicU64 = AtomicU64::new(0);
+static BOT_TOKEN_GENERATION: AtomicU64 = AtomicU64::new(0);
 static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
+static AVATAR_UPLOAD_GENERATION: AtomicU64 = AtomicU64::new(0);
+static ABOUT_UPDATE_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default, rename_all = "camelCase")]
@@ -109,12 +121,45 @@ pub fn initialize(ctx: &AppContext) {
         let ui = ctx.ui.clone();
         window.on_twofactor_copy_backup_codes_requested(move |_| {
             if let Some(window) = ui.upgrade() {
-                window.set_twofactor_setup_error_text(
-                    "Буфер обмена недоступен в нативном клиенте; сохраните коды вручную.".into(),
-                );
+                copy_twofactor_backup_codes(&window);
             }
         });
     }
+}
+
+fn clipboard_feedback(window: &MainWindow, text: &str) -> SharedString {
+    let russian = window.get_language() == "ru";
+    let message = if text.trim().is_empty() {
+        if russian {
+            "Нет данных для копирования."
+        } else {
+            "There is nothing to copy."
+        }
+    } else {
+        match crate::platform::clipboard::copy_text(text) {
+            Ok(()) if russian => "Скопировано в буфер обмена.",
+            Ok(()) => "Copied to the clipboard.",
+            Err(_) if russian => "Не удалось скопировать в буфер обмена. Попробуйте ещё раз.",
+            Err(_) => "Could not copy to the clipboard. Try again.",
+        }
+    };
+    message.into()
+}
+
+fn copy_twofactor_backup_codes(window: &MainWindow) -> bool {
+    if window.get_screen() != "settings_twofactor"
+        || !window.get_twofactor_setup_show_backup_codes()
+    {
+        return false;
+    }
+    let codes = window
+        .get_twofactor_setup_backup_codes()
+        .iter()
+        .map(|code| code.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    window.set_twofactor_setup_error_text(clipboard_feedback(window, &codes));
+    true
 }
 
 pub fn load(ctx: &AppContext, route: &str) {
@@ -216,8 +261,11 @@ fn apply_preferences(window: &MainWindow, preferences: &LocalPreferences) {
     apply_color_previews(window, preferences);
     window.set_notifications_sound_enabled(preferences.sound_enabled);
     window.set_notifications_sound_value(preferences.sound.clone().into());
-    window.set_notifications_os_permission("unsupported".into());
-    window.set_notifications_permission_request_supported(false);
+    let notification_permission = notifications::permission_state();
+    window.set_notifications_os_permission(notification_permission.as_ui_value().into());
+    window.set_notifications_permission_request_supported(
+        notification_permission == PermissionState::Prompt,
+    );
     window
         .set_notifications_push_status("Push-подключение не настроено в нативном клиенте.".into());
     window.set_notifications_busy(false);
@@ -298,6 +346,9 @@ fn load_profile_avatar_bytes(client: &Client, account_id: &str) -> Option<Vec<u8
 }
 
 fn load_own_profile(ctx: &AppContext) {
+    if let Some(window) = ctx.ui.upgrade() {
+        window.set_profile_copy_status_text(SharedString::default());
+    }
     let Some(session) = ctx.active_session() else {
         return;
     };
@@ -305,7 +356,7 @@ fn load_own_profile(ctx: &AppContext) {
     let accounts = ctx.accounts.clone();
     let context = ctx.clone();
     let account_id = session.account.id.clone();
-    let expected_account_id = account_id.clone();
+    let expected_session = session.clone();
     let account_core = session.core.clone();
     let ui = ctx.ui.clone();
     let result = call_client(
@@ -320,18 +371,14 @@ fn load_own_profile(ctx: &AppContext) {
                 .as_deref()
                 .filter(|url| !url.trim().is_empty())
                 .and_then(|_| load_profile_avatar_bytes(client, &current.id));
-            let persisted = refresh_local_account(&accounts, &current);
-            Ok((current, fields, persisted, avatar_bytes))
+            Ok((current, fields, avatar_bytes))
         },
         move |window, result| match result {
-            Ok((current, fields, persisted, avatar_bytes)) => {
-                if !context
-                    .active_session()
-                    .is_some_and(|session| session.account.id == expected_account_id)
-                {
+            Ok((current, fields, avatar_bytes)) => {
+                if !same_settings_session(&context, &expected_session) {
                     return;
                 }
-                if let Err(error) = persisted {
+                if let Err(error) = refresh_local_account(&accounts, &current) {
                     report_account_failure("refresh profile metadata", &error);
                 }
                 let avatar_image = avatar_bytes
@@ -520,6 +567,10 @@ fn status_custom_ttl(expires_at: Option<i64>) -> i32 {
 }
 
 fn load_accounts(ctx: &AppContext) {
+    load_accounts_with_error(ctx, None);
+}
+
+fn load_accounts_with_error(ctx: &AppContext, removal_error: Option<String>) {
     ctx.apply_ui(|window| {
         window.set_settings_accounts_busy(true);
         window.set_settings_accounts_error_text(SharedString::default());
@@ -529,15 +580,18 @@ fn load_accounts(ctx: &AppContext) {
     let result = thread::Builder::new()
         .name("friendshub-settings-accounts-load".to_owned())
         .spawn(move || {
-            let result = accounts.load();
+            let result = accounts.load().and_then(|manifest| {
+                accounts.pending_removals().map(|pending| (manifest, pending))
+            });
             context.apply_ui(move |window| {
                 match result {
-                    Ok(manifest) => {
+                    Ok((manifest, pending)) => {
                         let active_id = manifest.active_id.unwrap_or_default();
                         let rows = manifest
                             .accounts
                             .into_iter()
                             .map(|account| SettingsAccount {
+                                pending_removal: pending.iter().any(|entry| entry.id == account.id),
                                 id: account.id.into(),
                                 username: account.username.into(),
                                 fh_number: account.fh_number.into(),
@@ -547,12 +601,21 @@ fn load_accounts(ctx: &AppContext) {
                             .collect();
                         window.set_settings_accounts(model(rows));
                         window.set_settings_active_account_id(active_id.into());
-                        window.set_settings_accounts_error_text(SharedString::default());
+                        window.set_settings_accounts_error_text(if pending.is_empty() {
+                            SharedString::default()
+                        } else if window.get_language() == "ru" {
+                            "Удаление некоторых аккаунтов не завершено. Повторите очистку; эти аккаунты недоступны для входа.".into()
+                        } else {
+                            "Some local account removals are unfinished. Retry cleanup; these accounts cannot be opened.".into()
+                        });
                     }
                     Err(error) => {
                         report_account_failure("load local accounts", &error);
                         window.set_settings_accounts_error_text(error.to_string().into());
                     }
+                }
+                if let Some(error) = removal_error {
+                    window.set_settings_accounts_error_text(error.into());
                 }
                 window.set_settings_accounts_busy(false);
             });
@@ -569,17 +632,21 @@ fn load_accounts(ctx: &AppContext) {
 }
 
 fn load_about(ctx: &AppContext) {
+    ABOUT_UPDATE_GENERATION.fetch_add(1, Ordering::SeqCst);
     ctx.apply_ui(|window| {
         window.set_about_app_version(env!("CARGO_PKG_VERSION").into());
         window.set_about_repository_url(WEB_REPOSITORY_URL.into());
         window.set_about_native_releases_url(NATIVE_RELEASES_URL.into());
         window.set_about_core_repository_url(CORE_REPOSITORY_URL.into());
-        window.set_about_updater_supported(false);
+        window.set_about_updater_supported(true);
         window.set_about_update_busy(false);
         window.set_about_busy(false);
-        window.set_about_update_status(
-            "Автоматическая проверка обновлений для нативного клиента не подключена.".into(),
-        );
+        window.set_about_update_status(if window.get_language() == "ru" {
+            "Проверьте наличие новой версии. Загрузка выполняется вручную со страницы релизов."
+                .into()
+        } else {
+            "Check for a newer version. Download it manually from the releases page.".into()
+        });
     });
 }
 
@@ -806,16 +873,13 @@ fn load_security(ctx: &AppContext) {
         window.set_security_session_error(SharedString::default());
         window.set_security_device_error(SharedString::default());
         window.set_security_events_error(SharedString::default());
-        window.set_security_history_error(
-            "Перенос и загрузка истории пока не поддерживаются нативным клиентом.".into(),
-        );
+        window.set_security_history_error(SharedString::default());
         window.set_security_history_progress(SharedString::default());
         window.set_security_history_page_result(SharedString::default());
-        window.set_security_device_policy_hint(
-            "Перенос истории с другого устройства пока недоступен в нативном клиенте.".into(),
-        );
+        window.set_security_history_has_older_history(false);
+        window.set_security_device_policy_hint(SharedString::default());
     });
-    dispatch_core_completion(
+    let started = dispatch_core_completion(
         ctx,
         "load security settings",
         move |client| {
@@ -865,7 +929,7 @@ fn load_security(ctx: &AppContext) {
                             let is_current = device.device_number == current_device_number;
                             if !is_current {
                                 source_options.push(SettingsOption {
-                                    value: device.id.clone().into(),
+                                    value: device.device_number.to_string().into(),
                                     label: format!("{} · №{}", device.name, device.device_number)
                                         .into(),
                                 });
@@ -935,6 +999,7 @@ fn load_security(ctx: &AppContext) {
                 Ok(items) => {
                     let options = items
                         .into_iter()
+                        .filter(|conversation| conversation.kind != "channel")
                         .map(|conversation| SettingsOption {
                             value: conversation.id.clone().into(),
                             label: conversation
@@ -970,6 +1035,14 @@ fn load_security(ctx: &AppContext) {
             }
         },
     );
+    if !started {
+        ctx.apply_ui(|window| {
+            window.set_security_busy(false);
+            window.set_security_session_error(
+                "Не удалось запустить загрузку настроек безопасности.".into(),
+            );
+        });
+    }
 }
 
 fn format_security_timestamp(timestamp: i64) -> String {
@@ -1089,9 +1162,20 @@ fn handle_profile(ctx: &AppContext, action: &str, arg1: &str, _arg2: &str, _arg3
             });
             true
         }
-        // Avatar viewing/sharing require adapters that are not installed.
         "message" => open_profile_conversation(ctx),
-        "share" | "avatar-open" => false,
+        "share" => {
+            let Some(window) = ctx.ui.upgrade() else {
+                return false;
+            };
+            let feedback = clipboard_feedback(&window, arg1);
+            if window.get_screen() == "profile" && !window.get_user_profile_open() {
+                window.set_profile_copy_status_text(feedback);
+            } else {
+                window.set_user_profile_error_text(feedback);
+            }
+            true
+        }
+        "avatar-open" => false,
         _ => false,
     }
 }
@@ -1626,9 +1710,18 @@ fn handle_account_settings(
             }
             true
         }
-        // Avatar choosing and clipboard access require platform adapters that
-        // are not wired in this application yet.
-        "choose-avatar" | "copy-fh-number" => false,
+        "copy-fh-number" => {
+            let Some(window) = ctx.ui.upgrade() else {
+                return false;
+            };
+            if window.get_screen() != "settings_account" {
+                return false;
+            }
+            let fh_number = window.get_account_fh_number();
+            window.set_settings_account_error_text(clipboard_feedback(&window, fh_number.as_str()));
+            true
+        }
+        "choose-avatar" => choose_own_avatar(ctx),
         _ => false,
     }
 }
@@ -1773,6 +1866,251 @@ fn remove_own_avatar(ctx: &AppContext) -> bool {
             }
         },
     )
+}
+
+fn choose_own_avatar(ctx: &AppContext) -> bool {
+    let Some(window) = ctx.ui.upgrade() else {
+        return false;
+    };
+    if window.get_screen() != "settings_account" {
+        return false;
+    }
+    if window.get_settings_account_busy() {
+        return true;
+    }
+    let Some(session) = ctx.active_session() else {
+        return false;
+    };
+
+    let generation = AVATAR_UPLOAD_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+    let expected_session = session.clone();
+    let picker_context = ctx.clone();
+    let language = window.get_language();
+    window.set_settings_account_busy(true);
+    window.set_settings_account_error_text(SharedString::default());
+
+    let request = PickRequest {
+        mode: SelectionMode::Single,
+        filters: vec![ExtensionFilter {
+            label: if language == "ru" {
+                "Изображение WebP".to_owned()
+            } else {
+                "WebP image".to_owned()
+            },
+            extensions: vec!["webp".to_owned()],
+        }],
+        cache_dir: ctx.data_dir.join("cache").join("selected-avatars"),
+        title: Some(
+            if language == "ru" {
+                "Выберите аватар WebP"
+            } else {
+                "Choose a WebP avatar"
+            }
+            .to_owned(),
+        ),
+    };
+
+    let picker_result = crate::platform::file_picker::pick_files(request, move |result| {
+        let completion_context = picker_context.clone();
+        picker_context.apply_ui(move |window| {
+            if !same_settings_session(&completion_context, &expected_session)
+                || AVATAR_UPLOAD_GENERATION.load(Ordering::SeqCst) != generation
+            {
+                return;
+            }
+
+            let picked_file = match result {
+                Ok(PickOutcome::Cancelled) => {
+                    window.set_settings_account_busy(false);
+                    return;
+                }
+                Ok(PickOutcome::Selected(mut files)) if files.len() == 1 => files.remove(0),
+                Ok(PickOutcome::Selected(_)) => {
+                    window.set_settings_account_busy(false);
+                    window.set_settings_account_error_text(
+                        if window.get_language() == "ru" {
+                            "Выберите один файл WebP размером не более 5 МиБ."
+                        } else {
+                            "Choose one WebP file no larger than 5 MiB."
+                        }
+                        .into(),
+                    );
+                    return;
+                }
+                Err(error) => {
+                    window.set_settings_account_busy(false);
+                    window.set_settings_account_error_text(
+                        avatar_picker_error_message(&error, window.get_language() == "ru").into(),
+                    );
+                    return;
+                }
+            };
+
+            if let Err(message) = validate_avatar_selection(&picked_file) {
+                window.set_settings_account_busy(false);
+                window.set_settings_account_error_text(
+                    if window.get_language() == "ru" {
+                        message.0
+                    } else {
+                        message.1
+                    }
+                    .into(),
+                );
+                return;
+            }
+            let Some(file_path) = picked_file.path().to_str().map(str::to_owned) else {
+                window.set_settings_account_busy(false);
+                window.set_settings_account_error_text(
+                    if window.get_language() == "ru" {
+                        "Не удалось прочитать путь к выбранному файлу."
+                    } else {
+                        "The selected file path could not be read."
+                    }
+                    .into(),
+                );
+                return;
+            };
+
+            let upload_context = completion_context.clone();
+            let upload_session = expected_session.clone();
+            let upload_generation = generation;
+            let result = call_client(
+                expected_session.core.clone(),
+                upload_context.ui.clone(),
+                "friendshub-settings-avatar-upload",
+                move |client| {
+                    // `PickedFile` owns the temporary copy. Keep it alive until
+                    // the core has read and uploaded the complete file.
+                    let _picked_file = picked_file;
+                    profile::upload_own_avatar(client, &file_path)
+                },
+                move |window, result| {
+                    if !same_settings_session(&upload_context, &upload_session)
+                        || AVATAR_UPLOAD_GENERATION.load(Ordering::SeqCst) != upload_generation
+                    {
+                        return;
+                    }
+                    window.set_settings_account_busy(false);
+                    match result {
+                        Ok(response) if !response.avatar_url.trim().is_empty() => {
+                            window.set_settings_account_error_text(SharedString::default());
+                            load_own_profile(&upload_context);
+                        }
+                        Ok(_) => {
+                            window.set_settings_account_error_text(
+                                if window.get_language() == "ru" {
+                                    "Сервер не подтвердил загрузку аватара."
+                                } else {
+                                    "The server did not confirm the avatar upload."
+                                }
+                                .into(),
+                            );
+                        }
+                        Err(error) => {
+                            window.set_settings_account_error_text(error.user_message().into());
+                            report_core_failure("upload own avatar", error);
+                        }
+                    }
+                },
+            );
+            if let Err(error) = result {
+                if same_settings_session(&completion_context, &expected_session)
+                    && AVATAR_UPLOAD_GENERATION.load(Ordering::SeqCst) == generation
+                {
+                    window.set_settings_account_busy(false);
+                    window.set_settings_account_error_text(
+                        if window.get_language() == "ru" {
+                            "Не удалось запустить загрузку аватара."
+                        } else {
+                            "Could not start the avatar upload."
+                        }
+                        .into(),
+                    );
+                }
+                report_dispatch_failure("upload own avatar", error);
+            }
+        });
+    });
+
+    if let Err(error) = picker_result {
+        if same_settings_session(ctx, &session)
+            && AVATAR_UPLOAD_GENERATION.load(Ordering::SeqCst) == generation
+        {
+            window.set_settings_account_busy(false);
+            window.set_settings_account_error_text(
+                avatar_picker_error_message(&error, window.get_language() == "ru").into(),
+            );
+        }
+        return false;
+    }
+    true
+}
+
+fn validate_avatar_selection(file: &PickedFile) -> Result<(), (&'static str, &'static str)> {
+    if file.size_bytes() == 0 {
+        return Err(("Файл аватара пуст.", "The avatar file is empty."));
+    }
+    if file.size_bytes() > MAX_PROFILE_AVATAR_BYTES as u64 {
+        return Err((
+            "Размер аватара не должен превышать 5 МиБ.",
+            "The avatar file must not exceed 5 MiB.",
+        ));
+    }
+    let has_webp_extension = file
+        .file_name()
+        .to_str()
+        .and_then(|name| Path::new(name).extension())
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("webp"));
+    if !has_webp_extension {
+        return Err((
+            "Поддерживается только файл изображения WebP.",
+            "Only WebP image files are supported.",
+        ));
+    }
+
+    let mut signature = [0_u8; 12];
+    File::open(file.path())
+        .and_then(|mut file| file.read_exact(&mut signature))
+        .map_err(|_| {
+            (
+                "Не удалось прочитать выбранное изображение.",
+                "The selected image could not be read.",
+            )
+        })?;
+    if &signature[..4] != b"RIFF" || &signature[8..12] != b"WEBP" {
+        return Err((
+            "Файл не является изображением WebP.",
+            "The selected file is not a WebP image.",
+        ));
+    }
+    Ok(())
+}
+
+fn avatar_picker_error_message(error: &PickerError, russian: bool) -> &'static str {
+    match error {
+        PickerError::MissingActivityResultHook => {
+            if russian {
+                "На Android пока недоступен выбор файла: приложение не получает результат системного окна."
+            } else {
+                "File selection is not available on Android yet because the app cannot receive the system picker result."
+            }
+        }
+        PickerError::Busy => {
+            if russian {
+                "Дождитесь завершения текущего выбора файла."
+            } else {
+                "Wait for the current file selection to finish."
+            }
+        }
+        _ => {
+            if russian {
+                "Не удалось открыть окно выбора аватара."
+            } else {
+                "Could not open the avatar file picker."
+            }
+        }
+    }
 }
 
 fn update_username(ctx: &AppContext, value: &str) -> bool {
@@ -1943,20 +2281,64 @@ fn save_profile_fields(ctx: &AppContext) -> bool {
 }
 
 fn clear_custom_status(ctx: &AppContext) -> bool {
-    ctx.apply_ui(|window| window.set_settings_account_busy(true));
+    let Some(window) = ctx.ui.upgrade() else {
+        return false;
+    };
+    if window.get_settings_account_busy() {
+        return true;
+    }
+    let Some(session) = ctx.active_session() else {
+        return false;
+    };
+    if !same_settings_session(ctx, &session) {
+        return false;
+    }
+    window.set_settings_account_busy(true);
+    window.set_settings_account_error_text(SharedString::default());
     let context = ctx.clone();
-    dispatch_core_completion(
-        ctx,
-        "clear custom status",
+    let session_for_completion = session.clone();
+    let session_core = session.core.clone();
+    let session_for_spawn_error = session;
+    let result = call_client(
+        session_core,
+        ctx.ui.clone(),
+        operation_thread_name("clear custom status"),
         profile::clear_custom_status,
         move |window, result| {
+            if !same_settings_session(&context, &session_for_completion) {
+                return;
+            }
             window.set_settings_account_busy(false);
             match result {
-                Ok(_) => load_own_profile(&context),
-                Err(error) => report_core_failure("clear custom status", error),
+                Ok(_) => {
+                    window.set_settings_account_error_text(SharedString::default());
+                    load_own_profile(&context);
+                }
+                Err(error) => {
+                    window.set_settings_account_error_text(error.user_message().into());
+                    report_core_failure("clear custom status", error);
+                }
             }
         },
-    )
+    );
+    match result {
+        Ok(_) => true,
+        Err(error) => {
+            if same_settings_session(ctx, &session_for_spawn_error) {
+                window.set_settings_account_busy(false);
+                window.set_settings_account_error_text(error.to_string().into());
+            }
+            report_dispatch_failure("clear custom status", error);
+            false
+        }
+    }
+}
+
+fn same_settings_session(ctx: &AppContext, expected: &ActiveSession) -> bool {
+    ctx.active_session().is_some_and(|session| {
+        session.account.id == expected.account.id
+            && std::sync::Arc::ptr_eq(&session.core, &expected.core)
+    })
 }
 
 fn update_active_username(
@@ -2008,10 +2390,26 @@ fn valid_username(username: &str) -> bool {
 }
 
 fn save_custom_status(ctx: &AppContext, text: &str, emoji: &str, ttl_seconds: &str) -> bool {
+    let Some(window) = ctx.ui.upgrade() else {
+        return false;
+    };
+    if window.get_settings_account_busy() {
+        return true;
+    }
+    if text.trim().is_empty() {
+        window.set_settings_account_error_text("Укажите текст статуса.".into());
+        return true;
+    }
     let Ok(ttl_seconds) = ttl_seconds.parse::<i64>() else {
         return false;
     };
     if ttl_seconds != 0 && !(60..=MAX_STATUS_TTL_SECONDS).contains(&ttl_seconds) {
+        return false;
+    }
+    let Some(session) = ctx.active_session() else {
+        return false;
+    };
+    if !same_settings_session(ctx, &session) {
         return false;
     }
     let request = profile::UpdateCustomStatusRequest {
@@ -2019,21 +2417,50 @@ fn save_custom_status(ctx: &AppContext, text: &str, emoji: &str, ttl_seconds: &s
         emoji: Some(emoji.to_owned()),
         ttl_seconds: (ttl_seconds > 0).then_some(ttl_seconds),
     };
-    ctx.apply_ui(|window| window.set_settings_account_busy(true));
+    window.set_settings_account_busy(true);
+    window.set_settings_account_error_text(SharedString::default());
     let context = ctx.clone();
-    dispatch_core_completion(
-        ctx,
-        "update custom status",
+    let session_for_completion = session.clone();
+    let session_core = session.core.clone();
+    let session_for_spawn_error = session;
+    let result = call_client(
+        session_core,
+        ctx.ui.clone(),
+        operation_thread_name("update custom status"),
         move |client| profile::update_custom_status(client, &request),
         move |window, result| {
+            if !same_settings_session(&context, &session_for_completion) {
+                return;
+            }
             window.set_settings_account_busy(false);
             match result {
-                Ok(response) if response.updated => load_own_profile(&context),
-                Ok(_) => {}
-                Err(error) => report_core_failure("update custom status", error),
+                Ok(response) if response.updated => {
+                    window.set_settings_account_error_text(SharedString::default());
+                    load_own_profile(&context);
+                }
+                Ok(_) => {
+                    window.set_settings_account_error_text(
+                        "Сервер не подтвердил изменение статуса.".into(),
+                    );
+                }
+                Err(error) => {
+                    window.set_settings_account_error_text(error.user_message().into());
+                    report_core_failure("update custom status", error);
+                }
             }
         },
-    )
+    );
+    match result {
+        Ok(_) => true,
+        Err(error) => {
+            if same_settings_session(ctx, &session_for_spawn_error) {
+                window.set_settings_account_busy(false);
+                window.set_settings_account_error_text(error.to_string().into());
+            }
+            report_dispatch_failure("update custom status", error);
+            false
+        }
+    }
 }
 
 fn handle_appearance(ctx: &AppContext, action: &str, value: &str) -> bool {
@@ -2071,15 +2498,49 @@ fn handle_appearance(ctx: &AppContext, action: &str, value: &str) -> bool {
             }
         }
         "edit-color" => {
-            if let Some(window) = ctx.ui.upgrade() {
-                if let Some((background, _, _, text)) = read_rgb_draft(&window) {
-                    window.set_appearance_contrast_score(contrast_score(background, text));
-                    true
-                } else {
-                    window.set_appearance_contrast_score(0);
-                    false
+            let Some(window) = ctx.ui.upgrade() else {
+                return false;
+            };
+            let channels = [
+                (
+                    window.get_appearance_background_r(),
+                    window.get_appearance_background_g(),
+                    window.get_appearance_background_b(),
+                ),
+                (
+                    window.get_appearance_button_r(),
+                    window.get_appearance_button_g(),
+                    window.get_appearance_button_b(),
+                ),
+                (
+                    window.get_appearance_bubble_r(),
+                    window.get_appearance_bubble_g(),
+                    window.get_appearance_bubble_b(),
+                ),
+                (
+                    window.get_appearance_text_r(),
+                    window.get_appearance_text_g(),
+                    window.get_appearance_text_b(),
+                ),
+            ];
+            for (index, (red, green, blue)) in channels.into_iter().enumerate() {
+                if let (Some(red), Some(green), Some(blue)) =
+                    (parse_rgb(&red), parse_rgb(&green), parse_rgb(&blue))
+                {
+                    let color = rgb_color([red, green, blue]);
+                    match index {
+                        0 => window.set_appearance_background_preview(color),
+                        1 => window.set_appearance_button_preview(color),
+                        2 => window.set_appearance_bubble_preview(color),
+                        _ => window.set_appearance_text_preview(color),
+                    }
                 }
+            }
+            if let Some((background, _, _, text)) = read_rgb_draft(&window) {
+                window.set_appearance_contrast_score(contrast_score(background, text));
+                true
             } else {
+                window.set_appearance_contrast_score(0);
                 false
             }
         }
@@ -2124,8 +2585,7 @@ fn handle_appearance(ctx: &AppContext, action: &str, value: &str) -> bool {
                 false
             }
         },
-        // No native color-picker adapter is installed.
-        "choose-color" => false,
+
         _ => false,
     }
 }
@@ -2292,7 +2752,7 @@ fn handle_privacy(ctx: &AppContext, action: &str, arg1: &str, arg2: &str) -> boo
     }
 }
 
-fn handle_security(ctx: &AppContext, action: &str, id: &str, _arg2: &str) -> bool {
+fn handle_security(ctx: &AppContext, action: &str, id: &str, arg2: &str) -> bool {
     match action {
         "revoke-session" => {
             if id.trim().is_empty() {
@@ -2315,15 +2775,8 @@ fn handle_security(ctx: &AppContext, action: &str, id: &str, _arg2: &str) -> boo
                 profile::revoke_device(client, &request)
             })
         }
-        "history-sync" | "request-history-sync" | "load-history" | "load-device-history" => {
-            ctx.apply_ui(|window| {
-                window.set_security_history_error(
-                    "Перенос и загрузка истории не реализованы в нативном клиенте.".into(),
-                );
-                window.set_security_history_progress(SharedString::default());
-            });
-            true
-        }
+        "history-sync" | "request-history-sync" => request_history_sync(ctx, id),
+        "load-history" | "load-device-history" => load_device_history_page(ctx, id, arg2 == "true"),
         "select-history-source" => {
             let selected = id.to_owned();
             ctx.apply_ui(move |window| window.set_security_history_source_device(selected.into()));
@@ -2345,54 +2798,215 @@ fn handle_security(ctx: &AppContext, action: &str, id: &str, _arg2: &str) -> boo
     }
 }
 
+fn request_history_sync(ctx: &AppContext, source_device: &str) -> bool {
+    let Some(session) = ctx.active_session() else {
+        return false;
+    };
+    let Ok(target_device_number) = source_device.parse::<i64>() else {
+        ctx.apply_ui(|window| {
+            window.set_security_history_error("Выберите устройство-источник истории.".into());
+        });
+        return false;
+    };
+    if target_device_number <= 0 || target_device_number == session.account.device_number {
+        ctx.apply_ui(|window| {
+            window.set_security_history_error(
+                "Устройство-источник должно быть другим активным устройством аккаунта.".into(),
+            );
+        });
+        return false;
+    }
+    ctx.apply_ui(|window| {
+        window.set_security_busy(true);
+        window.set_security_history_error(SharedString::default());
+        window.set_security_history_progress("Отправляем запрос устройству-источнику…".into());
+    });
+    let started = dispatch_core_completion(
+        ctx,
+        "request history from device",
+        move |client| {
+            let syncable = conversations::list(client)?
+                .into_iter()
+                .filter(|conversation| conversation.kind != "channel")
+                .map(|conversation| conversation.id)
+                .collect::<Vec<_>>();
+            if syncable.is_empty() {
+                return Ok(0usize);
+            }
+            let mut requests = 0usize;
+            for ids in syncable.chunks(200) {
+                history_sync::request_from_device(client, target_device_number, ids)?;
+                requests = requests.saturating_add(1);
+            }
+            Ok(requests)
+        },
+        move |window, result| {
+            window.set_security_busy(false);
+            match result {
+                Ok(0) => window.set_security_history_progress(
+                    "Нет бесед, историю которых можно перенести.".into(),
+                ),
+                Ok(count) => window.set_security_history_progress(
+                    format!(
+                        "Запрос отправлен ({count} частей). Оставьте оба устройства онлайн; полученные сообщения появятся в беседах."
+                    )
+                    .into(),
+                ),
+                Err(error) => {
+                    window.set_security_history_error(error.user_message().into());
+                    window.set_security_history_progress(SharedString::default());
+                }
+            }
+        },
+    );
+    if !started {
+        ctx.apply_ui(|window| {
+            window.set_security_busy(false);
+            window.set_security_history_error("Не удалось отправить запрос истории.".into());
+            window.set_security_history_progress(SharedString::default());
+        });
+    }
+    started
+}
+
+fn load_device_history_page(ctx: &AppContext, conversation_id: &str, older: bool) -> bool {
+    if ctx.active_session().is_none() {
+        return false;
+    }
+    if conversation_id.trim().is_empty() {
+        ctx.apply_ui(|window| {
+            window.set_security_history_error("Выберите беседу для загрузки истории.".into());
+        });
+        return false;
+    }
+    let conversation_id = conversation_id.to_owned();
+    let context = ctx.clone();
+    ctx.apply_ui(|window| {
+        window.set_security_busy(true);
+        window.set_security_history_error(SharedString::default());
+        window.set_security_history_page_result("Загружаем страницу истории…".into());
+    });
+    let started = dispatch_core_completion(
+        ctx,
+        "load device history page",
+        move |client| history_sync::load_local_page(client, &conversation_id, older),
+        move |window, result| {
+            window.set_security_busy(false);
+            match result {
+                Ok(page) => {
+                    window.set_security_history_has_older_history(page.has_older);
+                    window.set_security_history_page_result(
+                        format!(
+                            "Сохранено в защищённой базе: {} сообщений.{}",
+                            page.messages_imported,
+                            if page.has_older {
+                                " Можно загрузить более ранние."
+                            } else {
+                                " Более ранних страниц нет."
+                            }
+                        )
+                        .into(),
+                    );
+                    let window_route = window.get_route().to_string();
+                    if window_route.starts_with("/app/chat/") {
+                        super::chat::load(&context, &window_route);
+                    }
+                }
+                Err(error) => {
+                    window.set_security_history_page_result(SharedString::default());
+                    window.set_security_history_error(error.user_message().into());
+                }
+            }
+        },
+    );
+    if !started {
+        ctx.apply_ui(|window| {
+            window.set_security_busy(false);
+            window.set_security_history_page_result(SharedString::default());
+            window.set_security_history_error("Не удалось загрузить страницу истории.".into());
+        });
+    }
+    started
+}
+
+/// Invalidate secret-bearing work before clearing account-bound UI state.
+/// Call on the UI thread only after the session transition succeeds.
+pub(super) fn clear_account_transients(window: &MainWindow) {
+    clear_twofactor_flow(window);
+    window.set_profile_copy_status_text(SharedString::default());
+    BOT_TOKEN_GENERATION.fetch_add(1, Ordering::SeqCst);
+    window.set_settings_bots_token_secret(SharedString::default());
+    window.set_settings_bots_token_revealed(false);
+    window.set_settings_bots_busy(false);
+    window.set_settings_bots_error_text(SharedString::default());
+}
+
+fn clear_twofactor_flow(window: &MainWindow) {
+    TWOFACTOR_FLOW_GENERATION.fetch_add(1, Ordering::SeqCst);
+    window.set_twofactor_setup_secret_base32(SharedString::default());
+    window.set_twofactor_setup_otpauth_uri(SharedString::default());
+    window.set_twofactor_setup_qr_image(slint::Image::default());
+    window.set_twofactor_setup_has_qr_image(false);
+    window.set_twofactor_setup_backup_codes(model(Vec::new()));
+    window.set_twofactor_setup_show_backup_codes(false);
+    window.set_twofactor_setup_verify_code(SharedString::default());
+    window.set_twofactor_setup_disable_password(SharedString::default());
+    window.set_twofactor_setup_disable_code(SharedString::default());
+    window.set_twofactor_setup_enrollment_started(false);
+    window.set_twofactor_setup_busy(false);
+    window.set_twofactor_setup_error_text(SharedString::default());
+}
+
 fn handle_twofactor(ctx: &AppContext, action: &str, arg1: &str, arg2: &str) -> bool {
     match action {
         "start" => start_twofactor_enrollment(ctx),
         "verify" => verify_twofactor_enrollment(ctx, arg1),
         "disable" => disable_twofactor(ctx, arg1, arg2),
         "dismiss-codes" => {
-            ctx.apply_ui(|window| {
-                window.set_twofactor_setup_show_backup_codes(false);
-                window.set_twofactor_setup_backup_codes(model(Vec::new()));
-                window.set_twofactor_setup_secret_base32(SharedString::default());
-                window.set_twofactor_setup_otpauth_uri(SharedString::default());
-                window.set_twofactor_setup_enrollment_started(false);
-                window.set_twofactor_setup_error_text(SharedString::default());
-            });
+            if let Some(window) = ctx.ui.upgrade() {
+                clear_twofactor_flow(&window);
+            }
             true
         }
-        "copy-uri" => {
-            ctx.apply_ui(|window| {
-                window.set_twofactor_setup_error_text(
-                    "Буфер обмена недоступен в нативном клиенте; введите ключ вручную.".into(),
-                );
-            });
+        "copy-uri" | "copy-otpauth-uri" => {
+            let Some(window) = ctx.ui.upgrade() else {
+                return false;
+            };
+            if window.get_screen() != "settings_twofactor" {
+                return false;
+            }
+            let uri = window.get_twofactor_setup_otpauth_uri();
+            window.set_twofactor_setup_error_text(clipboard_feedback(&window, uri.as_str()));
             true
         }
         // The backup-code UI emits a dedicated root callback handled during
         // initialize(); other copy actions reach this routed callback.
-        "copy-otpauth-uri" | "copy-backup-codes" => false,
+        "copy-backup-codes" => ctx
+            .ui
+            .upgrade()
+            .is_some_and(|window| copy_twofactor_backup_codes(&window)),
         _ => false,
     }
 }
 
 fn start_twofactor_enrollment(ctx: &AppContext) -> bool {
-    ctx.apply_ui(|window| {
-        window.set_twofactor_setup_busy(true);
-        window.set_twofactor_setup_error_text(SharedString::default());
-        window.set_twofactor_setup_secret_base32(SharedString::default());
-        window.set_twofactor_setup_otpauth_uri(SharedString::default());
-        window.set_twofactor_setup_has_qr_image(false);
-        window.set_twofactor_setup_qr_image(slint::Image::default());
-        window.set_twofactor_setup_enrollment_started(false);
-        window.set_twofactor_setup_show_backup_codes(false);
-        window.set_twofactor_setup_backup_codes(model(Vec::new()));
-    });
+    if ctx.active_session().is_none() {
+        return false;
+    }
+    let Some(window) = ctx.ui.upgrade() else {
+        return false;
+    };
+    clear_twofactor_flow(&window);
+    let generation = TWOFACTOR_FLOW_GENERATION.load(Ordering::SeqCst);
+    window.set_twofactor_setup_busy(true);
     dispatch_core_completion(
         ctx,
         "start two-factor enrollment",
         auth::twofa_enroll,
-        |window, result| {
+        move |window, result| {
+            if TWOFACTOR_FLOW_GENERATION.load(Ordering::SeqCst) != generation {
+                return;
+            }
             window.set_twofactor_setup_busy(false);
             match result {
                 Ok(enrollment) => {
@@ -2471,16 +3085,18 @@ fn verify_twofactor_enrollment(ctx: &AppContext, code: &str) -> bool {
     let Some(session) = ctx.active_session() else {
         return false;
     };
+    let generation = TWOFACTOR_FLOW_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+    let expected_session = session.clone();
     let accounts = ctx.accounts.clone();
     let account_id = session.account.id.clone();
     let completion_id = account_id.clone();
     let account_core = session.core.clone();
     let context = ctx.clone();
     let code = code.to_owned();
-    ctx.apply_ui(|window| {
+    if let Some(window) = ctx.ui.upgrade() {
         window.set_twofactor_setup_busy(true);
         window.set_twofactor_setup_error_text(SharedString::default());
-    });
+    }
     dispatch_core_completion(
         ctx,
         "verify two-factor enrollment",
@@ -2490,6 +3106,11 @@ fn verify_twofactor_enrollment(ctx: &AppContext, code: &str) -> bool {
             Ok((verified, persisted))
         },
         move |window, result| {
+            if TWOFACTOR_FLOW_GENERATION.load(Ordering::SeqCst) != generation
+                || !same_settings_session(&context, &expected_session)
+            {
+                return;
+            }
             window.set_twofactor_setup_busy(false);
             match result {
                 Ok((verified, persisted)) => {
@@ -2502,6 +3123,10 @@ fn verify_twofactor_enrollment(ctx: &AppContext, code: &str) -> bool {
                         window.set_twofactor_setup_error_text(SharedString::default());
                     }
                     update_active_totp(&context, &completion_id, account_core, true);
+                    window.set_twofactor_setup_secret_base32(SharedString::default());
+                    window.set_twofactor_setup_otpauth_uri(SharedString::default());
+                    window.set_twofactor_setup_qr_image(slint::Image::default());
+                    window.set_twofactor_setup_has_qr_image(false);
                     window.set_twofactor_setup_enabled(true);
                     window.set_twofactor_setup_enrollment_started(false);
                     window.set_twofactor_setup_show_backup_codes(true);
@@ -2531,6 +3156,8 @@ fn disable_twofactor(ctx: &AppContext, password: &str, code: &str) -> bool {
     let Some(session) = ctx.active_session() else {
         return false;
     };
+    let generation = TWOFACTOR_FLOW_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+    let expected_session = session.clone();
     let account_id = session.account.id.clone();
     let call_account_id = account_id.clone();
     let accounts = ctx.accounts.clone();
@@ -2538,10 +3165,10 @@ fn disable_twofactor(ctx: &AppContext, password: &str, code: &str) -> bool {
     let password = password.to_owned();
     let code = code.to_owned();
     let core = session.core.clone();
-    ctx.apply_ui(|window| {
+    if let Some(window) = ctx.ui.upgrade() {
         window.set_twofactor_setup_busy(true);
         window.set_twofactor_setup_error_text(SharedString::default());
-    });
+    }
     let result = call_client(
         core.clone(),
         ctx.ui.clone(),
@@ -2556,9 +3183,17 @@ fn disable_twofactor(ctx: &AppContext, password: &str, code: &str) -> bool {
             Ok((response, persisted))
         },
         move |window, result| {
+            if TWOFACTOR_FLOW_GENERATION.load(Ordering::SeqCst) != generation
+                || !same_settings_session(&context, &expected_session)
+            {
+                return;
+            }
             window.set_twofactor_setup_busy(false);
             match result {
                 Ok((response, persisted)) => {
+                    if response.disabled {
+                        clear_twofactor_flow(&window);
+                    }
                     if let Err(error) = persisted {
                         report_account_failure("save two-factor metadata", &error);
                         window.set_twofactor_setup_error_text(
@@ -2569,14 +3204,15 @@ fn disable_twofactor(ctx: &AppContext, password: &str, code: &str) -> bool {
                         update_active_totp(&context, &account_id, core, false);
                         window.set_twofactor_setup_enabled(false);
                         window.set_security_totp_enabled(false);
-                        window.set_twofactor_setup_show_backup_codes(false);
-                        window.set_twofactor_setup_backup_codes(model(Vec::new()));
-                        window.set_twofactor_setup_enrollment_started(false);
-                        window.set_twofactor_setup_secret_base32(SharedString::default());
-                        window.set_twofactor_setup_otpauth_uri(SharedString::default());
-                        window.set_twofactor_setup_verify_code(SharedString::default());
-                        window.set_twofactor_setup_disable_password(SharedString::default());
-                        window.set_twofactor_setup_disable_code(SharedString::default());
+                    } else {
+                        window.set_twofactor_setup_error_text(
+                            if window.get_language() == "ru" {
+                                "Не удалось отключить 2FA."
+                            } else {
+                                "Could not disable 2FA."
+                            }
+                            .into(),
+                        );
                     }
                 }
                 Err(error) => {
@@ -2588,7 +3224,23 @@ fn disable_twofactor(ctx: &AppContext, password: &str, code: &str) -> bool {
     );
     if let Err(error) = result {
         report_dispatch_failure("disable two-factor authentication", error);
-        ctx.apply_ui(|window| window.set_twofactor_setup_busy(false));
+        let context = ctx.clone();
+        let expected_session = session;
+        ctx.apply_ui(move |window| {
+            if same_settings_session(&context, &expected_session)
+                && TWOFACTOR_FLOW_GENERATION.load(Ordering::SeqCst) == generation
+            {
+                window.set_twofactor_setup_busy(false);
+                window.set_twofactor_setup_error_text(
+                    if window.get_language() == "ru" {
+                        "Не удалось запустить отключение 2FA."
+                    } else {
+                        "Could not start disabling 2FA."
+                    }
+                    .into(),
+                );
+            }
+        });
         false
     } else {
         true
@@ -2645,9 +3297,78 @@ fn handle_notifications(ctx: &AppContext, action: &str, value: &str) -> bool {
             }
             persist_preference(ctx, PreferenceChange::Sound(value.to_owned()))
         }
-        // System notification permission/settings and local sound preview do
-        // not have native adapters in this checkout.
-        "preview-sound" | "request-permission" | "open-system-settings" => false,
+        "preview-sound" => {
+            match notification_sound::preview(value, move |result| {
+                if let Err(error) = result {
+                    report_local_failure("preview notification sound", &error);
+                }
+            }) {
+                Ok(_) => true,
+                Err(error) => {
+                    report_local_failure("start notification sound preview", &error);
+                    false
+                }
+            }
+        }
+        "request-permission" => match notifications::request_permission() {
+            Ok(RequestOutcome::AlreadyGranted) => {
+                ctx.apply_ui(|window| {
+                    window.set_notifications_os_permission("granted".into());
+                    window.set_notifications_permission_request_supported(false);
+                });
+                true
+            }
+            Ok(RequestOutcome::Started) => {
+                ctx.apply_ui(|window| {
+                    window.set_notifications_os_permission("pending".into());
+                    window.set_notifications_permission_request_supported(false);
+                    window.set_notifications_push_status(if window.get_language() == "ru" {
+                        "Запрос отправлен. После ответа системы откройте этот раздел снова, чтобы проверить статус."
+                            .into()
+                    } else {
+                        "Request sent. Reopen this section after responding to the system prompt to check the status."
+                            .into()
+                    });
+                });
+                true
+            }
+            Err(error) => {
+                report_notification_failure("request system notification permission", &error);
+                ctx.apply_ui(|window| {
+                    window.set_notifications_push_status(if window.get_language() == "ru" {
+                        "Не удалось запросить разрешение системных уведомлений.".into()
+                    } else {
+                        "Could not request system notification permission.".into()
+                    });
+                });
+                true
+            }
+        },
+        "open-system-settings" => match notifications::open_system_settings() {
+            Ok(()) => {
+                ctx.apply_ui(|window| {
+                    window.set_notifications_push_status(if window.get_language() == "ru" {
+                        "После изменения разрешения откройте этот раздел снова, чтобы проверить статус."
+                            .into()
+                    } else {
+                        "After changing the permission, reopen this section to check the status."
+                            .into()
+                    });
+                });
+                true
+            }
+            Err(error) => {
+                report_notification_failure("open system notification settings", &error);
+                ctx.apply_ui(|window| {
+                    window.set_notifications_push_status(if window.get_language() == "ru" {
+                        "Не удалось открыть настройки системных уведомлений.".into()
+                    } else {
+                        "Could not open system notification settings.".into()
+                    });
+                });
+                true
+            }
+        },
         _ => false,
     }
 }
@@ -2668,24 +3389,164 @@ fn persist_preference(ctx: &AppContext, change: PreferenceChange) -> bool {
 fn handle_accounts(ctx: &AppContext, action: &str, id: &str) -> bool {
     match action {
         "switch" => switch_account(ctx, id),
-        // AccountStore removes only registry metadata. The current core has no
-        // account-database purge API, while the UI promises that local message
-        // and key data are deleted. Avoid reporting a partial removal as done.
-        "remove" => {
-            ctx.apply_ui(|window| {
-                window.set_settings_accounts_error_text(
-                    "Удаление аккаунта и связанных локальных ключей не поддерживается этим клиентом."
-                        .into(),
-                );
-            });
+        "remove" => remove_local_account(ctx, id),
+        "open-switcher" => {
+            super::navigate(ctx, "/app/settings/accounts");
             true
         }
-        "retry" | "load" | "open-switcher" => {
+        "retry" | "load" => {
             load_accounts(ctx);
             true
         }
         _ => false,
     }
+}
+
+/// Confirmed local-only removal. The marker survives failures/restarts and
+/// denies every future database open, while the lifetime DB lock protects
+/// clients retained by already-dispatched operations or another process.
+fn remove_local_account(ctx: &AppContext, id: &str) -> bool {
+    let Some(window) = ctx.ui.upgrade() else {
+        return false;
+    };
+    if window.get_screen() != "settings_accounts"
+        || id.is_empty()
+        || window.get_settings_accounts_busy()
+    {
+        return false;
+    }
+    window.set_settings_accounts_busy(true);
+    window.set_settings_busy_account_id(id.into());
+    window.set_settings_accounts_error_text(SharedString::default());
+    let context = ctx.clone();
+    let requested_id = id.to_owned();
+    let result = thread::Builder::new()
+        .name("friendshub-local-account-removal".to_owned())
+        .spawn(move || {
+            static REMOVAL_LOCK: Mutex<()> = Mutex::new(());
+            let result = (|| -> Result<(), String> {
+                let _guard = REMOVAL_LOCK.lock().map_err(|_| "Не удалось заблокировать локальную очистку. Повторите после перезапуска приложения.".to_owned())?;
+                let account = context.accounts.load().map_err(|error| format!("Не удалось прочитать список аккаунтов: {error}. Локальная очистка не запускалась."))?
+                    .accounts.into_iter().find(|account| account.id == requested_id)
+                    .ok_or_else(|| "Локальный аккаунт не найден. Обновите список аккаунтов.".to_owned())?;
+                let database = CoreClient::database_path(&context.data_dir, account.db_key());
+                let prepared = context.accounts.begin_removal(&requested_id);
+                // A marker rename can succeed before its directory sync fails.
+                // Retire clients even for that uncertain write, but do not
+                // erase data until begin_removal returns durable success.
+                let pending = context.accounts.is_pending_removal(&requested_id)
+                    .map_err(|error| format!("Не удалось проверить отметку удаления: {error}. Локальная очистка не запускалась."))?;
+                if pending {
+                    CoreClient::mark_removal(&database);
+                    let retired = context.retire_local_account(&requested_id).map_err(str::to_owned)?;
+                    if retired.is_some() {
+                        let ui_context = context.clone();
+                        context.apply_ui(move |window| {
+                            if ui_context.active_session().is_none() {
+                                clear_removed_account_ui(&window);
+                            }
+                        });
+                    }
+                    CoreClient::shutdown_database(&database).map_err(|_| "Не удалось закрыть все локальные клиенты аккаунта. Аккаунт недоступен; повторите очистку.".to_owned())?;
+                    // Keep the exact retired client alive until its explicit
+                    // shutdown barrier, avoiding best-effort Drop as a barrier.
+                    drop(retired);
+                    super::chat::forget_local_account(&requested_id);
+                    super::community::forget_local_account(&requested_id);
+                    super::media::forget_local_account(&requested_id);
+                    super::media::forget_local_attachment_cache(&context.data_dir, &requested_id)
+                        .map_err(|_| "Не удалось удалить локальный кеш скачанных вложений. Данные аккаунта остаются помеченными для повторной очистки.".to_owned())?;
+                }
+                prepared.map_err(|error| format!("Не удалось сохранить отметку удаления: {error}. Файлы и ключи не удалялись."))?;
+                CoreClient::remove_local_database(&database).map_err(|failure| {
+                    use friendshub_core::db::pool::LocalDatabaseRemovalError;
+                    match failure {
+                        LocalDatabaseRemovalError::InvalidPath | LocalDatabaseRemovalError::MissingMarker => "Путь базы или отметка удаления не прошли проверку. Данные не удалялись; повторите очистку.",
+                        LocalDatabaseRemovalError::LockUnavailable => "База ещё занята или недоступна для блокировки. Закройте другие экземпляры приложения и повторите очистку.",
+                        LocalDatabaseRemovalError::Files => "Не удалось удалить все файлы локальной базы. Проверьте доступ к каталогу приложения и повторите очистку.",
+                        LocalDatabaseRemovalError::SecureStore => "Не удалось удалить ключ базы из защищённого хранилища. Разблокируйте системное хранилище ключей и повторите очистку.",
+                    }.to_owned()
+                })?;
+                context.accounts.finish_removal(&requested_id)
+                    .map_err(|error| format!("Данные и ключ удалены, но не удалось завершить запись списка аккаунтов: {error}. Повторите очистку."))?;
+                Ok(())
+            })();
+            let completion = context.clone();
+            context.apply_ui(move |window| {
+                window.set_settings_accounts_busy(false);
+                window.set_settings_busy_account_id(SharedString::default());
+                match result {
+                    Ok(()) => {
+                        window.set_settings_accounts_error_text(SharedString::default());
+                        if completion.active_session().is_none() && completion.accounts.pending_removals().is_ok_and(|pending| pending.is_empty()) {
+                            clear_removed_account_ui(&window);
+                            super::navigate(&completion, "/login");
+                        } else {
+                            load_accounts(&completion);
+                        }
+                    }
+                    Err(error) => {
+                        load_accounts_with_error(&completion, Some(error));
+                    }
+                }
+            });
+        });
+    if let Err(error) = result {
+        report_dispatch_failure("remove local account", error);
+        window.set_settings_accounts_busy(false);
+        window.set_settings_busy_account_id(SharedString::default());
+        window.set_settings_accounts_error_text(
+            "Не удалось запустить локальную очистку. Данные не изменены; повторите попытку.".into(),
+        );
+        false
+    } else {
+        true
+    }
+}
+
+fn clear_removed_account_ui(window: &MainWindow) {
+    clear_account_transients(window);
+    window.set_authenticated(false);
+    window.set_account_username(SharedString::default());
+    window.set_account_fh_number(SharedString::default());
+    window.set_account_avatar(slint::Image::default());
+    window.set_has_account_avatar(false);
+    window.set_account_avatar_label(SharedString::default());
+    window.set_conversations(model(Vec::new()));
+    window.set_folders(model(Vec::new()));
+    window.set_selected_folder(SharedString::default());
+    window.set_selected_conversation_id(SharedString::default());
+    window.set_login_password(SharedString::default());
+    window.set_register_password(SharedString::default());
+    window.set_twofactor_code(SharedString::default());
+    window.set_messages(model(Vec::new()));
+    window.set_polls(model(Vec::new()));
+    window.set_chat_draft(SharedString::default());
+    window.set_chat_search_query(SharedString::default());
+    window.set_chat_search_results(model(Vec::new()));
+    window.set_scheduled_dialog_open(false);
+    window.set_scheduled_dialog_messages(model(Vec::new()));
+    window.set_schedule_create_dialog_open(false);
+    window.set_schedule_create_dialog_draft_preview(SharedString::default());
+    window.set_channel_posts(model(Vec::new()));
+    window.set_pinned_channel_posts(model(Vec::new()));
+    window.set_channel_draft(SharedString::default());
+    window.set_bot_messages(model(Vec::new()));
+    window.set_bot_draft(SharedString::default());
+    window.set_calls(model(Vec::new()));
+    window.set_calls_has_calls(false);
+    window.set_call_overlay_visible(false);
+    window.set_call_state("idle".into());
+    window.set_call_remote_video_frame(slint::Image::default());
+    window.set_call_local_video_frame(slint::Image::default());
+    window.set_profile_fields(model(Vec::new()));
+    window.set_settings_account_profile_fields(model(Vec::new()));
+    window.set_profile_avatar_image(slint::Image::default());
+    window.set_profile_has_avatar(false);
+    window.set_user_profile_fields(model(Vec::new()));
+    window.set_user_profile_avatar_image(slint::Image::default());
+    window.set_user_profile_has_avatar(false);
+    window.set_dating_results(model(Vec::new()));
 }
 
 fn handle_bots(ctx: &AppContext, action: &str, bot_id: &str, value: &str) -> bool {
@@ -2702,25 +3563,30 @@ fn handle_bots(ctx: &AppContext, action: &str, bot_id: &str, value: &str) -> boo
             true
         }
         "dismiss-token" => {
-            ctx.apply_ui(|window| window.set_settings_bots_token_secret(SharedString::default()));
+            BOT_TOKEN_GENERATION.fetch_add(1, Ordering::SeqCst);
+            window.set_settings_bots_token_secret(SharedString::default());
+            window.set_settings_bots_token_revealed(false);
+            window.set_settings_bots_busy(false);
             true
         }
         "copy-token" => {
-            ctx.apply_ui(|window| {
-                window.set_settings_bots_error_text(
-                    "Буфер обмена недоступен; скопируйте токен вручную и закройте это окно после сохранения.".into(),
-                );
-            });
+            let token = window.get_settings_bots_token_secret();
+            window.set_settings_bots_error_text(clipboard_feedback(&window, token.as_str()));
             true
         }
         "create" => {
             let context = ctx.clone();
+            let generation = BOT_TOKEN_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
             set_bots_busy(ctx, true);
             dispatch_core_completion(
                 ctx,
                 "create managed bot",
                 bots::create,
                 move |window, result| {
+                    if BOT_TOKEN_GENERATION.load(Ordering::SeqCst) != generation {
+                        return;
+                    }
+                    window.set_settings_bots_token_revealed(false);
                     window.set_settings_bots_busy(false);
                     match result {
                         Ok(credential) => {
@@ -2763,12 +3629,17 @@ fn handle_bots(ctx: &AppContext, action: &str, bot_id: &str, value: &str) -> boo
         "rotate-token" if !bot_id.trim().is_empty() => {
             let bot_id = bot_id.to_owned();
             let context = ctx.clone();
+            let generation = BOT_TOKEN_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
             set_bots_busy(ctx, true);
             dispatch_core_completion(
                 ctx,
                 "rotate managed bot token",
                 move |client| bots::rotate_token(client, &bot_id),
                 move |window, result| {
+                    if BOT_TOKEN_GENERATION.load(Ordering::SeqCst) != generation {
+                        return;
+                    }
+                    window.set_settings_bots_token_revealed(false);
                     window.set_settings_bots_busy(false);
                     match result {
                         Ok(token) => {
@@ -2823,6 +3694,13 @@ fn switch_account(ctx: &AppContext, id: &str) -> bool {
     if id.is_empty() {
         return false;
     }
+    let starting_session = ctx.active_session();
+    if let Some(window) = ctx.ui.upgrade() {
+        if window.get_settings_accounts_busy() {
+            return false;
+        }
+        window.set_settings_accounts_busy(true);
+    }
     let accounts = ctx.accounts.clone();
     let data_dir = ctx.data_dir.clone();
     let context = ctx.clone();
@@ -2837,6 +3715,15 @@ fn switch_account(ctx: &AppContext, id: &str) -> bool {
         .name("friendshub-settings-account-switch".to_owned())
         .spawn(move || {
             let result = (|| {
+                if accounts
+                    .is_pending_removal(&requested_id)
+                    .map_err(|error| error.to_string())?
+                {
+                    return Err(
+                        "Удаление локального аккаунта ещё не завершено. Повторите очистку."
+                            .to_owned(),
+                    );
+                }
                 let manifest = accounts.load().map_err(|error| error.to_string())?;
                 let account = manifest
                     .accounts
@@ -2862,41 +3749,78 @@ fn switch_account(ctx: &AppContext, id: &str) -> bool {
                 accounts
                     .update(refreshed.clone())
                     .map_err(|error| error.to_string())?;
-                accounts
-                    .set_active(&refreshed.id)
-                    .map_err(|error| error.to_string())?;
                 Ok(ActiveSession {
                     account: refreshed,
                     core: std::sync::Arc::new(core),
                 })
             })();
             let completion_context = context.clone();
-            context.apply_ui(move |window| match result {
-                Ok(session) => {
-                    let username = session.account.username.clone();
-                    let fh_number = session.account.fh_number.clone();
-                    let active_id = session.account.id.clone();
-                    if let Err(error) = completion_context.set_active_session(Some(session)) {
-                        eprintln!("[settings] activate selected account failed: {error}");
-                        window.set_settings_accounts_error_text(
+            context.apply_ui(move |window| {
+                let same_session = match (&starting_session, completion_context.active_session()) {
+                    (None, None) => true,
+                    (Some(expected), Some(active)) => {
+                        expected.account.id == active.account.id
+                            && std::sync::Arc::ptr_eq(&expected.core, &active.core)
+                    }
+                    _ => false,
+                };
+                if !same_session {
+                    window.set_settings_accounts_busy(false);
+                    window.set_settings_busy_account_id(SharedString::default());
+                    return;
+                }
+                match result {
+                    Ok(session) => {
+                        let username = session.account.username.clone();
+                        let fh_number = session.account.fh_number.clone();
+                        let active_id = session.account.id.clone();
+                        if let Err(error) = accounts.set_active(&active_id) {
+                            report_account_failure("select active account", &error);
+                            window.set_settings_accounts_error_text(
+                                if window.get_language() == "ru" {
+                                    "Не удалось сохранить выбранный аккаунт."
+                                } else {
+                                    "Could not save the selected account."
+                                }
+                                .into(),
+                            );
+                            window.set_settings_accounts_busy(false);
+                            window.set_settings_busy_account_id(SharedString::default());
+                            return;
+                        }
+                        if let Err(error) = completion_context.set_active_session(Some(session)) {
+                            eprintln!("[settings] activate selected account failed: {error}");
+                            window.set_settings_accounts_error_text(
                             "Аккаунт открыт локально, но приложение не переключило активную сессию."
                                 .into(),
                         );
+                            window.set_settings_accounts_busy(false);
+                            window.set_settings_busy_account_id(SharedString::default());
+                            return;
+                        }
+                        clear_account_transients(&window);
+                        window.set_authenticated(true);
+                        window.set_account_avatar(slint::Image::default());
+                        window.set_has_account_avatar(false);
+                        window.set_account_avatar_label(initials(&username).into());
+                        window.set_conversations(model(Vec::new()));
+                        window.set_folders(model(Vec::new()));
+                        window.set_selected_folder(SharedString::default());
+                        window.set_selected_conversation_id(SharedString::default());
+                        window.set_account_username(username.into());
+                        window.set_account_fh_number(fh_number.into());
+                        crate::app::chat::load(&completion_context, window.get_route().as_str());
+                        load_own_profile(&completion_context);
+                        window.set_settings_active_account_id(active_id.into());
                         window.set_settings_accounts_busy(false);
                         window.set_settings_busy_account_id(SharedString::default());
-                        return;
                     }
-                    window.set_account_username(username.into());
-                    window.set_account_fh_number(fh_number.into());
-                    window.set_settings_active_account_id(active_id.into());
-                    window.set_settings_accounts_busy(false);
-                    window.set_settings_busy_account_id(SharedString::default());
-                }
-                Err(error) => {
-                    eprintln!("[settings] switch account failed: {error}");
-                    window.set_settings_accounts_error_text(error.into());
-                    window.set_settings_accounts_busy(false);
-                    window.set_settings_busy_account_id(SharedString::default());
+                    Err(error) => {
+                        eprintln!("[settings] switch account failed: {error}");
+                        window.set_settings_accounts_error_text(error.into());
+                        window.set_settings_accounts_busy(false);
+                        window.set_settings_busy_account_id(SharedString::default());
+                    }
                 }
             });
         });
@@ -2939,22 +3863,135 @@ fn handle_about(ctx: &AppContext, action: &str, value: &str, opened: &str) -> bo
             true
         }
         "copy-text" => {
-            ctx.apply_ui(|window| {
-                window
-                    .set_about_update_status("Буфер обмена недоступен в нативном клиенте.".into());
-            });
-            true
-        }
-        "check-updates" => {
-            ctx.apply_ui(|window| {
+            let Some(window) = ctx.ui.upgrade() else {
+                return false;
+            };
+            if window.get_screen() != "settings_about" {
+                return false;
+            }
+            if value != CORE_REPOSITORY_URL {
                 window.set_about_update_status(
-                    "Автоматическая проверка обновлений не подключена.".into(),
+                    if window.get_language() == "ru" {
+                        "Эта ссылка недоступна для копирования."
+                    } else {
+                        "This link cannot be copied."
+                    }
+                    .into(),
                 );
-            });
+                return true;
+            }
+            window.set_about_update_status(clipboard_feedback(&window, CORE_REPOSITORY_URL));
             true
         }
+        "check-updates" => check_native_updates(ctx),
         _ => false,
     }
+}
+
+#[derive(Deserialize)]
+struct GithubRelease {
+    tag_name: String,
+    draft: bool,
+    prerelease: bool,
+}
+
+fn check_native_updates(ctx: &AppContext) -> bool {
+    let Some(window) = ctx.ui.upgrade() else {
+        return false;
+    };
+    if window.get_screen() != "settings_about" || window.get_about_update_busy() {
+        return false;
+    }
+
+    let generation = ABOUT_UPDATE_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+    window.set_about_update_busy(true);
+    window.set_about_update_status(SharedString::default());
+    let context = ctx.clone();
+    let worker = thread::Builder::new()
+        .name("friendshub-native-update-check".to_owned())
+        .spawn(move || {
+            let result = fetch_latest_stable_release();
+            context.apply_ui(move |window| {
+                if ABOUT_UPDATE_GENERATION.load(Ordering::SeqCst) != generation
+                    || window.get_screen() != "settings_about"
+                {
+                    return;
+                }
+
+                window.set_about_update_busy(false);
+                let russian = window.get_language() == "ru";
+                let status = match result {
+                    Ok(Some(version))
+                        if semver::Version::parse(env!("CARGO_PKG_VERSION"))
+                            .is_ok_and(|installed| version > installed) =>
+                    {
+                        if russian {
+                            format!(
+                                "Доступна версия {version}. Загрузить её можно вручную на странице релизов."
+                            )
+                        } else {
+                            format!(
+                                "Version {version} is available. Download it manually from the releases page."
+                            )
+                        }
+                    }
+                    Ok(Some(_)) if russian => "Установлена актуальная версия.".to_owned(),
+                    Ok(Some(_)) => "The installed version is up to date.".to_owned(),
+                    Ok(None) if russian => {
+                        "Опубликованных стабильных версий пока нет.".to_owned()
+                    }
+                    Ok(None) => "No stable releases have been published yet.".to_owned(),
+                    Err(_) if russian => {
+                        "Не удалось проверить релизы. Проверьте подключение и повторите попытку."
+                            .to_owned()
+                    }
+                    Err(_) => {
+                        "Could not check releases. Check your connection and try again.".to_owned()
+                    }
+                };
+                window.set_about_update_status(status.into());
+            });
+        });
+
+    match worker {
+        Ok(_) => true,
+        Err(error) => {
+            window.set_about_update_busy(false);
+            window.set_about_update_status(if window.get_language() == "ru" {
+                "Не удалось запустить проверку обновлений.".into()
+            } else {
+                "Could not start the update check.".into()
+            });
+            eprintln!("[settings] start native update check failed: {error}");
+            false
+        }
+    }
+}
+
+fn fetch_latest_stable_release() -> Result<Option<semver::Version>, reqwest::Error> {
+    let releases = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(8))
+        .user_agent(concat!("FriendsHub-Native/", env!("CARGO_PKG_VERSION")))
+        .build()?
+        .get("https://api.github.com/repos/SomSomovich/friendshub-apps/releases?per_page=100")
+        .header(reqwest::header::ACCEPT, "application/vnd.github+json")
+        .send()?
+        .error_for_status()?
+        .json::<Vec<GithubRelease>>()?;
+
+    Ok(releases
+        .into_iter()
+        .filter(|release| !release.draft && !release.prerelease)
+        .filter_map(|release| {
+            let tag = release
+                .tag_name
+                .strip_prefix('v')
+                .unwrap_or(&release.tag_name);
+            semver::Version::parse(tag)
+                .ok()
+                .filter(|version| version.pre.is_empty())
+        })
+        .max())
 }
 
 fn dispatch_core<T, F>(ctx: &AppContext, operation: &'static str, call: F) -> bool
@@ -3032,42 +4069,84 @@ where
     F: FnOnce(&Client) -> Result<T, CoreError> + Send + 'static,
     C: FnOnce(MainWindow, Result<T, CoreCallFailure>) + Send + 'static,
 {
-    match ctx.call(operation_thread_name(operation), call, completion) {
+    let Some(session) = ctx.active_session() else {
+        return false;
+    };
+    let twofactor_generation = matches!(
+        operation,
+        "start two-factor enrollment" | "verify two-factor enrollment"
+    )
+    .then(|| TWOFACTOR_FLOW_GENERATION.load(Ordering::SeqCst));
+    let bot_generation = matches!(operation, "create managed bot" | "rotate managed bot token")
+        .then(|| BOT_TOKEN_GENERATION.load(Ordering::SeqCst));
+    let context = ctx.clone();
+    let failure_context = ctx.clone();
+    let failure_session = session.clone();
+    match call_client(
+        session.core.clone(),
+        ctx.ui.clone(),
+        operation_thread_name(operation),
+        call,
+        move |window, result| {
+            if same_settings_session(&context, &session)
+                && twofactor_generation.is_none_or(|generation| {
+                    TWOFACTOR_FLOW_GENERATION.load(Ordering::SeqCst) == generation
+                })
+                && bot_generation.is_none_or(|generation| {
+                    BOT_TOKEN_GENERATION.load(Ordering::SeqCst) == generation
+                })
+            {
+                completion(window, result);
+            }
+        },
+    ) {
         Ok(_) => true,
         Err(error) => {
             let message = error.to_string();
-            ctx.apply_ui(move |window| match operation {
-                "load privacy settings" => window.set_privacy_busy(false),
-                "load security settings" => {
-                    window.set_security_busy(false);
-                    window.set_security_session_error(message.clone().into());
-                    window.set_security_device_error(message.clone().into());
-                    window.set_security_events_error(message.clone().into());
-                    window.set_security_history_error(message.into());
+            ctx.apply_ui(move |window| {
+                if !same_settings_session(&failure_context, &failure_session)
+                    || twofactor_generation.is_some_and(|generation| {
+                        TWOFACTOR_FLOW_GENERATION.load(Ordering::SeqCst) != generation
+                    })
+                    || bot_generation.is_some_and(|generation| {
+                        BOT_TOKEN_GENERATION.load(Ordering::SeqCst) != generation
+                    })
+                {
+                    return;
                 }
-                "load managed bots" => {
-                    window.set_settings_bots_loading(false);
-                    window.set_settings_bots_error_text(message.into());
+                match operation {
+                    "load privacy settings" => window.set_privacy_busy(false),
+                    "load security settings" => {
+                        window.set_security_busy(false);
+                        window.set_security_session_error(message.clone().into());
+                        window.set_security_device_error(message.clone().into());
+                        window.set_security_events_error(message.clone().into());
+                        window.set_security_history_error(message.into());
+                    }
+                    "load managed bots" => {
+                        window.set_settings_bots_loading(false);
+                        window.set_settings_bots_error_text(message.into());
+                    }
+                    "start two-factor enrollment" | "verify two-factor enrollment" => {
+                        window.set_twofactor_setup_busy(false);
+                        window.set_twofactor_setup_error_text(message.into());
+                    }
+                    "save profile fields" | "clear custom status" | "update custom status" => {
+                        window.set_settings_account_busy(false);
+                    }
+                    "remove own avatar" => {
+                        window.set_settings_account_busy(false);
+                        window.set_settings_account_error_text(message.into());
+                    }
+                    "create managed bot"
+                    | "set managed bot handle"
+                    | "rotate managed bot token"
+                    | "delete managed bot" => {
+                        window.set_settings_bots_busy(false);
+                        window.set_settings_bots_error_text(message.into());
+                    }
+                    _ => {}
                 }
-                "start two-factor enrollment" | "verify two-factor enrollment" => {
-                    window.set_twofactor_setup_busy(false);
-                    window.set_twofactor_setup_error_text(message.into());
-                }
-                "save profile fields" | "clear custom status" | "update custom status" => {
-                    window.set_settings_account_busy(false);
-                }
-                "remove own avatar" => {
-                    window.set_settings_account_busy(false);
-                    window.set_settings_account_error_text(message.into());
-                }
-                "create managed bot"
-                | "set managed bot handle"
-                | "rotate managed bot token"
-                | "delete managed bot" => {
-                    window.set_settings_bots_busy(false);
-                    window.set_settings_bots_error_text(message.into());
-                }
-                _ => {}
             });
             report_dispatch_failure(operation, error);
             false
@@ -3322,6 +4401,10 @@ fn report_dispatch_failure(operation: &str, error: io::Error) {
 
 fn report_local_failure(operation: &str, error: &io::Error) {
     eprintln!("[settings] {operation} failed: {}", error.kind());
+}
+
+fn report_notification_failure(operation: &str, error: &notifications::NotificationError) {
+    eprintln!("[settings] {operation} failed: {error}");
 }
 
 fn report_account_failure(operation: &str, error: &crate::platform::accounts::AccountStoreError) {

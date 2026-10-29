@@ -14,6 +14,8 @@ export component ScheduleMessageDialog inherits Rectangle {
     in property <string> minutes: "0";
     in property <string> error-text: "";
     in property <string> confirm-label: "Запланировать";
+    in property <string> busy-label: "Планируем…";
+    in property <string> cancel-label: "Отмена";
 
     callback hours-changed(string);
     callback minutes-changed(string);
@@ -94,9 +96,9 @@ export component ScheduleMessageDialog inherits Rectangle {
                 HorizontalLayout {
                     alignment: end;
                     spacing: 8px;
-                    ChatAction { label: "Отмена"; enabled: !root.busy; clicked => { root.close-requested(); } }
+                    ChatAction { label: root.cancel-label; enabled: !root.busy; clicked => { root.close-requested(); } }
                     ChatAction {
-                        label: root.busy ? "Планируем…" : root.confirm-label;
+                        label: root.busy ? root.busy-label : root.confirm-label;
                         active: true;
                         enabled: root.duration-valid && !root.busy;
                         clicked => { root.schedule-requested(); }

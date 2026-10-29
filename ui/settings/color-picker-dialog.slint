@@ -1,0 +1,118 @@
+import { SpinBox } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+import { FHPrimaryButton, FHTextButton } from "../components.slint";
+
+// This dialog owns a temporary selection. Only Choose sends it to the RGB draft.
+export component ColorPickerDialog inherits Rectangle {
+    in property <bool> russian: true;
+    in property <int> initial-red;
+    in property <int> initial-green;
+    in property <int> initial-blue;
+    private property <int> red;
+    private property <int> green;
+    private property <int> blue;
+    callback chosen(int, int, int);
+    callback close-requested();
+
+    background: #99000000;
+    init => {
+        root.red = root.initial-red;
+        root.green = root.initial-green;
+        root.blue = root.initial-blue;
+        focus.focus();
+    }
+    TouchArea { clicked => { root.close-requested(); } }
+    Rectangle {
+        x: (parent.width - min(parent.width - 32px, 420px)) / 2;
+        y: max(16px, (parent.height - content.preferred-height) / 2);
+        width: min(parent.width - 32px, 420px);
+        height: content.preferred-height;
+        background: Theme.surface;
+        border-width: 1px;
+        border-color: Theme.border;
+        border-radius: 12px;
+        // Consume card clicks so only the backdrop dismisses the dialog.
+        TouchArea {}
+        focus := FocusScope {
+            forward-focus: red-input;
+            key-pressed(event) => {
+                if event.text == Key.Escape {
+                    root.close-requested();
+                    return accept;
+                }
+                return reject;
+            }
+            content := VerticalLayout {
+                padding: 20px;
+                spacing: 12px;
+                Text {
+                    text: root.russian ? "Выбрать цвет" : "Choose a color";
+                    color: Theme.foreground;
+                    font-size: 16px;
+                    font-weight: 600;
+                }
+                Rectangle {
+                    height: 64px;
+                    background: rgb(root.red, root.green, root.blue);
+                    border-width: 1px;
+                    border-color: Theme.border;
+                    border-radius: 8px;
+                    accessible-role: image;
+                    accessible-label: root.russian
+                        ? "Предпросмотр RGB: \{root.red}, \{root.green}, \{root.blue}"
+                        : "RGB preview: \{root.red}, \{root.green}, \{root.blue}";
+                }
+                Text {
+                    text: root.russian ? "Каналы RGB: от 0 до 255" : "RGB channels: 0 to 255";
+                    color: Theme.muted;
+                    font-size: 12px;
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    VerticalLayout {
+                        spacing: 5px;
+                        Text { text: "R"; color: Theme.foreground; }
+                        red-input := SpinBox {
+                            minimum: 0;
+                            maximum: 255;
+                            value <=> root.red;
+                            accessible-label: root.russian ? "Красный, от 0 до 255" : "Red, 0 to 255";
+                        }
+                    }
+                    VerticalLayout {
+                        spacing: 5px;
+                        Text { text: "G"; color: Theme.foreground; }
+                        SpinBox {
+                            minimum: 0;
+                            maximum: 255;
+                            value <=> root.green;
+                            accessible-label: root.russian ? "Зелёный, от 0 до 255" : "Green, 0 to 255";
+                        }
+                    }
+                    VerticalLayout {
+                        spacing: 5px;
+                        Text { text: "B"; color: Theme.foreground; }
+                        SpinBox {
+                            minimum: 0;
+                            maximum: 255;
+                            value <=> root.blue;
+                            accessible-label: root.russian ? "Синий, от 0 до 255" : "Blue, 0 to 255";
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    alignment: end;
+                    spacing: 8px;
+                    FHTextButton {
+                        text: root.russian ? "Отмена" : "Cancel";
+                        clicked => { root.close-requested(); }
+                    }
+                    FHPrimaryButton {
+                        text: root.russian ? "Выбрать" : "Choose";
+                        clicked => { root.chosen(root.red, root.green, root.blue); }
+                    }
+                }
+            }
+        }
+    }
+}

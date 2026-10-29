@@ -3,22 +3,28 @@ import { ChatAction } from "chat-controls.slint";
 import { ScrollView } from "std-widgets.slint";
 
 export struct ChatSearchResult {
+    id: string,
     sender: string,
     timestamp: string,
     excerpt: string,
 }
 
 export component ChatSearchPanel inherits Rectangle {
+    in property <string> language: "ru";
     in-out property <string> query: "";
     in property <[ChatSearchResult]> results;
     in property <bool> searching: false;
+    in property <bool> has-older: false;
+    in property <bool> loading-older: false;
     in property <int> selected-index: -1;
     in property <string> position-label: "";
     in property <string> empty-text: "";
+    in property <string> error-text: "";
     callback query-changed(string);
     callback previous-requested();
     callback next-requested();
-    callback result-selected(int);
+    callback result-selected(string);
+    callback load-older-requested();
     callback close-requested();
 
     background: Theme.surface;
@@ -58,14 +64,37 @@ export component ChatSearchPanel inherits Rectangle {
                     font-size: 11px;
                     vertical-alignment: center;
                 }
-                ChatAction { label: "↑"; accessible-label: "Предыдущий результат"; enabled: root.results.length > 0; clicked => { root.previous-requested(); } }
-                ChatAction { label: "↓"; accessible-label: "Следующий результат"; enabled: root.results.length > 0; clicked => { root.next-requested(); } }
-                ChatAction { label: "×"; accessible-label: "Закрыть поиск"; clicked => { root.close-requested(); } }
+                ChatAction { label: "↑"; accessible-name: root.language == "ru" ? "Предыдущий результат" : "Previous result"; enabled: root.results.length > 0; clicked => { root.previous-requested(); } }
+                ChatAction { label: "↓"; accessible-name: root.language == "ru" ? "Следующий результат" : "Next result"; enabled: root.results.length > 0; clicked => { root.next-requested(); } }
+                ChatAction { label: "×"; accessible-name: root.language == "ru" ? "Закрыть поиск" : "Close search"; clicked => { root.close-requested(); } }
+            }
+        }
+
+        VerticalLayout {
+            padding: 8px;
+            spacing: 4px;
+            vertical-stretch: 0;
+            Text {
+                text: root.language == "ru" ? "Поиск по загруженным на этом устройстве сообщениям." : "Search covers messages loaded on this device.";
+                color: Theme.muted;
+                font-size: 11px;
+                wrap: word-wrap;
+            }
+            if root.has-older : ChatAction {
+                label: root.loading-older ? (root.language == "ru" ? "Загружаем…" : "Loading…") : (root.language == "ru" ? "Загрузить более ранние сообщения" : "Load earlier messages");
+                enabled: !root.loading-older && !root.searching;
+                clicked => { root.load-older-requested(); }
+            }
+            if !root.error-text.is-empty : Text {
+                text: root.error-text;
+                color: Theme.danger;
+                font-size: 12px;
+                wrap: word-wrap;
             }
         }
 
         if root.query.is-empty : Text {
-            text: "Введите текст сообщения для поиска.";
+            text: root.language == "ru" ? "Введите текст сообщения для поиска." : "Enter message text to search.";
             color: Theme.muted;
             font-size: 12px;
             horizontal-alignment: center;
@@ -73,7 +102,7 @@ export component ChatSearchPanel inherits Rectangle {
             vertical-stretch: 1;
         }
         if root.searching : Text {
-            text: "Ищем сообщения…";
+            text: root.language == "ru" ? "Ищем сообщения…" : "Searching messages…";
             color: Theme.muted;
             font-size: 12px;
             horizontal-alignment: center;
@@ -81,7 +110,7 @@ export component ChatSearchPanel inherits Rectangle {
             vertical-stretch: 1;
         }
         if !root.query.is-empty && !root.searching && root.results.length == 0 : Text {
-            text: root.empty-text.is-empty ? "Ничего не найдено." : root.empty-text;
+            text: root.empty-text.is-empty ? (root.language == "ru" ? "В загруженной истории ничего не найдено." : "No matches in loaded history.") : root.empty-text;
             color: Theme.muted;
             font-size: 12px;
             horizontal-alignment: center;
@@ -112,7 +141,7 @@ export component ChatSearchPanel inherits Rectangle {
                     TouchArea {
                         accessible-role: button;
                         accessible-label: result.sender + " · " + result.excerpt;
-                        clicked => { root.result-selected(index); }
+                        clicked => { root.result-selected(result.id); }
                     }
                 }
             }

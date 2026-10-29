@@ -20,6 +20,7 @@ export struct ChatMessage {
 
 export component MessageList inherits Rectangle {
     in property <[ChatMessage]> messages;
+    in-out property <string> scroll-to-message-id: "";
     in property <[PollViewModel]> polls;
     in property <bool> loading: false;
     in property <bool> polls-loading: false;
@@ -42,9 +43,17 @@ export component MessageList inherits Rectangle {
     callback poll-stop-requested(string);
     callback poll-remove-requested(string);
 
+    private property <string> highlighted-message-id: "";
+
+    highlight-timer := Timer {
+        running: false;
+        interval: 1800ms;
+        triggered => { root.highlighted-message-id = ""; }
+    }
+
     background: Theme.background;
 
-    ScrollView {
+    message-scroll := ScrollView {
         width: 100%;
         height: 100%;
         vertical-scrollbar-policy: as-needed;
@@ -100,7 +109,25 @@ export component MessageList inherits Rectangle {
                 vertical-stretch: 1;
             }
 
-            for message[index] in root.messages : VerticalLayout {
+            for message[index] in root.messages : message-row := VerticalLayout {
+                property <bool> is-scroll-target: root.scroll-to-message-id == message.id;
+                property <bool> is-highlighted: root.highlighted-message-id == message.id;
+                changed is-scroll-target => {
+                    if is-scroll-target {
+                        message-scroll.content-y = -self.y;
+                        root.highlighted-message-id = message.id;
+                        highlight-timer.restart();
+                        root.scroll-to-message-id = "";
+                    }
+                }
+                init => {
+                    if is-scroll-target {
+                        message-scroll.content-y = -self.y;
+                        root.highlighted-message-id = message.id;
+                        highlight-timer.restart();
+                        root.scroll-to-message-id = "";
+                    }
+                }
                 width: 100%;
                 spacing: 4px;
 
@@ -136,8 +163,8 @@ export component MessageList inherits Rectangle {
                         width: min(max(parent.width * 0.45, min(parent.width, 180px)), min(parent.width * 0.78, 560px));
                         height: bubble-content.preferred-height + 16px;
                         background: message.own ? Theme.message-bubble : Theme.surface;
-                        border-width: 1px;
-                        border-color: Theme.border;
+                        border-width: message-row.is-highlighted ? 2px : 1px;
+                        border-color: message-row.is-highlighted ? Theme.accent : Theme.border;
                         border-radius: 12px;
 
                         bubble-content := VerticalLayout {

@@ -97,12 +97,8 @@ impl AuthController {
 
         let binding = match login_binding(&self.inner.ctx.accounts, &fh_number) {
             Ok(binding) => binding,
-            Err(()) => {
-                self.fail(
-                    Operation::Login,
-                    "Не удалось прочитать список аккаунтов.",
-                    true,
-                );
+            Err(message) => {
+                self.fail(Operation::Login, message, true);
                 return;
             }
         };
@@ -353,7 +349,18 @@ impl AuthController {
         };
         let Some(account) = manifest.active_account().cloned() else {
             self.clear_operation();
-            super::navigate(&self.inner.ctx, "/");
+            let route = if self
+                .inner
+                .ctx
+                .accounts
+                .pending_removals()
+                .is_ok_and(|accounts| !accounts.is_empty())
+            {
+                "/app/settings/accounts"
+            } else {
+                "/"
+            };
+            super::navigate(&self.inner.ctx, route);
             return;
         };
 
@@ -387,30 +394,46 @@ impl AuthController {
         if !self.begin(Operation::Logout, None) {
             return;
         }
+        let Some(session) = self.inner.ctx.active_session() else {
+            self.fail(Operation::Logout, "Нет активной сессии.", false);
+            return;
+        };
         let controller = self.clone();
-        if let Err(error) = self.inner.ctx.call(
+        if let Err(error) = call_client(
+            Arc::clone(&session.core),
+            self.inner.ctx.ui.clone(),
             "friendshub-auth-logout",
             auth::logout,
-            move |_window, result| match result {
-                Ok(response) if response.ok => {
-                    let clear_result = controller.inner.ctx.accounts.clear_active();
-                    let active_result = controller.inner.ctx.set_active_session(None);
-                    controller.clear_transient_state();
+            move |window, result| {
+                if !controller.inner.ctx.active_session().is_some_and(|active| {
+                    active.account.id == session.account.id
+                        && Arc::ptr_eq(&active.core, &session.core)
+                }) {
                     controller.clear_operation();
-                    if clear_result.is_err() || active_result.is_err() {
-                        controller.show_error(
-                            Operation::Logout,
-                            "Сессия завершена, но локальный список аккаунтов не обновился.",
-                        );
-                    }
-                    super::navigate(&controller.inner.ctx, "/login");
+                    return;
                 }
-                Ok(_) => controller.fail(
-                    Operation::Logout,
-                    "Не удалось завершить серверную сессию.",
-                    false,
-                ),
-                Err(error) => controller.fail(Operation::Logout, error.user_message(), false),
+                match result {
+                    Ok(response) if response.ok => {
+                        let clear_result = controller.inner.ctx.accounts.clear_active();
+                        let active_result = controller.inner.ctx.set_active_session(None);
+                        super::settings::clear_account_transients(&window);
+                        controller.clear_transient_state();
+                        controller.clear_operation();
+                        if clear_result.is_err() || active_result.is_err() {
+                            controller.show_error(
+                                Operation::Logout,
+                                "Сессия завершена, но локальный список аккаунтов не обновился.",
+                            );
+                        }
+                        super::navigate(&controller.inner.ctx, "/login");
+                    }
+                    Ok(_) => controller.fail(
+                        Operation::Logout,
+                        "Не удалось завершить серверную сессию.",
+                        false,
+                    ),
+                    Err(error) => controller.fail(Operation::Logout, error.user_message(), false),
+                }
             },
         ) {
             self.fail(
@@ -792,6 +815,7 @@ impl AuthController {
         let username = session.account.username.clone();
         let fh_number = session.account.fh_number.clone();
         self.inner.ctx.apply_ui(move |window| {
+            super::settings::clear_account_transients(&window);
             window.set_authenticated(true);
             window.set_account_username(username.into());
             window.set_account_fh_number(fh_number.into());
@@ -1088,8 +1112,19 @@ fn database_key_for_fh(fh_number: &str) -> String {
     format!("fh:{}", normalize_fh_number(fh_number))
 }
 
-fn login_binding(store: &AccountStore, fh_number: &str) -> Result<LoginBinding, ()> {
-    let manifest = store.load().map_err(|_| ())?;
+fn login_binding(store: &AccountStore, fh_number: &str) -> Result<LoginBinding, &'static str> {
+    let unavailable = "Не удалось прочитать список аккаунтов.";
+    let manifest = store.load().map_err(|_| unavailable)?;
+    if store
+        .pending_removals()
+        .map_err(|_| unavailable)?
+        .iter()
+        .any(|account| account.fh_number.eq_ignore_ascii_case(fh_number))
+    {
+        return Err(
+            "Удаление локального аккаунта ещё не завершено. Откройте список аккаунтов и повторите очистку.",
+        );
+    }
     let existing = manifest
         .accounts
         .iter()
@@ -1225,7 +1260,8 @@ fn set_busy(window: &MainWindow, operation: Operation, busy: bool) {
         Operation::Login => window.set_login_busy(busy),
         Operation::Register => window.set_register_busy(busy),
         Operation::TwoFactor => window.set_auth_busy(busy),
-        Operation::Logout | Operation::Bootstrap => {}
+        Operation::Logout => window.set_about_busy(busy),
+        Operation::Bootstrap => {}
     }
 }
 
@@ -1235,8 +1271,7 @@ fn set_error(window: &MainWindow, operation: Operation, message: &str) {
         Operation::Login => window.set_login_error(message.into()),
         Operation::Register => window.set_register_error(message.into()),
         Operation::TwoFactor => window.set_twofactor_error(message.into()),
-        // The current UI has no global error surface. Keep logout/bootstrap
-        // failures in the login error field for the next login screen.
-        Operation::Logout | Operation::Bootstrap => window.set_login_error(message.into()),
+        Operation::Logout => window.set_about_logout_error(message.into()),
+        Operation::Bootstrap => window.set_login_error(message.into()),
     }
 }

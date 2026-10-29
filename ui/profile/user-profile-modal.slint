@@ -1,6 +1,7 @@
 import { Theme } from "../theme.slint";
 import { FHInput, FHTextButton, FHPrimaryButton } from "../components.slint";
 import { ScrollView } from "std-widgets.slint";
+import { AvatarViewerDialog } from "avatar-viewer-dialog.slint";
 
 export struct PublicProfileField {
     label: string,
@@ -27,6 +28,21 @@ export component UserProfileModal inherits Rectangle {
     in property <bool> alias-editor-open: false;
     in property <bool> alias-save-enabled: false;
     in-out property <string> alias-draft;
+    private property <bool> avatar-viewer-open: false;
+
+    changed has-avatar => {
+        if !root.has-avatar { root.avatar-viewer-open = false; }
+    }
+    changed open => {
+        if !root.open { root.avatar-viewer-open = false; }
+    }
+    changed loading => {
+        if root.loading { root.avatar-viewer-open = false; }
+    }
+    changed unavailable => {
+        if root.unavailable { root.avatar-viewer-open = false; }
+    }
+    changed fh-number => { root.avatar-viewer-open = false; }
 
     callback close-requested();
     callback avatar-open-requested();
@@ -174,7 +190,7 @@ export component UserProfileModal inherits Rectangle {
 
                                     if root.has-avatar : TouchArea {
                                         mouse-cursor: pointer;
-                                        clicked => { root.avatar-open-requested(); }
+                                        clicked => { root.avatar-viewer-open = true; }
                                     }
                                 }
 
@@ -344,5 +360,12 @@ export component UserProfileModal inherits Rectangle {
                 }
             }
         }
+    }
+
+    AvatarViewerDialog {
+        open: root.avatar-viewer-open && root.open && !root.loading && !root.unavailable;
+        has-avatar: root.has-avatar;
+        avatar-image: root.avatar-image;
+        close-requested => { root.avatar-viewer-open = false; }
     }
 }

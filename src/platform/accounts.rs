@@ -9,7 +9,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use serde::{Deserialize, Serialize};
 
@@ -75,6 +75,7 @@ pub enum AccountStoreError {
     DuplicateAccount,
     AccountNotFound,
     DatabaseKeyChanged,
+    RemovalPending,
     LockPoisoned,
     Serialization,
 }
@@ -99,6 +100,9 @@ impl fmt::Display for AccountStoreError {
             }
             Self::DuplicateAccount => f.write_str("this account is already stored"),
             Self::AccountNotFound => f.write_str("account was not found"),
+            Self::RemovalPending => f.write_str(
+                "local account removal is pending; retry cleanup from the accounts screen",
+            ),
             Self::DatabaseKeyChanged => f.write_str("an account database alias cannot be changed"),
             Self::LockPoisoned => f.write_str("local account registry is unavailable"),
             Self::Serialization => f.write_str("could not encode the local account registry"),
@@ -123,14 +127,20 @@ impl From<io::Error> for AccountStoreError {
 
 /// Atomic local account registry stored in a private app-data directory.
 ///
-/// Clones share a process-local mutation lock so concurrent UI operations
-/// cannot overwrite one another. The directory must be an absolute
+/// Clones share a process-local mutation lock and every transaction holds an
+/// OS file lock so another app instance cannot restore a stale manifest after
+/// a removal tombstone has been finalized. The directory must be an absolute
 /// app-private path, such as the result of `core::storage::app_data_dir()`.
 #[derive(Clone)]
 pub struct AccountStore {
     directory: PathBuf,
     manifest_path: PathBuf,
     mutation_lock: Arc<Mutex<()>>,
+}
+
+struct RegistryMutation<'a> {
+    _file: File,
+    _local: MutexGuard<'a, ()>,
 }
 
 impl AccountStore {
@@ -166,21 +176,16 @@ impl AccountStore {
     /// Invalid JSON, unsupported data, and semantically inconsistent entries
     /// return `CorruptManifest`; the source file is preserved unchanged.
     pub fn load(&self) -> Result<AccountManifest, AccountStoreError> {
-        let _guard = self
-            .mutation_lock
-            .lock()
-            .map_err(|_| AccountStoreError::LockPoisoned)?;
+        let _guard = self.lock_mutation()?;
         self.load_unlocked()
     }
 
     /// Add one account. The first account becomes active; adding later
     /// accounts preserves the current active account.
     pub fn add(&self, account: LocalAccount) -> Result<AccountManifest, AccountStoreError> {
-        let _guard = self
-            .mutation_lock
-            .lock()
-            .map_err(|_| AccountStoreError::LockPoisoned)?;
+        let _guard = self.lock_mutation()?;
         validate_account(&account)?;
+        self.ensure_not_pending_unlocked(&account)?;
         let mut manifest = self.load_unlocked()?;
         if manifest.accounts.len() >= MAX_LOCAL_ACCOUNTS {
             return Err(AccountStoreError::AccountLimitReached);
@@ -203,11 +208,9 @@ impl AccountStore {
     /// Update mutable presentation/session metadata for an existing account.
     /// Its account ID, FH number, user ID, and database alias are immutable.
     pub fn update(&self, account: LocalAccount) -> Result<AccountManifest, AccountStoreError> {
-        let _guard = self
-            .mutation_lock
-            .lock()
-            .map_err(|_| AccountStoreError::LockPoisoned)?;
+        let _guard = self.lock_mutation()?;
         validate_account(&account)?;
+        self.ensure_not_pending_unlocked(&account)?;
         let mut manifest = self.load_unlocked()?;
         let index = manifest
             .accounts
@@ -240,21 +243,21 @@ impl AccountStore {
         Ok(manifest)
     }
 
-    /// Remove an account. When removing the active account, the first
-    /// remaining account becomes active; an empty registry has no active ID.
-    /// The caller remains responsible for revoking the server session through
-    /// `friendshub-core` before forgetting local metadata.
+    /// Remove registry metadata only. When removing the active account, the
+    /// first remaining account becomes active; an empty registry has no active ID.
+    ///
+    /// This does not close the account's core client or erase its database or
+    /// secure-store key. It must not implement the UI's confirmed local-account
+    /// removal action by itself. Local removal must not revoke the remote session.
     pub fn remove(&self, id: &str) -> Result<AccountManifest, AccountStoreError> {
-        let _guard = self
-            .mutation_lock
-            .lock()
-            .map_err(|_| AccountStoreError::LockPoisoned)?;
+        let _guard = self.lock_mutation()?;
         let mut manifest = self.load_unlocked()?;
         let index = manifest
             .accounts
             .iter()
             .position(|account| account.id == id)
             .ok_or(AccountStoreError::AccountNotFound)?;
+        self.ensure_not_pending_unlocked(&manifest.accounts[index])?;
         manifest.accounts.remove(index);
         if manifest.active_id.as_deref() == Some(id) {
             manifest.active_id = manifest.accounts.first().map(|account| account.id.clone());
@@ -265,13 +268,13 @@ impl AccountStore {
 
     /// Make a stored account active.
     pub fn set_active(&self, id: &str) -> Result<AccountManifest, AccountStoreError> {
-        let _guard = self
-            .mutation_lock
-            .lock()
-            .map_err(|_| AccountStoreError::LockPoisoned)?;
+        let _guard = self.lock_mutation()?;
         let mut manifest = self.load_unlocked()?;
         if !manifest.accounts.iter().any(|account| account.id == id) {
             return Err(AccountStoreError::AccountNotFound);
+        }
+        if let Some(account) = manifest.accounts.iter().find(|account| account.id == id) {
+            self.ensure_not_pending_unlocked(account)?;
         }
         manifest.active_id = Some(id.to_owned());
         self.save_unlocked(&manifest)?;
@@ -280,21 +283,187 @@ impl AccountStore {
 
     /// Clear the active account without deleting any stored account entry.
     pub fn clear_active(&self) -> Result<AccountManifest, AccountStoreError> {
-        let _guard = self
-            .mutation_lock
-            .lock()
-            .map_err(|_| AccountStoreError::LockPoisoned)?;
+        let _guard = self.lock_mutation()?;
         let mut manifest = self.load_unlocked()?;
         manifest.active_id = None;
         self.save_unlocked(&manifest)?;
         Ok(manifest)
     }
 
+    /// Durable tombstones contain only the existing non-secret account
+    /// identity/alias. A pending account remains listed for explicit retries,
+    /// but can never be selected, updated, or reopened.
+    pub fn pending_removals(&self) -> Result<Vec<LocalAccount>, AccountStoreError> {
+        let _guard = self.lock_mutation()?;
+        self.removals_unlocked()
+    }
+
+    pub fn is_pending_removal(&self, id: &str) -> Result<bool, AccountStoreError> {
+        Ok(self
+            .pending_removals()?
+            .iter()
+            .any(|account| account.id == id))
+    }
+
+    /// Persist and sync the marker before callers stop a session or erase any
+    /// private material. Repeating this also syncs an earlier uncertain write.
+    pub fn begin_removal(&self, id: &str) -> Result<LocalAccount, AccountStoreError> {
+        let _guard = self.lock_mutation()?;
+        let manifest = self.load_unlocked()?;
+        let account = manifest
+            .accounts
+            .into_iter()
+            .find(|account| account.id == id)
+            .ok_or(AccountStoreError::AccountNotFound)?;
+        let path = self.removal_path(&account);
+        fs::create_dir_all(
+            path.parent()
+                .ok_or(AccountStoreError::InvalidAccount("db_key"))?,
+        )?;
+        set_private_directory_permissions(path.parent().unwrap())?;
+        // Persist a newly created accounts directory before its journal can
+        // authorize deletion. Syncing the child alone cannot persist its name.
+        sync_directory(&self.directory)?;
+        if path.try_exists()? {
+            File::open(&path)?.sync_all()?;
+            sync_directory(path.parent().unwrap())?;
+        } else {
+            let bytes = serde_json::to_vec_pretty(&account)
+                .map_err(|_| AccountStoreError::Serialization)?;
+            write_atomic_private(&path, &bytes)?;
+        }
+        Ok(account)
+    }
+
+    /// Called only after physical DB/key cleanup succeeds. Commit metadata
+    /// first, then remove the journal: a failed final write retains a row that
+    /// can be retried, never a usable account whose database has been deleted.
+    pub fn finish_removal(&self, id: &str) -> Result<AccountManifest, AccountStoreError> {
+        let _guard = self.lock_mutation()?;
+        let account = self
+            .removals_unlocked()?
+            .into_iter()
+            .find(|account| account.id == id)
+            .ok_or(AccountStoreError::AccountNotFound)?;
+        let mut manifest = self.load_unlocked()?;
+        manifest.accounts.retain(|entry| entry.id != id);
+        if manifest.active_id.as_deref() == Some(id) {
+            manifest.active_id = None;
+        }
+        self.save_unlocked(&manifest)?;
+        let marker = self.removal_path(&account);
+        fs::remove_file(&marker)?;
+        if let Err(error) = sync_directory(marker.parent().unwrap()) {
+            // Restore an observable retry marker when unlink durability is
+            // uncertain. The database and key have already been cleaned.
+            let bytes = serde_json::to_vec_pretty(&account)
+                .map_err(|_| AccountStoreError::Serialization)?;
+            let _ = write_atomic_private(&marker, &bytes);
+            return Err(AccountStoreError::Io(error));
+        }
+        Ok(manifest)
+    }
+
+    fn lock_mutation(&self) -> Result<RegistryMutation<'_>, AccountStoreError> {
+        let local = self
+            .mutation_lock
+            .lock()
+            .map_err(|_| AccountStoreError::LockPoisoned)?;
+        let path = self.directory.join(".accounts.lock");
+        match fs::symlink_metadata(&path) {
+            Ok(metadata) if !metadata.file_type().is_file() => {
+                return Err(AccountStoreError::Io(io::Error::other(
+                    "invalid account registry lock",
+                )));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+        let mut options = OpenOptions::new();
+        options.read(true).write(true).create(true).truncate(false);
+        set_create_mode(&mut options);
+        let file = options.open(&path)?;
+        if !file.metadata()?.file_type().is_file() {
+            return Err(AccountStoreError::Io(io::Error::other(
+                "invalid account registry lock",
+            )));
+        }
+        file.lock()?;
+        Ok(RegistryMutation {
+            _file: file,
+            _local: local,
+        })
+    }
+
+    fn removal_path(&self, account: &LocalAccount) -> PathBuf {
+        crate::core::CoreClient::removal_marker_path(&crate::core::CoreClient::database_path(
+            &self.directory,
+            account.db_key(),
+        ))
+    }
+
+    fn ensure_not_pending_unlocked(&self, account: &LocalAccount) -> Result<(), AccountStoreError> {
+        if self.removal_path(account).try_exists()? {
+            Err(AccountStoreError::RemovalPending)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn removals_unlocked(&self) -> Result<Vec<LocalAccount>, AccountStoreError> {
+        let directory = self.directory.join("accounts");
+        let entries = match fs::read_dir(&directory) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(error.into()),
+        };
+        let mut removals = Vec::new();
+        for entry in entries {
+            let entry = entry?;
+            if !entry
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".sqlite.removing.json")
+            {
+                continue;
+            }
+            let metadata = fs::symlink_metadata(entry.path())?;
+            if !metadata.file_type().is_file() || metadata.len() > MAX_MANIFEST_BYTES {
+                return Err(corrupt(
+                    "removal journal file type or size is invalid",
+                    0,
+                    0,
+                ));
+            }
+            let mut bytes = Vec::new();
+            File::open(entry.path())?
+                .take(MAX_MANIFEST_BYTES + 1)
+                .read_to_end(&mut bytes)?;
+            if bytes.len() as u64 > MAX_MANIFEST_BYTES {
+                return Err(corrupt("removal journal is too large", 0, 0));
+            }
+            let account: LocalAccount = serde_json::from_slice(&bytes).map_err(|error| {
+                corrupt(
+                    "removal journal JSON is invalid",
+                    error.line(),
+                    error.column(),
+                )
+            })?;
+            validate_account(&account)?;
+            if self.removal_path(&account) != entry.path() {
+                return Err(corrupt("removal journal database alias is invalid", 0, 0));
+            }
+            removals.push(account);
+        }
+        Ok(removals)
+    }
+
     fn load_unlocked(&self) -> Result<AccountManifest, AccountStoreError> {
         let metadata = match fs::symlink_metadata(&self.manifest_path) {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                return Ok(AccountManifest::default());
+                return self.merge_removals(AccountManifest::default());
             }
             Err(error) => return Err(AccountStoreError::Io(error)),
         };
@@ -310,6 +479,37 @@ impl AccountStore {
         }
         let manifest: AccountManifest = serde_json::from_slice(&bytes)
             .map_err(|error| corrupt("JSON is invalid", error.line(), error.column()))?;
+        validate_manifest(&manifest)?;
+        self.merge_removals(manifest)
+    }
+
+    fn merge_removals(
+        &self,
+        mut manifest: AccountManifest,
+    ) -> Result<AccountManifest, AccountStoreError> {
+        for account in self.removals_unlocked()? {
+            if let Some(existing) = manifest
+                .accounts
+                .iter()
+                .find(|entry| entry.id == account.id)
+            {
+                if existing.db_key != account.db_key
+                    || existing.fh_number != account.fh_number
+                    || existing.user_id != account.user_id
+                {
+                    return Err(corrupt(
+                        "removal journal identity does not match manifest",
+                        0,
+                        0,
+                    ));
+                }
+            } else {
+                manifest.accounts.push(account.clone());
+            }
+            if manifest.active_id.as_deref() == Some(&account.id) {
+                manifest.active_id = None;
+            }
+        }
         validate_manifest(&manifest)?;
         Ok(manifest)
     }
@@ -333,6 +533,28 @@ impl AccountStore {
         }
         result.map_err(AccountStoreError::Io)
     }
+}
+
+fn write_atomic_private(path: &Path, bytes: &[u8]) -> Result<(), AccountStoreError> {
+    let directory = path
+        .parent()
+        .ok_or(AccountStoreError::InvalidAccount("removal journal path"))?;
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or(AccountStoreError::InvalidAccount("removal journal path"))?;
+    let (mut file, temporary) = create_temporary_manifest(directory, name)?;
+    let result = file.write_all(bytes).and_then(|()| file.sync_all());
+    drop(file);
+    if let Err(error) = result {
+        let _ = fs::remove_file(temporary);
+        return Err(error.into());
+    }
+    let result = fs::rename(&temporary, path).and_then(|()| sync_directory(directory));
+    if result.is_err() {
+        let _ = fs::remove_file(temporary);
+    }
+    result.map_err(AccountStoreError::Io)
 }
 
 fn validate_manifest(manifest: &AccountManifest) -> Result<(), AccountStoreError> {

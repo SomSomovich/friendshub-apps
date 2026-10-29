@@ -188,6 +188,7 @@ pub fn add_ice_candidate(client: &Client, call_id: &str, candidate: &IceCandidat
 struct PeerCallRequest<'a> {
     recipient_account_id: &'a str,
     call_id: &'a str,
+    with_audio: bool,
 }
 
 #[derive(Deserialize)]
@@ -197,16 +198,18 @@ pub struct SignaledSession {
     pub envelopes_sent: usize,
 }
 
-/// Creates an offer and sends it through Signal-encrypted envelopes.
-/// This operation does not add audio/video tracks or capture devices.
+/// Creates an offer with an optional Opus audio track and sends it through
+/// Signal-encrypted envelopes. Capture and playback remain host responsibilities.
 pub fn initiate_call(
     client: &Client,
     recipient_account_id: &str,
     call_id: &str,
+    with_audio: bool,
 ) -> Result<SignaledSession> {
     client.webrtc_initiate_call(&PeerCallRequest {
         recipient_account_id,
         call_id,
+        with_audio,
     })
 }
 
@@ -215,6 +218,7 @@ struct AcceptIncomingRequest<'a> {
     recipient_account_id: &'a str,
     call_id: &'a str,
     remote_sdp: &'a str,
+    with_audio: bool,
 }
 
 /// Applies an offer and sends the answer through encrypted envelopes.
@@ -223,11 +227,13 @@ pub fn accept_call(
     recipient_account_id: &str,
     call_id: &str,
     remote_sdp: &str,
+    with_audio: bool,
 ) -> Result<SignaledSession> {
     client.webrtc_accept_call(&AcceptIncomingRequest {
         recipient_account_id,
         call_id,
         remote_sdp,
+        with_audio,
     })
 }
 
@@ -695,14 +701,14 @@ pub fn send_attachment_key(
     client: &Client,
     recipient_account_id: &str,
     conversation_id: Option<&str>,
-    upload: &AttachmentUpload,
+    key: &AttachmentKey,
 ) -> Result<AttachmentKeyDelivery> {
     client.attachments_send_key(&AttachmentKeyRequest {
         recipient_account_id,
-        attachment_id: &upload.attachment_id,
-        key_hex: &upload.key_hex,
-        base_nonce_hex: &upload.base_nonce_hex,
-        conversation_id,
+        attachment_id: &key.attachment_id,
+        key_hex: &key.key_hex,
+        base_nonce_hex: &key.base_nonce_hex,
+        conversation_id: conversation_id.or(key.conversation_id.as_deref()),
     })
 }
 
@@ -711,7 +717,44 @@ pub struct AttachmentKey {
     pub attachment_id: String,
     pub key_hex: String,
     pub base_nonce_hex: String,
+    #[serde(default)]
     pub conversation_id: Option<String>,
+}
+
+#[derive(Serialize)]
+struct AttachmentKeyIdRequest<'a> {
+    attachment_id: &'a str,
+}
+
+#[derive(Deserialize)]
+struct AttachmentKeyStoreResponse {
+    stored: bool,
+}
+
+#[derive(Deserialize)]
+struct AttachmentKeyDeleteResponse {
+    deleted: bool,
+}
+
+/// Persist key material in the core's encrypted local database.
+///
+/// The core operation is idempotent for exact duplicates and rejects a
+/// conflicting key for the same attachment id.
+pub fn store_attachment_key(client: &Client, key: &AttachmentKey) -> Result<()> {
+    let response: AttachmentKeyStoreResponse = client.attachments_key_store(key)?;
+    confirmed(response.stored, "attachment key store")
+}
+
+/// Load a previously persisted attachment key from the encrypted local database.
+pub fn get_attachment_key(client: &Client, attachment_id: &str) -> Result<Option<AttachmentKey>> {
+    client.attachments_key_get(&AttachmentKeyIdRequest { attachment_id })
+}
+
+/// Delete one attachment key from the encrypted local database.
+pub fn delete_attachment_key(client: &Client, attachment_id: &str) -> Result<bool> {
+    let response: AttachmentKeyDeleteResponse =
+        client.attachments_key_delete(&AttachmentKeyIdRequest { attachment_id })?;
+    Ok(response.deleted)
 }
 
 #[derive(Clone, Deserialize)]

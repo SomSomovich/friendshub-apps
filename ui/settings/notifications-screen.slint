@@ -66,6 +66,7 @@ export component NotificationsSettingsScreen inherits Rectangle {
                 text: root.os-permission == "granted" ? "Разрешено" :
                     root.os-permission == "denied" ? "Запрещено — измените разрешение в настройках системы" :
                     root.os-permission == "unsupported" ? "Системные уведомления недоступны на этой платформе" :
+                    root.os-permission == "pending" ? "Запрос отправлен — после ответа системы откройте раздел снова" :
                     "Разрешение ещё не запрошено";
                 color: root.os-permission == "denied" ? Theme.danger : Theme.muted;
                 font-size: 12px;

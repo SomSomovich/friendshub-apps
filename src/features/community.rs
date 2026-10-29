@@ -604,8 +604,16 @@ pub struct PublishPost<'a> {
     pub forward_from: Option<&'a str>,
 }
 
-pub fn publish_post(client: &Client, input: &PublishPost<'_>) -> CoreResult<ChannelPost> {
-    client.channel_posts_publish(input)
+pub fn new_post_idempotency_key() -> String {
+    friendshub_core::api::channel_posts::new_idempotency_key()
+}
+
+pub fn publish_post(
+    client: &Client,
+    input: &PublishPost<'_>,
+    idempotency_key: &str,
+) -> CoreResult<ChannelPost> {
+    client.channel_posts_publish_with_idempotency_key(input, idempotency_key)
 }
 
 #[derive(Serialize)]
@@ -726,6 +734,13 @@ pub struct AvatarUploaded {
     pub avatar_url: String,
 }
 
+#[derive(Deserialize)]
+pub struct CommunityAvatar {
+    pub conversation_id: String,
+    pub content_type: String,
+    pub data_base64: String,
+}
+
 /// `file_path` must be an absolute path to a WebP file readable by core.
 /// Picker/content-URI resolution and image conversion belong to the host.
 pub fn upload_group_avatar(
@@ -748,6 +763,19 @@ pub fn upload_channel_avatar(
         conversation_id,
         file_path,
     })
+}
+
+#[derive(Serialize)]
+struct CommunityAvatarGetRequest<'a> {
+    conversation_id: &'a str,
+}
+
+pub fn get_group_avatar(client: &Client, conversation_id: &str) -> CoreResult<CommunityAvatar> {
+    client.avatars_get_group(&CommunityAvatarGetRequest { conversation_id })
+}
+
+pub fn get_channel_avatar(client: &Client, conversation_id: &str) -> CoreResult<CommunityAvatar> {
+    client.avatars_get_channel(&CommunityAvatarGetRequest { conversation_id })
 }
 
 conversation_mutation!(delete_group_avatar, avatars_delete_group);

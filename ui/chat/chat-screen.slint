@@ -6,17 +6,22 @@ import { PollViewModel } from "poll-card.slint";
 import { MessageComposer } from "message-composer.slint";
 import { CreatePollDialog, PollDraftOption } from "create-poll-dialog.slint";
 import { ChatMenuItem, MessageActionMenu } from "message-action-menu.slint";
+import { EmojiCategoryView, EmojiPickerPanel } from "emoji-picker-panel.slint";
+import { AttachmentComposer, PendingAttachmentView } from "attachment-composer.slint";
 
 export component ChatScreen inherits Rectangle {
     in property <string> title: "Чат";
     in property <string> subtitle: "";
+    in property <string> language: "ru";
     in property <string> conversation-kind: "direct";
     in property <string> banner-text: "";
+    in property <string> navigation-notice-text: "";
     in property <string> pinned-text: "";
     in property <string> pin-counter: "";
     in property <int> pin-count: 0;
     in property <string> error-text: "";
     in property <[ChatMessage]> messages;
+    in-out property <string> scroll-to-message-id: "";
     in property <[PollViewModel]> polls;
     in property <bool> loading: false;
     in property <bool> polls-loading: false;
@@ -24,8 +29,10 @@ export component ChatScreen inherits Rectangle {
     in property <bool> polls-loading-older: false;
     in property <string> polls-error-text: "";
     in property <bool> has-older: false;
+    in property <bool> history-loading-older: false;
     in property <bool> search-open: false;
     in property <bool> can-call: false;
+    in property <bool> can-video-call: false;
     in property <bool> can-poll: true;
     in property <bool> can-schedule: true;
     in property <bool> composer-enabled: true;
@@ -70,6 +77,24 @@ export component ChatScreen inherits Rectangle {
     in property <string> delete-confirm-delete-label: "";
     in property <string> delete-confirm-busy-label: "";
     in property <string> delete-confirm-error-text: "";
+    in property <bool> attachment-composer-open: false;
+    in property <bool> attachment-composer-busy: false;
+    in property <bool> attachment-composer-send-enabled: false;
+    in property <string> attachment-composer-error-text: "";
+    in property <[PendingAttachmentView]> pending-attachments;
+    in-out property <string> attachment-caption: "";
+    private property <bool> emoji-picker-open: false;
+    private property <string> emoji-picker-category-id: "smileys";
+    private property <[EmojiCategoryView]> emoji-categories: [
+        { id: "smileys", label: root.language == "ru" ? "Смайлики" : "Smileys", glyph: "😀", emojis: ["😀", "😃", "😄", "😁", "😆", "😅", "😂", "🤣", "😊", "😇", "🙂", "😉", "😌", "😍", "🥰", "😘"] },
+        { id: "emotions", label: root.language == "ru" ? "Эмоции" : "Emotions", glyph: "😢", emojis: ["😢", "😭", "😡", "😠", "😱", "😨", "😥", "😓", "😴", "😵", "🤯", "🥺", "😳", "😬", "🤗", "🤔"] },
+        { id: "gestures", label: root.language == "ru" ? "Жесты" : "Gestures", glyph: "👍", emojis: ["👍", "👎", "👌", "✌️", "🤞", "🤘", "👏", "🙌", "🙏", "🤝", "💪", "👋", "✋", "👊", "✊", "🙋"] },
+        { id: "hearts", label: root.language == "ru" ? "Сердца" : "Hearts", glyph: "❤️", emojis: ["❤️", "🧡", "💛", "💚", "💙", "💜", "🖤", "🤍", "💔", "💯", "💥", "✨", "⭐", "🔥", "🎉", "🎁"] },
+        { id: "animals", label: root.language == "ru" ? "Животные" : "Animals", glyph: "🐶", emojis: ["🐶", "🐱", "🐭", "🐹", "🐰", "🦊", "🐻", "🐼", "🐨", "🐯", "🦁", "🐮", "🐷", "🐸", "🐵", "🐝"] },
+        { id: "food", label: root.language == "ru" ? "Еда" : "Food", glyph: "🍎", emojis: ["🍎", "🍊", "🍋", "🍌", "🍉", "🍇", "🍓", "🍒", "🍑", "🍍", "🥑", "🌽", "🍕", "🍔", "🍰", "☕"] },
+        { id: "activity", label: root.language == "ru" ? "Активность" : "Activity", glyph: "⚽", emojis: ["⚽", "🏀", "🎾", "🎯", "🎮", "🎲", "🎸", "🎤", "🎬", "🚗", "🚌", "🚑", "🚲", "✈️", "🚀", "⛵"] },
+        { id: "objects", label: root.language == "ru" ? "Предметы" : "Objects", glyph: "💡", emojis: ["💡", "📱", "💻", "⌨️", "📷", "📺", "⏰", "🔋", "💰", "🔑", "🔒", "📦", "📚", "✅", "❌", "❗"] },
+    ];
 
     callback back-requested();
     callback profile-requested();
@@ -77,7 +102,7 @@ export component ChatScreen inherits Rectangle {
     callback search-query-changed(string);
     callback search-previous-requested();
     callback search-next-requested();
-    callback search-result-selected(int);
+    callback search-result-selected(string);
     callback audio-call-requested();
     callback video-call-requested();
     callback settings-requested();
@@ -107,7 +132,12 @@ export component ChatScreen inherits Rectangle {
     callback draft-changed(string);
     callback send-requested(string);
     callback attachment-requested(string);
-    callback emoji-picker-requested();
+    callback attachment-caption-changed(string);
+    callback attachment-compress-toggle-requested(string, bool);
+    callback attachment-remove-requested(string);
+    callback attachment-send-requested();
+    callback attachment-close-requested();
+    callback emoji-insert-requested(string);
     callback poll-requested();
     callback schedule-requested(string);
     callback voice-record-requested();
@@ -175,7 +205,7 @@ export component ChatScreen inherits Rectangle {
                     accessible-name: "Поиск по сообщениям";
                     clicked => { root.search-toggled(); }
                 }
-                if root.can-call : ChatAction {
+                if root.can-video-call : ChatAction {
                     label: "Видео";
                     accessible-name: "Видеозвонок";
                     clicked => { root.video-call-requested(); }
@@ -229,6 +259,22 @@ export component ChatScreen inherits Rectangle {
             }
         }
 
+        if !root.navigation-notice-text.is-empty : Rectangle {
+            height: max(36px, navigation-notice-label.preferred-height + 8px);
+            background: Theme.surface;
+            border-width: 0px;
+            navigation-notice-label := Text {
+                x: 12px;
+                width: parent.width - 24px;
+                height: parent.height;
+                text: root.navigation-notice-text;
+                color: Theme.accent;
+                font-size: 12px;
+                vertical-alignment: center;
+                wrap: word-wrap;
+            }
+        }
+
         if !root.error-text.is-empty : Text {
             text: root.error-text;
             color: Theme.danger;
@@ -239,6 +285,7 @@ export component ChatScreen inherits Rectangle {
 
         MessageList {
             messages: root.messages;
+            scroll-to-message-id <=> root.scroll-to-message-id;
             polls: root.polls;
             loading: root.loading;
             polls-loading: root.polls-loading;
@@ -270,10 +317,11 @@ export component ChatScreen inherits Rectangle {
             error-text: root.composer-error;
             can-poll: root.can-poll;
             can-schedule: root.can-schedule;
+            language: root.language;
             draft-changed(text) => { root.draft-changed(text); }
             send-requested(text) => { root.send-requested(text); }
             attachment-requested(kind) => { root.attachment-requested(kind); }
-            emoji-picker-requested => { root.emoji-picker-requested(); }
+            emoji-picker-requested => { root.emoji-picker-open = !root.emoji-picker-open; }
             poll-requested => { root.poll-requested(); }
             schedule-requested(text) => { root.schedule-requested(text); }
             voice-record-requested => { root.voice-record-requested(); }
@@ -287,18 +335,23 @@ export component ChatScreen inherits Rectangle {
         y: 56px;
         width: parent.width;
         height: min(root.height * 0.7, 420px);
+        language: root.language;
         query <=> root.search-query;
         results: root.search-results;
         searching: root.searching;
+        has-older: root.has-older && !root.loading;
+        loading-older: root.history-loading-older;
         selected-index: root.search-selected-index;
         position-label: root.search-position;
+        error-text: root.error-text;
         query-changed(text) => { root.search-query-changed(text); }
         previous-requested => { root.search-previous-requested(); }
         next-requested => { root.search-next-requested(); }
-        result-selected(index) => {
-            root.search-result-selected(index);
+        result-selected(message-id) => {
+            root.search-result-selected(message-id);
             root.search-toggled();
         }
+        load-older-requested => { root.load-older-requested(); }
         close-requested => { root.search-toggled(); }
     }
 
@@ -313,6 +366,23 @@ export component ChatScreen inherits Rectangle {
         action-selected(action) => { root.message-menu-action-selected(action); }
         reaction-selected(emoji) => { root.message-menu-reaction-selected(emoji); }
         close-requested => { root.message-menu-close-requested(); }
+    }
+
+    EmojiPickerPanel {
+        x: 0px;
+        y: 0px;
+        width: root.width;
+        height: root.height;
+        open: root.emoji-picker-open;
+        enabled: root.composer-enabled && !root.busy;
+        anchor-x: root.width - 72px;
+        anchor-y: root.height - 48px;
+        selected-category-id: root.emoji-picker-category-id;
+        categories: root.emoji-categories;
+        title: root.language == "ru" ? "Эмодзи" : "Emoji";
+        category-requested(category-id) => { root.emoji-picker-category-id = category-id; }
+        emoji-selected(emoji) => { root.emoji-insert-requested(emoji); }
+        close-requested => { root.emoji-picker-open = false; }
     }
 
     CreatePollDialog {
@@ -412,5 +482,19 @@ export component ChatScreen inherits Rectangle {
                 }
             }
         }
+    }
+
+    AttachmentComposer {
+        open: root.attachment-composer-open;
+        busy: root.attachment-composer-busy;
+        send-enabled: root.attachment-composer-send-enabled;
+        error-text: root.attachment-composer-error-text;
+        attachments: root.pending-attachments;
+        caption <=> root.attachment-caption;
+        caption-changed(value) => { root.attachment-caption-changed(value); }
+        compress-toggle-requested(id, enabled) => { root.attachment-compress-toggle-requested(id, enabled); }
+        remove-requested(id) => { root.attachment-remove-requested(id); }
+        send-requested => { root.attachment-send-requested(); }
+        close-requested => { root.attachment-close-requested(); }
     }
 }

@@ -1,6 +1,7 @@
 import { Theme } from "../theme.slint";
 import { FHTextButton, FHPrimaryButton } from "../components.slint";
 import { ScrollView } from "std-widgets.slint";
+import { AvatarViewerDialog } from "avatar-viewer-dialog.slint";
 
 export struct OwnProfileField {
     label: string,
@@ -10,12 +11,18 @@ export struct OwnProfileField {
 export component ProfileScreen inherits Rectangle {
     in property <string> username;
     in property <string> fh-number;
+    in property <string> copy-status-text: "";
     in property <string> status-text;
     in property <string> status-emoji;
     in property <bool> has-avatar: false;
     in property <image> avatar-image;
     in property <string> avatar-initials;
     in property <[OwnProfileField]> fields;
+    private property <bool> avatar-viewer-open: false;
+
+    changed has-avatar => {
+        if !root.has-avatar { root.avatar-viewer-open = false; }
+    }
 
     callback back-requested();
     callback edit-requested();
@@ -106,7 +113,7 @@ export component ProfileScreen inherits Rectangle {
 
                                     if root.has-avatar : TouchArea {
                                         mouse-cursor: pointer;
-                                        clicked => { root.avatar-open-requested(); }
+                                        clicked => { root.avatar-viewer-open = true; }
                                     }
                                 }
 
@@ -155,6 +162,12 @@ export component ProfileScreen inherits Rectangle {
                                     text: "Скопировать FH-номер";
                                     clicked => { root.share-requested(root.fh-number); }
                                 }
+                            }
+                            if !root.copy-status-text.is-empty : Text {
+                                text: root.copy-status-text;
+                                color: Theme.muted;
+                                font-size: 12px;
+                                wrap: word-wrap;
                             }
                         }
                     }
@@ -239,10 +252,23 @@ export component ProfileScreen inherits Rectangle {
                                     clicked => { root.share-requested(root.fh-number); }
                                 }
                             }
+                            if !root.copy-status-text.is-empty : Text {
+                                text: root.copy-status-text;
+                                color: Theme.muted;
+                                font-size: 12px;
+                                wrap: word-wrap;
+                            }
                         }
                     }
                 }
             }
         }
+    }
+
+    AvatarViewerDialog {
+        open: root.avatar-viewer-open;
+        has-avatar: root.has-avatar;
+        avatar-image: root.avatar-image;
+        close-requested => { root.avatar-viewer-open = false; }
     }
 }

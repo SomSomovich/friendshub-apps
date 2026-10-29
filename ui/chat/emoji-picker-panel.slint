@@ -49,7 +49,7 @@ export component EmojiPickerPanel inherits Rectangle {
                     vertical-scrollbar-policy: as-needed;
                     VerticalLayout {
                         width: 100%;
-                        spacing: 4px;
+                        spacing: 0px;
                         HorizontalLayout {
                             spacing: 3px;
                             for category[index] in root.categories : ChatAction {
@@ -60,23 +60,23 @@ export component EmojiPickerPanel inherits Rectangle {
                                 clicked => { root.category-requested(category.id); }
                             }
                         }
-                        for category[index] in root.categories : GridLayout {
-                            visible: root.selected-category-id == category.id;
+                        for category[index] in root.categories : Rectangle {
                             width: 100%;
-                            spacing: 2px;
-                            for emoji[emoji-index] in category.emojis : Rectangle {
-                                row: emoji-index / 8;
-                                col: emoji-index % 8;
-                                width: 32px;
-                                height: 32px;
-                                background: touch.has-hover ? Theme.hover : transparent;
-                                border-radius: 6px;
-                                Text { text: emoji; color: Theme.foreground; font-size: 20px; horizontal-alignment: center; vertical-alignment: center; width: 100%; height: 100%; accessible-role: none; }
-                                touch := TouchArea {
+                            height: root.selected-category-id == category.id ? emoji-grid.preferred-height + 4px : 0px;
+                            emoji-grid := GridLayout {
+                                y: 4px;
+                                visible: root.selected-category-id == category.id;
+                                width: 100%;
+                                spacing: 2px;
+                                for emoji[emoji-index] in category.emojis : ChatAction {
+                                    row: emoji-index / 8;
+                                    col: Math.mod(emoji-index, 8);
+                                    min-width: 32px;
+                                    height: 32px;
+                                    label-font-size: 20px;
+                                    label: emoji;
+                                    accessible-name: emoji;
                                     enabled: root.enabled;
-                                    mouse-cursor: pointer;
-                                    accessible-role: button;
-                                    accessible-label: emoji;
                                     clicked => {
                                         root.emoji-selected(emoji);
                                         root.close-requested();

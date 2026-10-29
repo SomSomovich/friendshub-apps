@@ -23,6 +23,16 @@ pub struct AvatarDeletedResponse {
     pub deleted: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct AvatarUploadedResponse {
+    pub avatar_url: String,
+}
+
+#[derive(Serialize)]
+struct UploadOwnAvatarRequest<'a> {
+    file_path: &'a str,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AddedResponse {
     pub added: bool,
@@ -355,6 +365,10 @@ pub fn clear_custom_status(client: &Client) -> Result<ClearedResponse> {
 
 pub fn delete_own_avatar(client: &Client) -> Result<AvatarDeletedResponse> {
     client.avatars_delete()
+}
+
+pub fn upload_own_avatar(client: &Client, file_path: &str) -> Result<AvatarUploadedResponse> {
+    client.avatars_upload(&UploadOwnAvatarRequest { file_path })
 }
 
 pub fn get_public_profile(

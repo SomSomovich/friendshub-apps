@@ -72,12 +72,44 @@ impl AppContext {
                 .active
                 .lock()
                 .map_err(|_| "active session lock poisoned")?;
+            if let Some(next) = &session {
+                if self
+                    .accounts
+                    .is_pending_removal(&next.account.id)
+                    .map_err(|_| "could not inspect pending account removal")?
+                {
+                    return Err("local account removal is pending");
+                }
+            }
             std::mem::replace(&mut *active, session.clone())
         };
         if !same_event_session(previous.as_ref(), session.as_ref()) {
             self.schedule_event_session_change(previous, session);
         }
         Ok(())
+    }
+
+    /// Retire only the selected account after its removal marker is durable.
+    /// Return the exact client so the cleanup worker can await its shutdown.
+    pub fn retire_local_account(&self, id: &str) -> Result<Option<ActiveSession>, &'static str> {
+        let previous = {
+            let mut active = self
+                .active
+                .lock()
+                .map_err(|_| "active session lock poisoned")?;
+            if active
+                .as_ref()
+                .is_some_and(|session| session.account.id == id)
+            {
+                active.take()
+            } else {
+                None
+            }
+        };
+        if let Some(previous) = &previous {
+            self.schedule_event_session_change(Some(previous.clone()), None);
+        }
+        Ok(previous)
     }
 
     fn schedule_event_session_change(
@@ -140,7 +172,10 @@ fn same_event_session(previous: Option<&ActiveSession>, next: Option<&ActiveSess
 pub fn navigate(ctx: &AppContext, requested_path: &str) {
     let mut route = normalize_route(requested_path);
     let authenticated = ctx.active_session().is_some();
-    if !authenticated && is_protected_route(&route) {
+    // Local account cleanup must remain reachable after tombstoning the last
+    // active account, including after a restart with unfinished cleanup.
+    let local_accounts_route = route == "/app/settings/accounts";
+    if !authenticated && is_protected_route(&route) && !local_accounts_route {
         if let Ok(mut pending) = ctx.pending_route.lock() {
             *pending = Some(route);
         }
@@ -179,7 +214,9 @@ pub fn navigate(ctx: &AppContext, requested_path: &str) {
         }
     });
 
-    if authenticated {
+    if local_accounts_route {
+        settings::load(ctx, &route);
+    } else if authenticated {
         match screen.as_str() {
             "chat_index" | "chat" => chat::load(ctx, &route),
             "channel"
@@ -312,8 +349,12 @@ where
     F: FnOnce(&Client) -> Result<T, CoreError> + Send + 'static,
     C: FnOnce(MainWindow, Result<T, CoreCallFailure>) + Send + 'static,
 {
+    let completion_core = core.clone();
     core.call(thread_name, call, move |result| {
         let _ = slint::invoke_from_event_loop(move || {
+            if completion_core.is_shutdown() {
+                return;
+            }
             if let Some(window) = ui.upgrade() {
                 completion(window, result);
             }

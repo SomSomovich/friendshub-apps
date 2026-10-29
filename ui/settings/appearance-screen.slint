@@ -1,3 +1,4 @@
+import { ColorPickerDialog } from "color-picker-dialog.slint";
 import { Theme } from "../theme.slint";
 import { FHPrimaryButton, FHTextButton } from "../components.slint";
 import { SettingsCard, SettingsDivider, SettingsFrame, SettingsChoice } from "common.slint";
@@ -104,7 +105,19 @@ export component AppearanceSettingsScreen inherits Rectangle {
     callback theme-changed(string);
     callback language-changed(string);
     callback rgb-channel-edited(string, string);
-    callback choose-color-requested(string);
+    private property <bool> color-picker-open: false;
+    private property <string> color-picker-target: "";
+    private property <int> picker-red;
+    private property <int> picker-green;
+    private property <int> picker-blue;
+
+    function open-color-picker(target: string) {
+        root.color-picker-target = target;
+        root.picker-red = max(0, min(255, round((target == "background" ? root.background-r : target == "button" ? root.button-r : target == "bubble" ? root.bubble-r : root.text-r).to-float())));
+        root.picker-green = max(0, min(255, round((target == "background" ? root.background-g : target == "button" ? root.button-g : target == "bubble" ? root.bubble-g : root.text-g).to-float())));
+        root.picker-blue = max(0, min(255, round((target == "background" ? root.background-b : target == "button" ? root.button-b : target == "bubble" ? root.bubble-b : root.text-b).to-float())));
+        root.color-picker-open = true;
+    }
     callback apply-colors-requested();
     callback reset-colors-requested();
 
@@ -149,7 +162,7 @@ export component AppearanceSettingsScreen inherits Rectangle {
             description: "Настройте основные цвета интерфейса в формате RGB.";
 
             Text {
-                text: "Выберите цвет на сайте-генераторе RGB и введите значения каналов от 0 до 255.";
+                text: root.language-value == "ru" ? "Выберите цвет или введите значения каналов от 0 до 255. Затем нажмите «Применить»." : "Choose a color or enter channel values from 0 to 255. Then select Apply.";
                 color: Theme.muted;
                 font-size: 12px;
                 wrap: word-wrap;
@@ -166,7 +179,7 @@ export component AppearanceSettingsScreen inherits Rectangle {
                 green: root.background-g;
                 blue: root.background-b;
                 channel-edited(id, value) => { root.rgb-channel-edited(id, value); }
-                choose-color(id) => { root.choose-color-requested(id); }
+                choose-color(id) => { root.open-color-picker(id); }
             }
 
             SettingsDivider {}
@@ -179,7 +192,7 @@ export component AppearanceSettingsScreen inherits Rectangle {
                 green: root.button-g;
                 blue: root.button-b;
                 channel-edited(id, value) => { root.rgb-channel-edited(id, value); }
-                choose-color(id) => { root.choose-color-requested(id); }
+                choose-color(id) => { root.open-color-picker(id); }
             }
 
             SettingsDivider {}
@@ -192,7 +205,7 @@ export component AppearanceSettingsScreen inherits Rectangle {
                 green: root.bubble-g;
                 blue: root.bubble-b;
                 channel-edited(id, value) => { root.rgb-channel-edited(id, value); }
-                choose-color(id) => { root.choose-color-requested(id); }
+                choose-color(id) => { root.open-color-picker(id); }
             }
 
             SettingsDivider {}
@@ -205,7 +218,7 @@ export component AppearanceSettingsScreen inherits Rectangle {
                 green: root.text-g;
                 blue: root.text-b;
                 channel-edited(id, value) => { root.rgb-channel-edited(id, value); }
-                choose-color(id) => { root.choose-color-requested(id); }
+                choose-color(id) => { root.open-color-picker(id); }
             }
 
             Text {
@@ -242,4 +255,35 @@ export component AppearanceSettingsScreen inherits Rectangle {
             }
         }
     }
+    if root.color-picker-open : ColorPickerDialog {
+        width: parent.width;
+        height: parent.height;
+        russian: root.language-value == "ru";
+        initial-red: root.picker-red;
+        initial-green: root.picker-green;
+        initial-blue: root.picker-blue;
+        close-requested => { root.color-picker-open = false; }
+        chosen(red, green, blue) => {
+            if root.color-picker-target == "background" {
+                root.background-r = "\{red}";
+                root.background-g = "\{green}";
+                root.background-b = "\{blue}";
+            } else if root.color-picker-target == "button" {
+                root.button-r = "\{red}";
+                root.button-g = "\{green}";
+                root.button-b = "\{blue}";
+            } else if root.color-picker-target == "bubble" {
+                root.bubble-r = "\{red}";
+                root.bubble-g = "\{green}";
+                root.bubble-b = "\{blue}";
+            } else {
+                root.text-r = "\{red}";
+                root.text-g = "\{green}";
+                root.text-b = "\{blue}";
+            }
+            root.rgb-channel-edited(root.color-picker-target, "");
+            root.color-picker-open = false;
+        }
+    }
+
 }

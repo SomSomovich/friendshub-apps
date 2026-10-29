@@ -13,6 +13,78 @@ export struct ConversationMember {
     can-moderate: bool,
 }
 
+export struct ConversationRight {
+    bit: int,
+    label: string,
+    enabled: bool,
+    selected: bool,
+}
+
+component MemberRightControl inherits Rectangle {
+    in property <string> label;
+    in property <bool> enabled;
+    in property <bool> selected;
+    callback toggled();
+
+    height: max(36px, right-content.preferred-height + 8px);
+    border-radius: 8px;
+    border-width: keyboard-scope.has-focus ? 1px : 0px;
+    border-color: Theme.accent;
+    background: right-pointer.has-hover && root.enabled ? Theme.hover : transparent;
+    opacity: root.enabled ? 1 : 0.5;
+    accessible-role: checkbox;
+    accessible-label: root.label;
+    accessible-checkable: true;
+    accessible-checked: root.selected;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.toggled(); } }
+    forward-focus: keyboard-scope;
+
+    right-content := HorizontalLayout {
+        padding: 4px;
+        spacing: 10px;
+        alignment: center;
+        Rectangle {
+            width: 18px;
+            height: 18px;
+            border-radius: 4px;
+            border-width: 1px;
+            border-color: root.selected ? Theme.accent : Theme.border;
+            background: root.selected ? Theme.accent : transparent;
+            Text {
+                text: root.selected ? "✓" : "";
+                color: Theme.accent-foreground;
+                font-size: 12px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+        Text {
+            text: root.label;
+            color: Theme.foreground;
+            font-size: 13px;
+            wrap: word-wrap;
+            horizontal-stretch: 1;
+        }
+    }
+    right-pointer := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.toggled(); }
+    }
+    keyboard-scope := FocusScope {
+        width: 0px;
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.toggled();
+                return accept;
+            }
+            return reject;
+        }
+    }
+}
+
 export struct ConversationInvite {
     id: string,
     kind-label: string,
@@ -41,6 +113,8 @@ export component ConversationSettingsScreen inherits Rectangle {
     in property <string> handle: "";
     in property <string> error-text: "";
     in property <string> profile-error-text: "";
+    in-out property <string> invite-copy-status-text: "";
+    in-out property <bool> invite-copy-status-error: false;
     in property <string> linked-group-id: "";
     in property <bool> linked-group-state-known: false;
     in property <[ConversationMember]> members;
@@ -70,6 +144,12 @@ export component ConversationSettingsScreen inherits Rectangle {
     in property <image> photo-image;
     in property <bool> busy: false;
     in property <bool> member-tag-editor-save-enabled: false;
+    in property <bool> member-rights-editor-open: false;
+    in property <bool> member-mute-editor-open: false;
+    in property <string> member-editor-label: "";
+    in property <[ConversationRight]> member-right-options: [];
+    in property <bool> member-rights-above: false;
+    in property <bool> member-moderator-muted: false;
     in property <bool> confirmation-visible: false;
     in property <string> confirmation-title: "";
     in property <string> confirmation-description: "";
@@ -98,6 +178,10 @@ export component ConversationSettingsScreen inherits Rectangle {
     callback linked-group-save-requested(string);
     callback member-add-requested(string);
     callback member-action-requested(int, string);
+    callback member-right-toggle-requested(int);
+    callback member-rights-save-requested();
+    callback member-mute-save-requested(string);
+    callback member-editor-close-requested();
     callback member-tag-save-requested(int, string);
     callback member-tag-draft-changed(string);
     callback member-tag-remove-requested(int);
@@ -111,6 +195,11 @@ export component ConversationSettingsScreen inherits Rectangle {
     callback conversation-delete-requested();
     callback confirmation-accepted();
     callback confirmation-cancelled();
+
+    changed invites => {
+        root.invite-copy-status-text = "";
+        root.invite-copy-status-error = false;
+    }
 
     background: Theme.background;
 
@@ -229,7 +318,7 @@ export component ConversationSettingsScreen inherits Rectangle {
                             if root.has-photo : Image { width: 100%; height: 100%; source: root.photo-image; image-fit: cover; }
                             if !root.has-photo : Text { text: "Нет фото"; color: Theme.muted; font-size: 11px; horizontal-alignment: center; vertical-alignment: center; width: 100%; height: 100%; }
                         }
-                        Text { text: "WebP до 5 МБ; картинка уменьшается до 512 пикселей автоматически."; color: Theme.muted; font-size: 12px; wrap: word-wrap; }
+                        Text { text: "PNG, JPEG или WebP до 20 МБ. Приложение уменьшит фото до 512 пикселей и загрузит WebP до 5 МБ."; color: Theme.muted; font-size: 12px; wrap: word-wrap; }
                         HorizontalLayout {
                             spacing: 8px;
                             ChatAction { label: "Изменить фото"; enabled: !root.busy; clicked => { root.photo-change-requested(); } }
@@ -356,8 +445,12 @@ export component ConversationSettingsScreen inherits Rectangle {
                                 }
                                 FlexboxLayout {
                                     spacing: 4px;
-                                    if root.can-manage-roles && member.can-moderate : ChatAction { label: member.role == "admin" ? "Изменить права" : "Сделать администратором"; enabled: !root.busy; clicked => { root.member-action-requested(index, member.role == "admin" ? "edit_rights" : "make_admin"); } }
-                                    if root.can-mute-members && member.can-moderate : ChatAction { label: member.muted ? "Снять заглушение" : "Заглушить"; enabled: !root.busy; clicked => { root.member-action-requested(index, member.muted ? "unmute" : "mute"); } }
+                                    if root.can-manage-roles && member.can-moderate : ChatAction {
+                                        label: member.role == "admin" ? (root.kind == "channel" ? "Снять права администратора" : "Изменить права") : "Сделать администратором";
+                                        enabled: !root.busy;
+                                        clicked => { root.member-action-requested(index, member.role == "admin" ? (root.kind == "channel" ? "demote" : "edit_rights") : "make_admin"); }
+                                    }
+                                    if root.kind == "group" && root.can-mute-members && member.can-moderate : ChatAction { label: member.muted ? "Снять заглушение" : "Заглушить"; enabled: !root.busy; clicked => { root.member-action-requested(index, member.muted ? "unmute" : "mute"); } }
                                     if root.can-change-tags && member.actor-type == "account" : ChatAction {
                                         label: member.tag.is-empty ? "Добавить тег" : "Изменить тег";
                                         enabled: !root.busy;
@@ -448,11 +541,11 @@ export component ConversationSettingsScreen inherits Rectangle {
                     invites-panel := VerticalLayout {
                         padding: 14px; spacing: 8px;
                         Text { text: "Приглашения"; color: Theme.foreground; font-size: 14px; font-weight: 600; }
-                        Text { text: "Создайте постоянную ссылку или ссылку на одно использование."; color: Theme.muted; font-size: 12px; wrap: word-wrap; }
+                        Text { text: "Создайте постоянный или одноразовый код приглашения."; color: Theme.muted; font-size: 12px; wrap: word-wrap; }
                         HorizontalLayout {
                             spacing: 6px;
-                            ChatAction { label: "Постоянная ссылка"; enabled: !root.busy; clicked => { root.invite-create-requested("permanent"); } }
-                            ChatAction { label: "Одноразовая ссылка"; enabled: !root.busy; clicked => { root.invite-create-requested("one_time"); } }
+                            ChatAction { label: "Постоянный код"; enabled: !root.busy; clicked => { root.invite-create-requested("permanent"); } }
+                            ChatAction { label: "Одноразовый код"; enabled: !root.busy; clicked => { root.invite-create-requested("one_time"); } }
                         }
                         if root.invites.length == 0 : Text { text: "Приглашений пока нет."; color: Theme.muted; font-size: 12px; }
                         for invite[index] in root.invites : HorizontalLayout {
@@ -470,8 +563,15 @@ export component ConversationSettingsScreen inherits Rectangle {
                                     Text { text: invite.detail; color: Theme.muted; font-size: 10px; }
                                 }
                             }
-                            ChatAction { label: "Копировать"; enabled: !invite.token.is-empty; clicked => { root.invite-copy-requested(index); } }
+                            ChatAction { label: "Копировать код"; enabled: !invite.token.is-empty; clicked => { root.invite-copy-requested(index); } }
                             ChatAction { label: "Отозвать"; danger: true; enabled: !root.busy; clicked => { root.invite-revoke-requested(index); } }
+                        }
+                        if !root.invite-copy-status-text.is-empty : Text {
+                            text: root.invite-copy-status-text;
+                            color: root.invite-copy-status-error ? Theme.danger : Theme.muted;
+                            font-size: 11px;
+                            wrap: word-wrap;
+                            width: 100%;
                         }
                     }
                 }
@@ -543,6 +643,103 @@ export component ConversationSettingsScreen inherits Rectangle {
                 }
             }
         }
+
+    if root.kind == "group" && root.member-rights-editor-open : Rectangle {
+        x: 0px; y: 0px; width: 100%; height: 100%;
+        background: #99000000;
+        TouchArea { enabled: !root.busy; clicked => { root.member-editor-close-requested(); } }
+        Rectangle {
+            width: min(parent.width - 32px, 500px);
+            height: min(parent.height - 32px, 660px);
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            background: Theme.surface;
+            border-width: 1px;
+            border-color: Theme.border;
+            border-radius: 12px;
+            clip: true;
+            VerticalLayout {
+                padding: 20px;
+                spacing: 12px;
+                Text { text: "Права администратора"; color: Theme.foreground; font-size: 16px; font-weight: 600; }
+                Text { text: root.member-editor-label; color: Theme.muted; font-size: 12px; wrap: word-wrap; }
+                ScrollView {
+                    vertical-stretch: 1;
+                    content-width: self.width;
+                    VerticalLayout {
+                        spacing: 6px;
+                        for right in root.member-right-options : MemberRightControl {
+                            label: right.label;
+                            selected: right.selected;
+                            enabled: right.enabled && !root.busy;
+                            toggled => { root.member-right-toggle-requested(right.bit); }
+                        }
+                        if root.member-rights-above : Text {
+                            text: "У участника есть права, которых нет у вас. Эта форма их не показывает, а сохранение их снимет.";
+                            color: Theme.muted;
+                            font-size: 11px;
+                            wrap: word-wrap;
+                        }
+                        Text {
+                            text: root.is-owner ? "Владелец может выдать любые права." : "Выдать можно только те права, которые есть у вас.";
+                            color: Theme.muted;
+                            font-size: 11px;
+                            wrap: word-wrap;
+                        }
+                        Text { text: "Если снять все отметки, участник снова станет обычным."; color: Theme.muted; font-size: 11px; wrap: word-wrap; }
+                        if !root.error-text.is-empty : Text { text: root.error-text; color: Theme.danger; font-size: 12px; wrap: word-wrap; }
+                    }
+                }
+                HorizontalLayout {
+                    alignment: end;
+                    spacing: 8px;
+                    ChatAction { label: "Отмена"; enabled: !root.busy; clicked => { root.member-editor-close-requested(); } }
+                    ChatAction { label: root.busy ? "Сохраняем…" : "Сохранить"; active: true; enabled: !root.busy; clicked => { root.member-rights-save-requested(); } }
+                }
+            }
+        }
+    }
+
+    if root.kind == "group" && root.member-mute-editor-open : Rectangle {
+        x: 0px; y: 0px; width: 100%; height: 100%;
+        background: #99000000;
+        TouchArea { enabled: !root.busy; clicked => { root.member-editor-close-requested(); } }
+        Rectangle {
+            width: min(parent.width - 32px, 420px);
+            height: min(parent.height - 32px, mute-card.preferred-height);
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            background: Theme.surface;
+            border-width: 1px;
+            border-color: Theme.border;
+            border-radius: 12px;
+            clip: true;
+            ScrollView {
+                content-width: self.width;
+                mute-card := VerticalLayout {
+                    padding: 20px;
+                    spacing: 8px;
+                    Text { text: "Заглушить участника"; color: Theme.foreground; font-size: 16px; font-weight: 600; }
+                    Text { text: root.member-editor-label; color: Theme.muted; font-size: 12px; wrap: word-wrap; }
+                    if root.member-moderator-muted : ChatAction {
+                        label: "Снять заглушение";
+                        enabled: !root.busy;
+                        clicked => { root.member-mute-save-requested("unmute"); }
+                    }
+                    ChatAction { label: "На час"; enabled: !root.busy; clicked => { root.member-mute-save-requested("hour"); } }
+                    ChatAction { label: "На 8 часов"; enabled: !root.busy; clicked => { root.member-mute-save-requested("eight-hours"); } }
+                    ChatAction { label: "На сутки"; enabled: !root.busy; clicked => { root.member-mute-save-requested("day"); } }
+                    ChatAction { label: "На неделю"; enabled: !root.busy; clicked => { root.member-mute-save-requested("week"); } }
+                    ChatAction { label: "Навсегда"; enabled: !root.busy; clicked => { root.member-mute-save-requested("forever"); } }
+                    if !root.error-text.is-empty : Text { text: root.error-text; color: Theme.danger; font-size: 12px; wrap: word-wrap; }
+                    HorizontalLayout {
+                        alignment: end;
+                        ChatAction { label: "Отмена"; enabled: !root.busy; clicked => { root.member-editor-close-requested(); } }
+                    }
+                }
+            }
+        }
+    }
 
     if root.member-tag-editor-open : Rectangle {
         x: 0px;

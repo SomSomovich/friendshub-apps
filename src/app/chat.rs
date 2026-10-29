@@ -4,6 +4,7 @@
 //! this module only touches Slint models from its event-loop completions.
 
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -15,11 +16,17 @@ use slint::{Image, ModelRc, VecModel};
 
 use crate::app::{ActiveSession, AppContext};
 use crate::core::CoreCallFailure;
-use crate::features::{chat as chat_api, conversations as conversations_api, profile_settings};
+use crate::features::{
+    chat as chat_api, community as community_api, conversations as conversations_api,
+    history_sync as history_sync_api, profile_settings,
+};
+use crate::platform::file_picker::{
+    ExtensionFilter, PickOutcome, PickRequest, PickedFile, SelectionMode,
+};
 use crate::{
-    ChatMenuItem, ChatMessage, ChatReaction, ChatSearchResult, ConversationRow, FilterTab,
-    FolderConversationOption, FolderTab, MainWindow, PollDraftOption, PollOptionView,
-    PollViewModel, ScheduledMessageView,
+    ChatAttachmentView, ChatMenuItem, ChatMessage, ChatReaction, ChatSearchResult, ConversationRow,
+    FilterTab, FolderConversationOption, FolderTab, MainWindow, PendingAttachmentView,
+    PollDraftOption, PollOptionView, PollViewModel, ScheduledMessageView,
 };
 
 const HISTORY_PAGE_SIZE: i64 = 200;
@@ -36,11 +43,13 @@ static MESSAGE_ID_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static REQUEST_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static IDENTITY_HYDRATION_GENERATION: AtomicU64 = AtomicU64::new(0);
 static SCHEDULED_REQUEST_GENERATION: AtomicU64 = AtomicU64::new(0);
+static SCHEDULE_CREATE_REQUEST_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Default)]
 struct ControllerState {
     accounts: HashMap<String, AccountState>,
     scheduled_dialog: ScheduledDialogState,
+    schedule_create_dialog: ScheduleCreateDialogState,
 }
 
 #[derive(Default)]
@@ -53,6 +62,19 @@ struct ScheduledDialogState {
     cancelling_id: String,
     request_generation: u64,
     messages: Vec<ScheduledMessageEntry>,
+}
+
+#[derive(Default)]
+struct ScheduleCreateDialogState {
+    open: bool,
+    account_id: String,
+    conversation_id: String,
+    draft: String,
+    hours: String,
+    minutes: String,
+    busy: bool,
+    error: String,
+    request_generation: u64,
 }
 
 struct ScheduledMessageEntry {
@@ -69,11 +91,18 @@ struct ScheduledCancelOutcome {
     failed: bool,
 }
 
+#[derive(Clone, Copy)]
+enum ScheduledSendRejection {
+    Horizon,
+    NotFuture,
+}
+
 #[derive(Default)]
 struct AccountState {
     conversations: Vec<conversations_api::Conversation>,
     folders: Vec<conversations_api::ChatFolder>,
     list_request_generation: u64,
+    direct_chat_title_updates: HashMap<String, (u64, String)>,
     request_generations: HashMap<String, u64>,
     selected_filter: String,
     selected_folder: String,
@@ -93,6 +122,7 @@ struct ChatState {
     poll_composer: PollComposerState,
     pins: Vec<String>,
     selected_pin: usize,
+    message_navigation_notice: String,
     history_cursor: Option<conversations_api::HistoryCursor>,
     history_has_older: bool,
     history_loading_older: bool,
@@ -103,6 +133,8 @@ struct ChatState {
     polls_error: String,
     poll_selections: HashMap<String, Vec<String>>,
     poll_proposals: HashMap<String, String>,
+    deleted_poll_ids: HashSet<String>,
+    poll_mutation_generations: HashMap<String, u64>,
     loading: bool,
     busy: bool,
     editing: bool,
@@ -121,6 +153,26 @@ struct ChatState {
     delete_confirmation_message_id: Option<String>,
     delete_busy: bool,
     delete_error: String,
+    attachment_composer: AttachmentComposerState,
+}
+
+#[derive(Default)]
+struct AttachmentComposerState {
+    open: bool,
+    busy: bool,
+    caption: String,
+    error: String,
+    files: Vec<PendingAttachment>,
+    active_file: Option<usize>,
+    phase_label: String,
+    generation: u64,
+}
+
+struct PendingAttachment {
+    id: String,
+    name: String,
+    size_bytes: u64,
+    file: PickedFile,
 }
 
 #[derive(Default)]
@@ -157,6 +209,7 @@ struct PollDraftOptionEntry {
 
 #[derive(Clone)]
 struct ChatSearchResultEntry {
+    id: String,
     sender: String,
     timestamp: String,
     excerpt: String,
@@ -175,6 +228,7 @@ struct MessageEntry {
     show_day_label: bool,
     server_timestamp: i64,
     reactions: Vec<ReactionEntry>,
+    attachments: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -224,6 +278,7 @@ struct LoadedConversation {
 }
 
 /// Load the conversation index or the conversation named by a deep-link route.
+/// Authenticated settings routes refresh the sidebar index without opening a chat.
 pub fn load(ctx: &AppContext, route: &str) {
     let Some(session) = ctx.active_session() else {
         ctx.apply_ui(|window| {
@@ -373,6 +428,154 @@ pub fn load(ctx: &AppContext, route: &str) {
                 window.set_chat_loading(false);
                 window.set_chat_error_text("Не удалось загрузить историю чата.".into());
                 window.set_polls_loading(false);
+            }
+        });
+    }
+}
+
+/// Load the encrypted poll history for a channel without loading its separate
+/// post feed. Channel post and poll controllers run independently, but share
+/// the existing poll model and mutation handlers.
+pub(crate) fn load_channel_polls(
+    ctx: &AppContext,
+    conversation_id: &str,
+    channel_load_generation: u64,
+) {
+    let Some(session) = ctx.active_session() else {
+        return;
+    };
+    let account_id = session.account.id.clone();
+    let conversation_id = conversation_id.to_owned();
+    let route = format!("/app/channel/{conversation_id}");
+    if !same_active_session(ctx, &session) {
+        return;
+    }
+
+    let request_generation = begin_chat_request(&account_id, &conversation_id, "polls-load");
+    {
+        let mut state = state_lock();
+        let chat = state
+            .accounts
+            .entry(account_id.clone())
+            .or_default()
+            .chats
+            .entry(conversation_id.clone())
+            .or_default();
+        chat.kind = "channel".to_owned();
+        chat.loading = false;
+        chat.poll_composer.open = false;
+        chat.poll_composer.duration_dialog_open = false;
+        chat.polls_loading = true;
+        chat.polls_loading_older = false;
+        chat.polls_error.clear();
+    }
+    apply_selected_chat(ctx);
+
+    let account = session.account.clone();
+    let session_for_completion = session.clone();
+    let session_for_error = session.clone();
+    let account_id_for_completion = account_id.clone();
+    let conversation_id_for_completion = conversation_id.clone();
+    let route_for_completion = route.clone();
+    let worker_conversation_id = conversation_id.clone();
+    let context = ctx.clone();
+    let result = ctx.call(
+        "friendshub-channel-polls-load",
+        move |client| load_poll_page(client, &worker_conversation_id, &account, None, None),
+        move |window, result| {
+            if !same_active_session(&context, &session_for_completion)
+                || !crate::app::community::channel_load_generation_is_current(
+                    channel_load_generation,
+                )
+                || !chat_request_generation_is_current(
+                    &account_id_for_completion,
+                    &conversation_id_for_completion,
+                    "polls-load",
+                    request_generation,
+                )
+                || !is_chat_route_visible(
+                    &window,
+                    &conversation_id_for_completion,
+                    false,
+                    Some(&route_for_completion),
+                )
+            {
+                return;
+            }
+            let mut state = state_lock();
+            let Some(chat) = state
+                .accounts
+                .get_mut(&account_id_for_completion)
+                .and_then(|account| account.chats.get_mut(&conversation_id_for_completion))
+            else {
+                return;
+            };
+            chat.polls_loading = false;
+            match result {
+                Ok(polls) => {
+                    chat.poll_cursor = polls.first().map(|poll| chat_api::PollHistoryRequest {
+                        conversation_id: conversation_id_for_completion.clone(),
+                        before: Some(poll.item.created_at),
+                        before_id: Some(poll.item.id.clone()),
+                        limit: Some(POLL_PAGE_SIZE),
+                    });
+                    chat.poll_has_older = polls.len() as i64 >= POLL_PAGE_SIZE;
+                    chat.polls_error.clear();
+                    merge_poll_pages(chat, polls, request_generation, true);
+                }
+                Err(error) => chat.polls_error = error.user_message().to_owned(),
+            }
+            apply_chat_models(window, chat);
+        },
+    );
+    if let Err(error) = result {
+        if !same_active_session(ctx, &session_for_error)
+            || !crate::app::community::channel_load_generation_is_current(channel_load_generation)
+            || !chat_request_generation_is_current(
+                &account_id,
+                &conversation_id,
+                "polls-load",
+                request_generation,
+            )
+        {
+            return;
+        }
+        if let Some(chat) = state_lock()
+            .accounts
+            .get_mut(&account_id)
+            .and_then(|account| account.chats.get_mut(&conversation_id))
+        {
+            chat.polls_loading = false;
+            chat.polls_error = error.to_string();
+        }
+        let expected_session = session_for_error;
+        let expected_account_id = account_id.clone();
+        let expected_conversation_id = conversation_id.clone();
+        let context_for_error_ui = ctx.clone();
+        let route_for_error_ui = route.clone();
+        ctx.apply_ui(move |window| {
+            if same_active_session(&context_for_error_ui, &expected_session)
+                && crate::app::community::channel_load_generation_is_current(
+                    channel_load_generation,
+                )
+                && chat_request_generation_is_current(
+                    &expected_account_id,
+                    &expected_conversation_id,
+                    "polls-load",
+                    request_generation,
+                )
+                && is_chat_route_visible(
+                    &window,
+                    &expected_conversation_id,
+                    false,
+                    Some(&route_for_error_ui),
+                )
+                && let Some(chat) = state_lock()
+                    .accounts
+                    .get_mut(&expected_account_id)
+                    .and_then(|account| account.chats.get_mut(&expected_conversation_id))
+            {
+                apply_chat_models(window, chat);
             }
         });
     }
@@ -550,11 +753,11 @@ pub fn handle(
     action: &str,
     arg1: &str,
     arg2: &str,
-    _arg3: &str,
+    arg3: &str,
 ) -> bool {
     match namespace {
         "conversations" => handle_conversations(ctx, action, arg1, arg2),
-        "chat" => handle_chat(ctx, action, arg1, arg2),
+        "chat" => handle_chat(ctx, action, arg1, arg2, arg3),
         "polls" => handle_polls(ctx, action, arg1, arg2),
         _ => false,
     }
@@ -577,17 +780,20 @@ pub fn peer_account_id(ctx: &AppContext, conversation_id: &str) -> Option<String
 
 /// Update cached direct-chat titles for a contact whose local alias changed.
 pub fn update_direct_chat_title(ctx: &AppContext, peer_account_id: &str, title: &str) {
-    IDENTITY_HYDRATION_GENERATION.fetch_add(1, Ordering::Relaxed);
-    let Some(account_id) = active_account_id(ctx) else {
+    let Some(session) = ctx.active_session() else {
         return;
     };
+    let identity_generation = IDENTITY_HYDRATION_GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
+    let account_id = session.account.id.clone();
     let title = title.to_owned();
     let selected_conversation = selected_conversation_id(ctx);
-    let (changed_conversation_ids, refresh_data) = {
+    let (changed_conversation_ids, conversations, list_generation) = {
         let mut state = state_lock();
-        let Some(account) = state.accounts.get_mut(&account_id) else {
-            return;
-        };
+        let account = state.accounts.entry(account_id.clone()).or_default();
+        account.direct_chat_title_updates.insert(
+            peer_account_id.to_owned(),
+            (identity_generation, title.clone()),
+        );
         let mut changed_conversation_ids = Vec::new();
         for (conversation_id, chat) in &mut account.chats {
             if chat.kind == "direct" && chat.peer_account_id == peer_account_id {
@@ -603,51 +809,51 @@ pub fn update_direct_chat_title(ctx: &AppContext, peer_account_id: &str, title: 
                 conversation.title = Some(title.clone());
             }
         }
-        let refresh_data = changed_conversation_ids.is_empty().then(|| {
-            (
-                account.conversations.clone(),
-                account.list_request_generation,
-            )
-        });
-        (changed_conversation_ids, refresh_data)
+        (
+            changed_conversation_ids,
+            account.conversations.clone(),
+            account.list_request_generation,
+        )
     };
-    if changed_conversation_ids.is_empty() {
-        if let (Some(session), Some((conversations, list_generation))) =
-            (ctx.active_session(), refresh_data)
-            && session.account.id == account_id
-            && conversations
-                .iter()
-                .any(|conversation| conversation.kind == "direct")
-            && let Some(window) = ctx.ui.upgrade()
-            && is_conversation_screen(&window)
-        {
-            let route = window.get_route().to_string();
-            hydrate_direct_chat_aliases(
-                ctx,
-                session,
-                account_id,
-                route,
-                list_generation,
-                conversations,
-                selected_conversation.as_deref(),
-            );
-        }
+    let Some(window) = ctx.ui.upgrade() else {
+        return;
+    };
+    let route = window.get_route().to_string();
+    if !list_request_is_current(ctx, &window, &session, &account_id, &route, list_generation) {
         return;
     }
+    hydrate_direct_chat_aliases(
+        ctx,
+        session.clone(),
+        account_id.clone(),
+        route.clone(),
+        list_generation,
+        conversations,
+        selected_conversation.as_deref(),
+    );
 
     let context = ctx.clone();
     ctx.apply_ui(move |window| {
+        if !list_request_is_current(
+            &context,
+            &window,
+            &session,
+            &account_id,
+            &route,
+            list_generation,
+        ) {
+            return;
+        }
         if let Some(selected) = selected_conversation.as_deref()
             && changed_conversation_ids
                 .iter()
                 .any(|conversation_id| conversation_id == selected)
+            && is_chat_route_visible(&window, selected, false, None)
             && window.get_conversation_kind() == "direct"
         {
             window.set_conversation_title(title.into());
         }
-        if is_conversation_screen(&window) {
-            apply_conversation_list(&context, window, &account_id);
-        }
+        apply_conversation_list(&context, window, &account_id);
     });
 }
 
@@ -1138,7 +1344,7 @@ fn save_folder(ctx: &AppContext, folder_id: &str, requested_name: &str) -> bool 
     true
 }
 
-fn handle_chat(ctx: &AppContext, action: &str, arg1: &str, arg2: &str) -> bool {
+fn handle_chat(ctx: &AppContext, action: &str, arg1: &str, arg2: &str, _arg3: &str) -> bool {
     match action {
         "send" => {
             send_text(ctx, arg1);
@@ -1186,6 +1392,7 @@ fn handle_chat(ctx: &AppContext, action: &str, arg1: &str, arg2: &str) -> bool {
                     .and_then(|account| account.chats.get_mut(&conversation_id))
                 {
                     update_chat_search(chat, arg1);
+                    chat.message_navigation_notice.clear();
                 }
                 apply_selected_chat(ctx);
             }
@@ -1195,34 +1402,50 @@ fn handle_chat(ctx: &AppContext, action: &str, arg1: &str, arg2: &str) -> bool {
             if let Some(account_id) = active_account_id(ctx)
                 && let Some(conversation_id) = selected_conversation_id(ctx)
             {
-                if let Some(chat) = state_lock()
+                let target_message_id = state_lock()
                     .accounts
                     .get_mut(&account_id)
                     .and_then(|account| account.chats.get_mut(&conversation_id))
-                {
-                    move_search_selection(chat, action == "search-next");
-                }
+                    .and_then(|chat| {
+                        move_search_selection(chat, action == "search-next");
+                        selected_search_result_id(chat)
+                    });
                 apply_selected_chat(ctx);
+                if let Some(message_id) = target_message_id {
+                    request_message_jump(ctx, &account_id, &conversation_id, &message_id, false);
+                }
             }
             true
         }
         "search-result" => {
-            let Some(index) = arg1.parse::<i32>().ok() else {
+            if arg1.is_empty() {
                 return true;
-            };
+            }
             if let Some(account_id) = active_account_id(ctx)
                 && let Some(conversation_id) = selected_conversation_id(ctx)
             {
-                if let Some(chat) = state_lock()
+                let selected = if let Some(chat) = state_lock()
                     .accounts
                     .get_mut(&account_id)
                     .and_then(|account| account.chats.get_mut(&conversation_id))
-                    && index >= 0
-                    && (index as usize) < chat.search_results.len()
                 {
-                    chat.search_selected_index = index;
-                }
+                    if let Some(index) = chat
+                        .search_results
+                        .iter()
+                        .position(|result| result.id == arg1)
+                    {
+                        chat.search_selected_index = index as i32;
+                        Some(arg1.to_owned())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
                 apply_selected_chat(ctx);
+                if let Some(message_id) = selected {
+                    request_message_jump(ctx, &account_id, &conversation_id, &message_id, false);
+                }
             }
             true
         }
@@ -1293,6 +1516,26 @@ fn handle_chat(ctx: &AppContext, action: &str, arg1: &str, arg2: &str) -> bool {
             open_scheduled_dialog(ctx);
             true
         }
+        "emoji-insert" => {
+            insert_emoji_at_end(ctx, arg1);
+            true
+        }
+        "schedule-hours-changed" => {
+            update_schedule_create_dialog(ctx, Some(arg1), None);
+            true
+        }
+        "schedule-minutes-changed" => {
+            update_schedule_create_dialog(ctx, None, Some(arg1));
+            true
+        }
+        "schedule-submit" => {
+            schedule_message(ctx);
+            true
+        }
+        "schedule-close" => {
+            close_schedule_create_dialog(ctx);
+            true
+        }
         "scheduled-refresh" => {
             refresh_scheduled_dialog(ctx);
             true
@@ -1305,14 +1548,19 @@ fn handle_chat(ctx: &AppContext, action: &str, arg1: &str, arg2: &str) -> bool {
             close_scheduled_dialog(ctx);
             true
         }
-        // The native core wrappers list and cancel scheduled messages but do
-        // not expose scheduled sending.
-        "schedule" => false,
+        "schedule" => {
+            open_schedule_create_dialog(ctx, arg1);
+            true
+        }
         _ => false,
     }
 }
 
 fn open_scheduled_dialog(ctx: &AppContext) {
+    open_scheduled_dialog_with_notice(ctx, String::new());
+}
+
+fn open_scheduled_dialog_with_notice(ctx: &AppContext, notice: String) {
     let Some(session) = ctx.active_session() else {
         return;
     };
@@ -1339,7 +1587,7 @@ fn open_scheduled_dialog(ctx: &AppContext) {
             ..ScheduledDialogState::default()
         };
     }
-    load_scheduled_messages(ctx, session, conversation_id);
+    load_scheduled_messages_with_error(ctx, session, conversation_id, notice);
 }
 
 fn refresh_scheduled_dialog(ctx: &AppContext) {
@@ -1372,6 +1620,15 @@ fn refresh_scheduled_dialog(ctx: &AppContext) {
 }
 
 fn load_scheduled_messages(ctx: &AppContext, session: ActiveSession, conversation_id: String) {
+    load_scheduled_messages_with_error(ctx, session, conversation_id, String::new());
+}
+
+fn load_scheduled_messages_with_error(
+    ctx: &AppContext,
+    session: ActiveSession,
+    conversation_id: String,
+    recovery_error: String,
+) {
     let account_id = session.account.id.clone();
     let Some(window) = ctx.ui.upgrade() else {
         return;
@@ -1393,7 +1650,7 @@ fn load_scheduled_messages(ctx: &AppContext, session: ActiveSession, conversatio
         }
         dialog.request_generation = generation;
         dialog.loading = true;
-        dialog.error.clear();
+        dialog.error = recovery_error.clone();
     }
 
     let context_for_completion = ctx.clone();
@@ -1409,6 +1666,7 @@ fn load_scheduled_messages(ctx: &AppContext, session: ActiveSession, conversatio
     let account_id_for_loading = account_id.clone();
     let conversation_id_for_loading = conversation_id.clone();
     let lookup_client = session.core.client();
+    let recovery_error_for_completion = recovery_error.clone();
     let result = ctx.call(
         "friendshub-chat-scheduled-list",
         move |_client| conversations_api::list_scheduled(lookup_client.as_ref()),
@@ -1428,13 +1686,15 @@ fn load_scheduled_messages(ctx: &AppContext, session: ActiveSession, conversatio
             dialog.loading = false;
             match result {
                 Ok(envelopes) => {
-                    dialog.error.clear();
+                    dialog.error = recovery_error_for_completion;
                     dialog.messages =
                         group_scheduled_envelopes(envelopes, &conversation_id_for_completion);
                 }
                 Err(error) => {
-                    dialog.error = error.user_message().to_owned();
-                    dialog.messages.clear();
+                    dialog.error = scheduled_refresh_error(
+                        &recovery_error_for_completion,
+                        error.user_message(),
+                    );
                 }
             }
             apply_scheduled_dialog(window, dialog);
@@ -1455,12 +1715,12 @@ fn load_scheduled_messages(ctx: &AppContext, session: ActiveSession, conversatio
             let mut state = state_lock();
             let dialog = &mut state.scheduled_dialog;
             dialog.loading = false;
-            dialog.error = if error.kind() == std::io::ErrorKind::NotConnected {
-                "Войдите в аккаунт, чтобы загрузить отложенные сообщения.".to_owned()
+            let load_error = if error.kind() == std::io::ErrorKind::NotConnected {
+                "Войдите в аккаунт, чтобы загрузить отложенные сообщения."
             } else {
-                "Не удалось запустить загрузку отложенных сообщений.".to_owned()
+                "Не удалось запустить загрузку отложенных сообщений."
             };
-            dialog.messages.clear();
+            dialog.error = scheduled_refresh_error(&recovery_error, load_error);
             apply_scheduled_dialog(window, dialog);
         });
     } else {
@@ -1477,6 +1737,14 @@ fn load_scheduled_messages(ctx: &AppContext, session: ActiveSession, conversatio
                 apply_scheduled_dialog(window, &state.scheduled_dialog);
             }
         });
+    }
+}
+
+fn scheduled_refresh_error(recovery_error: &str, load_error: &str) -> String {
+    if recovery_error.is_empty() {
+        load_error.to_owned()
+    } else {
+        format!("{recovery_error}\n{load_error}")
     }
 }
 
@@ -1514,15 +1782,15 @@ fn cancel_scheduled_message_group(ctx: &AppContext, group_key: &str) {
             return;
         };
         let envelope_ids = message.envelope_ids.clone();
+        if envelope_ids.is_empty() {
+            return;
+        }
         let generation = SCHEDULED_REQUEST_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
         dialog.request_generation = generation;
         dialog.cancelling_id = group_key.to_owned();
         dialog.error.clear();
         (envelope_ids, generation)
     };
-    if envelope_ids.is_empty() {
-        return;
-    }
     let context_for_loading = ctx.clone();
     let session_for_loading = session.clone();
     let account_id_for_loading = account_id.clone();
@@ -1577,7 +1845,8 @@ fn cancel_scheduled_message_group(ctx: &AppContext, group_key: &str) {
             ) {
                 return;
             }
-            let refresh_after_cancel = {
+            let language = window.get_language();
+            let (refresh_after_cancel, recovery_error) = {
                 let mut state = state_lock();
                 let dialog = &mut state.scheduled_dialog;
                 dialog.loading = false;
@@ -1594,16 +1863,32 @@ fn cancel_scheduled_message_group(ctx: &AppContext, group_key: &str) {
                         dialog
                             .messages
                             .retain(|message| !message.envelope_ids.is_empty());
-                        outcome.already_started || outcome.failed
+                        let recovery_error = if outcome.failed {
+                            localized_for(
+                                language.as_str(),
+                                "Не все сообщения удалось отменить. Повторите отмену оставшихся сообщений.",
+                                "Some messages could not be cancelled. Retry cancelling the remaining messages.",
+                            )
+                        } else if outcome.already_started {
+                            localized_for(
+                                language.as_str(),
+                                "Некоторые сообщения уже отправляются или были отправлены.",
+                                "Some messages are already being sent or have been sent.",
+                            )
+                        } else {
+                            String::new()
+                        };
+                        (outcome.already_started || outcome.failed, recovery_error)
                     }
-                    Err(_) => true,
+                    Err(error) => (true, error.user_message().to_owned()),
                 }
             };
             if refresh_after_cancel {
-                load_scheduled_messages(
+                load_scheduled_messages_with_error(
                     &context_for_completion,
                     session_for_completion,
                     conversation_id_for_completion,
+                    recovery_error,
                 );
             } else {
                 let state = state_lock();
@@ -1634,7 +1919,6 @@ fn cancel_scheduled_message_group(ctx: &AppContext, group_key: &str) {
             } else {
                 "Не удалось запустить отмену отложенных сообщений.".to_owned()
             };
-            dialog.messages.clear();
             apply_scheduled_dialog(window, dialog);
         });
     }
@@ -1652,6 +1936,398 @@ fn close_scheduled_dialog(ctx: &AppContext) {
         let state = state_lock();
         apply_scheduled_dialog(window, &state.scheduled_dialog);
     });
+}
+
+fn open_schedule_create_dialog(ctx: &AppContext, draft: &str) {
+    let Some(session) = ctx.active_session() else {
+        return;
+    };
+    let Some(conversation_id) = selected_conversation_id(ctx) else {
+        return;
+    };
+    let Some(window) = ctx.ui.upgrade() else {
+        return;
+    };
+    if !is_scheduled_chat_visible(&window, &conversation_id) || draft.trim().is_empty() {
+        return;
+    }
+    let account_id = session.account.id.clone();
+    {
+        let mut state = state_lock();
+        let Some(chat) = state
+            .accounts
+            .get(&account_id)
+            .and_then(|account| account.chats.get(&conversation_id))
+        else {
+            return;
+        };
+        if !matches!(chat.kind.as_str(), "direct" | "group")
+            || chat.loading
+            || chat.busy
+            || chat.editing
+            || chat.draft != draft
+        {
+            return;
+        }
+        let generation = SCHEDULE_CREATE_REQUEST_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+        state.schedule_create_dialog = ScheduleCreateDialogState {
+            open: true,
+            account_id,
+            conversation_id,
+            draft: draft.to_owned(),
+            hours: "1".to_owned(),
+            minutes: "0".to_owned(),
+            request_generation: generation,
+            ..ScheduleCreateDialogState::default()
+        };
+    }
+    let state = state_lock();
+    apply_schedule_create_dialog(&window, &state.schedule_create_dialog);
+}
+
+fn update_schedule_create_dialog(ctx: &AppContext, hours: Option<&str>, minutes: Option<&str>) {
+    let Some(session) = ctx.active_session() else {
+        return;
+    };
+    let Some(conversation_id) = selected_conversation_id(ctx) else {
+        return;
+    };
+    let Some(window) = ctx.ui.upgrade() else {
+        return;
+    };
+    if !is_scheduled_chat_visible(&window, &conversation_id) {
+        return;
+    }
+    let mut state = state_lock();
+    let dialog = &mut state.schedule_create_dialog;
+    if !dialog.open
+        || dialog.busy
+        || dialog.account_id != session.account.id
+        || dialog.conversation_id != conversation_id
+    {
+        return;
+    }
+    if let Some(hours) = hours {
+        dialog.hours = hours.to_owned();
+    }
+    if let Some(minutes) = minutes {
+        dialog.minutes = minutes.to_owned();
+    }
+    dialog.error.clear();
+    apply_schedule_create_dialog(&window, dialog);
+}
+
+fn close_schedule_create_dialog(ctx: &AppContext) {
+    let mut state = state_lock();
+    if state.schedule_create_dialog.busy {
+        return;
+    }
+    let generation = SCHEDULE_CREATE_REQUEST_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+    state.schedule_create_dialog = ScheduleCreateDialogState {
+        request_generation: generation,
+        ..ScheduleCreateDialogState::default()
+    };
+    drop(state);
+    ctx.apply_ui(|window| {
+        let state = state_lock();
+        apply_schedule_create_dialog(&window, &state.schedule_create_dialog);
+    });
+}
+
+fn schedule_message(ctx: &AppContext) {
+    let Some(session) = ctx.active_session() else {
+        return;
+    };
+    let Some(conversation_id) = selected_conversation_id(ctx) else {
+        return;
+    };
+    let Some(window) = ctx.ui.upgrade() else {
+        return;
+    };
+    if !is_scheduled_chat_visible(&window, &conversation_id) {
+        return;
+    }
+
+    let language = window.get_language().to_string();
+    let mut state = state_lock();
+    let (account_id, hours, minutes, draft) = {
+        let dialog = &state.schedule_create_dialog;
+        if !dialog.open
+            || dialog.busy
+            || dialog.account_id != session.account.id
+            || dialog.conversation_id != conversation_id
+        {
+            return;
+        }
+        (
+            dialog.account_id.clone(),
+            dialog.hours.clone(),
+            dialog.minutes.clone(),
+            dialog.draft.clone(),
+        )
+    };
+    let Some(duration) = scheduled_duration_seconds(&hours, &minutes) else {
+        state.schedule_create_dialog.error = localized_for(
+            &language,
+            "Укажите время от 1 минуты до 23 часов 59 минут.",
+            "Choose a delay from 1 minute to 23 hours and 59 minutes.",
+        );
+        apply_schedule_create_dialog(&window, &state.schedule_create_dialog);
+        return;
+    };
+    let chat_is_valid = state
+        .accounts
+        .get(&account_id)
+        .and_then(|account| account.chats.get(&conversation_id))
+        .map(|chat| {
+            (chat.kind == "direct" || chat.kind == "group")
+                && !chat.loading
+                && !chat.busy
+                && !chat.editing
+                && chat.draft == draft
+        });
+    let Some(chat_is_valid) = chat_is_valid else {
+        state.schedule_create_dialog.error = localized_for(
+            &language,
+            "Чат больше недоступен. Закройте окно и откройте его снова.",
+            "This conversation is no longer available. Close this dialog and reopen it.",
+        );
+        apply_schedule_create_dialog(&window, &state.schedule_create_dialog);
+        return;
+    };
+    if !chat_is_valid {
+        state.schedule_create_dialog.error = localized_for(
+            &language,
+            "Черновик изменился. Закройте окно и попробуйте снова.",
+            "The draft changed. Close this dialog and try again.",
+        );
+        apply_schedule_create_dialog(&window, &state.schedule_create_dialog);
+        return;
+    }
+    let Some(send_at) = now_unix().checked_add(duration) else {
+        state.schedule_create_dialog.error = localized_for(
+            &language,
+            "Не удалось вычислить время отправки.",
+            "Could not calculate the scheduled delivery time.",
+        );
+        apply_schedule_create_dialog(&window, &state.schedule_create_dialog);
+        return;
+    };
+    let generation = SCHEDULE_CREATE_REQUEST_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+    state.schedule_create_dialog.busy = true;
+    state.schedule_create_dialog.error.clear();
+    state.schedule_create_dialog.request_generation = generation;
+    drop(state);
+    {
+        let state = state_lock();
+        apply_schedule_create_dialog(&window, &state.schedule_create_dialog);
+    }
+    send_text_at(ctx, &draft, Some(send_at), Some(generation));
+}
+
+fn apply_schedule_create_dialog(window: &MainWindow, dialog: &ScheduleCreateDialogState) {
+    let is_current = dialog.open
+        && is_scheduled_chat_visible(&window, &dialog.conversation_id)
+        && window.get_settings_active_account_id().as_str() == dialog.account_id
+        && window.get_selected_conversation_id().as_str() == dialog.conversation_id;
+    window.set_schedule_create_dialog_open(is_current);
+    window.set_schedule_create_dialog_busy(dialog.busy);
+    window.set_schedule_create_dialog_duration_valid(
+        scheduled_duration_seconds(&dialog.hours, &dialog.minutes).is_some(),
+    );
+    window.set_schedule_create_dialog_hours(dialog.hours.clone().into());
+    window.set_schedule_create_dialog_minutes(dialog.minutes.clone().into());
+    window.set_schedule_create_dialog_draft_preview(dialog.draft.clone().into());
+    window.set_schedule_create_dialog_error(dialog.error.clone().into());
+    window.set_schedule_create_dialog_account_id(dialog.account_id.clone().into());
+    window.set_schedule_create_dialog_conversation_id(dialog.conversation_id.clone().into());
+}
+
+fn finish_schedule_create_dialog(
+    ctx: &AppContext,
+    account_id: &str,
+    conversation_id: &str,
+    generation: Option<u64>,
+    succeeded: bool,
+    error: Option<String>,
+) {
+    let Some(generation) = generation else {
+        return;
+    };
+    let Some(session) = ctx.active_session() else {
+        return;
+    };
+    if session.account.id != account_id {
+        return;
+    }
+    let context = ctx.clone();
+    let session_for_ui = session.clone();
+    let account_id = account_id.to_owned();
+    let conversation_id = conversation_id.to_owned();
+    ctx.apply_ui(move |window| {
+        if !same_active_session(&context, &session_for_ui) {
+            return;
+        }
+        let mut state = state_lock();
+        let dialog = &mut state.schedule_create_dialog;
+        if !dialog.open
+            || !dialog.busy
+            || dialog.account_id != account_id
+            || dialog.conversation_id != conversation_id
+            || dialog.request_generation != generation
+        {
+            return;
+        }
+        dialog.busy = false;
+        let completion_notice = if succeeded {
+            error.clone().unwrap_or_default()
+        } else {
+            String::new()
+        };
+        if succeeded {
+            dialog.open = false;
+            dialog.error.clear();
+            dialog.draft.clear();
+        } else {
+            dialog.error = error.unwrap_or_else(|| {
+                localized_for(
+                    window.get_language().as_str(),
+                    "Не удалось запланировать сообщение. Повторите попытку.",
+                    "Could not schedule the message. Please try again.",
+                )
+            });
+        }
+        apply_schedule_create_dialog(&window, dialog);
+        drop(state);
+        if succeeded && is_scheduled_chat_visible(&window, &conversation_id) {
+            open_scheduled_dialog_with_notice(&context, completion_notice);
+        }
+    });
+}
+
+fn remember_scheduled_rejection<T>(
+    result: Result<T, CoreError>,
+    rejection: &Mutex<Option<ScheduledSendRejection>>,
+) -> Result<T, CoreError> {
+    match result {
+        Err(CoreError::InvalidPayload(message))
+            if message.contains("send_at must be no more than") =>
+        {
+            *rejection
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                Some(ScheduledSendRejection::Horizon);
+            Err(CoreError::InvalidPayload(message))
+        }
+        Err(CoreError::InvalidPayload(message)) if message.contains("send_at must be a future") => {
+            *rejection
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                Some(ScheduledSendRejection::NotFuture);
+            Err(CoreError::InvalidPayload(message))
+        }
+        result => result,
+    }
+}
+
+fn scheduled_send_error_message(
+    error: CoreCallFailure,
+    rejection: Option<ScheduledSendRejection>,
+    language: &str,
+) -> String {
+    match rejection {
+        Some(ScheduledSendRejection::Horizon) => localized_for(
+            language,
+            "Слишком длинный срок: выберите время не позднее чем через 23 часа 59 минут.",
+            "The delivery time is too far away. Choose a time within 23 hours and 59 minutes.",
+        ),
+        Some(ScheduledSendRejection::NotFuture) => localized_for(
+            language,
+            "Выберите время отправки в будущем.",
+            "Choose a delivery time in the future.",
+        ),
+        None => match error {
+            CoreCallFailure::NotAuthenticated => localized_for(
+                language,
+                "Войдите в аккаунт, чтобы запланировать сообщение.",
+                "Sign in to schedule a message.",
+            ),
+            CoreCallFailure::Network => localized_for(
+                language,
+                "Не удалось связаться с сервером. Проверьте подключение.",
+                "Could not contact the server. Check your connection.",
+            ),
+            CoreCallFailure::Server { status: 401 } => localized_for(
+                language,
+                "Сервер отклонил запрос. Проверьте данные входа.",
+                "The server rejected the request. Check your sign-in details.",
+            ),
+            CoreCallFailure::Server { status: 403 } => localized_for(
+                language,
+                "У аккаунта нет доступа к этому действию.",
+                "This account is not allowed to perform this action.",
+            ),
+            CoreCallFailure::Server { status: 404 } => localized_for(
+                language,
+                "Запрошенные данные не найдены.",
+                "The requested data could not be found.",
+            ),
+            CoreCallFailure::Server { status: 429 } => localized_for(
+                language,
+                "Слишком много запросов. Повторите позже.",
+                "Too many requests. Try again later.",
+            ),
+            CoreCallFailure::Server { .. } => localized_for(
+                language,
+                "Сервер не смог запланировать сообщение.",
+                "The server could not schedule this message.",
+            ),
+            _ => localized_for(
+                language,
+                "Не удалось запланировать сообщение.",
+                "Could not schedule this message.",
+            ),
+        },
+    }
+}
+
+fn insert_emoji_at_end(ctx: &AppContext, emoji: &str) {
+    if emoji.is_empty() || emoji.len() > 32 {
+        return;
+    }
+    let Some(session) = ctx.active_session() else {
+        return;
+    };
+    let Some(conversation_id) = selected_conversation_id(ctx) else {
+        return;
+    };
+    let Some(window) = ctx.ui.upgrade() else {
+        return;
+    };
+    if !is_scheduled_chat_visible(&window, &conversation_id) {
+        return;
+    }
+    let account_id = session.account.id;
+    {
+        let mut state = state_lock();
+        let Some(chat) = state
+            .accounts
+            .get_mut(&account_id)
+            .and_then(|account| account.chats.get_mut(&conversation_id))
+        else {
+            return;
+        };
+        if !matches!(chat.kind.as_str(), "direct" | "group")
+            || chat.loading
+            || chat.busy
+            || chat.editing
+        {
+            return;
+        }
+        chat.draft.push_str(emoji);
+        chat.composer_error.clear();
+    }
+    apply_selected_chat(ctx);
 }
 
 fn is_scheduled_chat_visible(window: &MainWindow, conversation_id: &str) -> bool {
@@ -2352,11 +3028,15 @@ fn open_poll_composer(ctx: &AppContext) {
     let Some(conversation_id) = selected_conversation_id(ctx) else {
         return;
     };
+    let Some(window) = ctx.ui.upgrade() else {
+        return;
+    };
     if let Some(chat) = state_lock()
         .accounts
         .get_mut(&account_id)
         .and_then(|account| account.chats.get_mut(&conversation_id))
-        && chat.kind == "group"
+        && poll_creation_route_allowed(&window, &conversation_id, &chat.kind)
+        && !chat.loading
     {
         if chat.poll_composer.options.is_empty() {
             chat.poll_composer = reset_poll_composer(true);
@@ -2365,6 +3045,23 @@ fn open_poll_composer(ctx: &AppContext) {
             chat.poll_composer.error.clear();
         }
         apply_selected_chat(ctx);
+    }
+}
+
+fn poll_creation_route_allowed(window: &MainWindow, conversation_id: &str, kind: &str) -> bool {
+    if window.get_selected_conversation_id().as_str() != conversation_id {
+        return false;
+    }
+    match kind {
+        "group" => window.get_screen() == "chat" && window.get_conversation_kind() == "group",
+        "channel" => {
+            window.get_screen() == "channel"
+                && window.get_conversation_kind() == "channel"
+                && window.get_channel_can_publish()
+                && !window.get_channel_loading()
+                && !window.get_channel_busy()
+        }
+        _ => false,
     }
 }
 
@@ -2553,6 +3250,18 @@ fn poll_duration_seconds(hours: &str, minutes: &str) -> Option<i64> {
     (60..=86_400).contains(&seconds).then_some(seconds)
 }
 
+fn scheduled_duration_seconds(hours: &str, minutes: &str) -> Option<i64> {
+    let hours = hours.parse::<i64>().ok()?;
+    let minutes = minutes.parse::<i64>().ok()?;
+    if !(0..=23).contains(&hours) || !(0..=59).contains(&minutes) {
+        return None;
+    }
+    let seconds = hours
+        .checked_mul(3600)?
+        .checked_add(minutes.checked_mul(60)?)?;
+    (60..=86_340).contains(&seconds).then_some(seconds)
+}
+
 fn parse_bool(value: &str) -> bool {
     value == "true"
 }
@@ -2569,6 +3278,9 @@ fn create_poll(ctx: &AppContext) {
     let Some(conversation_id) = selected_conversation_id(ctx) else {
         return;
     };
+    let Some(window) = ctx.ui.upgrade() else {
+        return;
+    };
     let request_key = "poll-create".to_owned();
     let request_generation = next_request_generation();
     let request = {
@@ -2580,7 +3292,11 @@ fn create_poll(ctx: &AppContext) {
         else {
             return;
         };
-        if chat.kind != "group" || chat.loading || chat.busy || chat.poll_composer.busy {
+        if !poll_creation_route_allowed(&window, &conversation_id, &chat.kind)
+            || chat.loading
+            || chat.busy
+            || chat.poll_composer.busy
+        {
             return;
         }
         if !poll_composer_valid(&chat.poll_composer) {
@@ -2633,6 +3349,11 @@ fn create_poll(ctx: &AppContext) {
             },
         }
     };
+    let channel_create = state_lock()
+        .accounts
+        .get(&account_id)
+        .and_then(|account| account.chats.get(&conversation_id))
+        .is_some_and(|chat| chat.kind == "channel");
     apply_selected_chat(ctx);
 
     let session_for_completion = session.clone();
@@ -2643,7 +3364,12 @@ fn create_poll(ctx: &AppContext) {
     let context = ctx.clone();
     let result = ctx.call(
         "friendshub-poll-create",
-        move |client| chat_api::create_conversation_poll(client, &request),
+        move |client| {
+            if channel_create && !community_api::can_publish(client, &request.conversation_id)? {
+                return Ok(None);
+            }
+            chat_api::create_conversation_poll(client, &request).map(Some)
+        },
         move |window, result| {
             if !same_active_session(&context, &session_for_completion)
                 || !chat_request_generation_is_current(
@@ -2668,7 +3394,7 @@ fn create_poll(ctx: &AppContext) {
             };
             chat.poll_composer.busy = false;
             match result {
-                Ok(created) => {
+                Ok(Some(created)) => {
                     let metadata = PollMetadataView {
                         title: created.metadata.title,
                         description: created.metadata.description,
@@ -2693,6 +3419,8 @@ fn create_poll(ctx: &AppContext) {
                         error: String::new(),
                         busy: false,
                     };
+                    chat.poll_mutation_generations
+                        .insert(poll.item.id.clone(), next_request_generation());
                     if !chat.polls.iter().any(|existing| existing.item.id == poll.item.id) {
                         chat.polls.push(poll);
                         chat.polls.sort_by(|left, right| {
@@ -2712,6 +3440,23 @@ fn create_poll(ctx: &AppContext) {
                         .to_owned()
                     };
                     chat.polls_error.clear();
+                }
+                Ok(None) => {
+                    let message = localized(
+                        "У вас больше нет права публиковать в этом канале.",
+                        "You no longer have permission to publish in this channel.",
+                    )
+                    .to_owned();
+                    chat.poll_composer.error = message.clone();
+                    if is_chat_route_visible(
+                        &window,
+                        &conversation_id_for_ui,
+                        false,
+                        Some(&format!("/app/channel/{conversation_id_for_ui}")),
+                    ) {
+                        window.set_channel_can_publish(false);
+                        window.set_channel_error_text(message.into());
+                    }
                 }
                 Err(error) => {
                     chat.poll_composer.error = error.user_message().to_owned();
@@ -2756,6 +3501,7 @@ fn load_conversation(
     };
     let account_id = session.account.id.clone();
     let request_generation = next_request_generation();
+    let identity_generation = IDENTITY_HYDRATION_GENERATION.load(Ordering::Relaxed);
     let initial_draft = {
         let mut state = state_lock();
         let account = state.accounts.entry(account_id.clone()).or_default();
@@ -2779,7 +3525,8 @@ fn load_conversation(
         chat.delete_error.clear();
         chat.poll_composer.open = false;
         chat.poll_composer.duration_dialog_open = false;
-        chat.poll_composer.busy = false;
+        // Route reloads do not cancel a create already running in core.
+        // Its guarded completion is responsible for releasing the busy flag.
         chat.polls_loading = true;
         chat.polls_loading_older = false;
         chat.polls_error.clear();
@@ -2788,6 +3535,7 @@ fn load_conversation(
         chat.search_query.clear();
         chat.search_results.clear();
         chat.search_selected_index = -1;
+        chat.message_navigation_notice.clear();
         chat.request_generations.retain(|key, _| {
             !matches!(
                 key.as_str(),
@@ -2834,7 +3582,9 @@ fn load_conversation(
         window.set_chat_composer_enabled(false);
         window.set_chat_has_older(false);
         window.set_chat_banner_text("".into());
+        window.set_chat_navigation_notice_text("".into());
         window.set_chat_pinned_text("".into());
+        window.set_chat_scroll_to_message_id("".into());
         window.set_chat_pin_count(0);
         window.set_chat_pin_counter("".into());
         window.set_chat_search_open(false);
@@ -2903,21 +3653,35 @@ fn load_conversation(
                     .accounts
                     .entry(account_id_for_completion.clone())
                     .or_default();
+                // A contact save may finish while detail/history is loading.
+                // Apply that newer local title without discarding the loaded history.
+                let title = if loaded.detail.kind == "direct" {
+                    account
+                        .direct_chat_title_updates
+                        .get(&loaded.peer_account_id)
+                        .filter(|(generation, title)| {
+                            *generation > identity_generation && !title.trim().is_empty()
+                        })
+                        .map(|(_, title)| title.clone())
+                        .unwrap_or(loaded.title)
+                } else {
+                    loaded.title
+                };
                 if let Some(list_item) = account
                     .conversations
                     .iter_mut()
                     .find(|item| item.id == id_for_completion)
                 {
-                    list_item.title = Some(loaded.title.clone());
+                    list_item.title = Some(title.clone());
                 }
                 let banner_text = conversation_banner(&account.conversations, &id_for_completion);
                 let chat = account.chats.entry(id_for_completion.clone()).or_default();
-                chat.title = loaded.title;
+                chat.title = title;
                 chat.subtitle = loaded.subtitle;
                 chat.kind = loaded.detail.kind;
                 chat.peer_account_id = loaded.peer_account_id;
                 chat.messages = loaded.messages;
-                chat.polls = loaded.polls;
+                merge_poll_pages(chat, loaded.polls, request_generation, true);
                 chat.pins = loaded.pins;
                 chat.selected_pin = 0;
                 chat.history_cursor = loaded.history_cursor;
@@ -3103,42 +3867,57 @@ fn load_conversation_data(
         format!("{} участника", detail.members.len())
     };
 
-    let (messages, history_cursor, history_has_older, newest_timestamp) = if detail.kind == "direct"
-    {
-        let rows = conversations_api::envelopes(
-            client,
-            conversation_id,
-            conversations_api::HistoryCursor {
-                before: None,
-                before_id: None,
-                limit: Some(HISTORY_PAGE_SIZE),
-            },
-        )?;
-        let newest_timestamp = rows.iter().map(|row| row.server_timestamp).max();
-        let history_cursor = rows
-            .iter()
-            .min_by(|left, right| {
+    let (mut messages, history_cursor, history_has_older, newest_timestamp) =
+        if matches!(detail.kind.as_str(), "direct" | "group") {
+            let rows = conversations_api::envelopes(
+                client,
+                conversation_id,
+                conversations_api::HistoryCursor {
+                    before: None,
+                    before_id: None,
+                    limit: Some(HISTORY_PAGE_SIZE),
+                },
+            )?;
+            let newest_timestamp = rows.iter().map(|row| row.server_timestamp).max();
+            let history_cursor = rows
+                .iter()
+                .min_by(|left, right| {
+                    left.server_timestamp
+                        .cmp(&right.server_timestamp)
+                        .then_with(|| left.envelope_id.cmp(&right.envelope_id))
+                })
+                .map(|row| conversations_api::HistoryCursor {
+                    before: Some(row.server_timestamp),
+                    before_id: Some(row.envelope_id.clone()),
+                    limit: Some(HISTORY_PAGE_SIZE),
+                });
+            let has_older = rows.len() as i64 >= HISTORY_PAGE_SIZE;
+            let mut ordered = rows;
+            ordered.sort_by(|left, right| {
                 left.server_timestamp
                     .cmp(&right.server_timestamp)
                     .then_with(|| left.envelope_id.cmp(&right.envelope_id))
-            })
-            .map(|row| conversations_api::HistoryCursor {
-                before: Some(row.server_timestamp),
-                before_id: Some(row.envelope_id.clone()),
-                limit: Some(HISTORY_PAGE_SIZE),
             });
-        let has_older = rows.len() as i64 >= HISTORY_PAGE_SIZE;
-        let mut ordered = rows;
-        ordered.sort_by(|left, right| {
-            left.server_timestamp
-                .cmp(&right.server_timestamp)
-                .then_with(|| left.envelope_id.cmp(&right.envelope_id))
-        });
-        let messages = decrypt_direct_history(client, &ordered, conversation_id, account)?;
-        (messages, history_cursor, has_older, newest_timestamp)
-    } else {
-        (Vec::new(), None, false, None)
-    };
+            let messages = decrypt_conversation_history(
+                client,
+                &ordered,
+                conversation_id,
+                account,
+                &detail.kind,
+            )?;
+            (messages, history_cursor, has_older, newest_timestamp)
+        } else {
+            (Vec::new(), None, false, None)
+        };
+
+    if matches!(detail.kind.as_str(), "direct" | "group") {
+        merge_imported_history_messages(
+            &mut messages,
+            history_sync_api::list_items(client, conversation_id)?,
+            &account.id,
+            &account.username,
+        );
+    }
 
     let (polls, poll_error) = match load_poll_page(client, conversation_id, account, None, None) {
         Ok(polls) => (polls, String::new()),
@@ -3176,11 +3955,12 @@ fn load_conversation_data(
     })
 }
 
-fn decrypt_direct_history(
+fn decrypt_conversation_history(
     client: &friendshub_core::Client,
     rows: &[conversations_api::ConversationEnvelope],
     conversation_id: &str,
     account: &crate::platform::accounts::LocalAccount,
+    conversation_kind: &str,
 ) -> Result<Vec<MessageEntry>, CoreError> {
     let mut messages = Vec::new();
     for row in rows {
@@ -3214,15 +3994,29 @@ fn decrypt_direct_history(
             server_timestamp: row.server_timestamp,
             conversation_id: row.conversation_id.clone(),
         };
-        let decrypted = chat_api::decrypt_envelope(client, &envelope)?;
-        let bytes = decode_hex(&decrypted.plaintext_hex).ok_or_else(|| {
-            CoreError::InvalidPayload("decrypted history was not valid hex".into())
-        })?;
-        let payload_text = String::from_utf8(bytes)
-            .map_err(|_| CoreError::InvalidPayload("decrypted history was not UTF-8".into()))?;
+        let group_ciphertext = conversation_kind == "group"
+            && row.envelope_type == ENVELOPE_TYPE_MESSAGE
+            && decode_hex(&row.ciphertext).is_some_and(|ciphertext| ciphertext.first() == Some(&3));
+        let (payload_text, group_payload) = if group_ciphertext {
+            let payload = chat_api::decrypt_group_message(
+                client,
+                row.sender_account_id.clone(),
+                row.sender_device_number,
+                &row.ciphertext,
+            )?;
+            (serde_json::to_string(&payload)?, true)
+        } else {
+            let decrypted = chat_api::decrypt_envelope(client, &envelope)?;
+            let bytes = decode_hex(&decrypted.plaintext_hex).ok_or_else(|| {
+                CoreError::InvalidPayload("decrypted history was not valid hex".into())
+            })?;
+            let payload_text = String::from_utf8(bytes)
+                .map_err(|_| CoreError::InvalidPayload("decrypted history was not UTF-8".into()))?;
+            (payload_text, false)
+        };
         let payload = match serde_json::from_str::<Value>(&payload_text) {
             Ok(value) => value,
-            Err(_) if row.envelope_type == ENVELOPE_TYPE_MESSAGE => {
+            Err(_) if row.envelope_type == ENVELOPE_TYPE_MESSAGE && !group_payload => {
                 add_plain_message(
                     &mut messages,
                     &row.envelope_id,
@@ -3230,6 +4024,7 @@ fn decrypt_direct_history(
                     &account.id,
                     &account.username,
                     &payload_text,
+                    Vec::new(),
                     row.server_timestamp,
                 );
                 continue;
@@ -3253,6 +4048,14 @@ fn decrypt_direct_history(
                         &account.id,
                         &account.username,
                         text,
+                        payload
+                            .get("attachment_ids")
+                            .and_then(Value::as_array)
+                            .into_iter()
+                            .flatten()
+                            .filter_map(Value::as_str)
+                            .map(str::to_owned)
+                            .collect(),
                         row.server_timestamp,
                     );
                 }
@@ -3277,6 +4080,14 @@ fn decrypt_direct_history(
                             &account.id,
                             &account.username,
                             text,
+                            legacy_payload
+                                .get("attachment_ids")
+                                .and_then(Value::as_array)
+                                .into_iter()
+                                .flatten()
+                                .filter_map(Value::as_str)
+                                .map(str::to_owned)
+                                .collect(),
                             row.server_timestamp,
                         );
                     } else if !legacy_text.starts_with('{') {
@@ -3287,6 +4098,7 @@ fn decrypt_direct_history(
                             &account.id,
                             &account.username,
                             &legacy_text,
+                            Vec::new(),
                             row.server_timestamp,
                         );
                     }
@@ -3342,6 +4154,7 @@ fn add_plain_message(
     account_id: &str,
     username: &str,
     text: &str,
+    attachments: Vec<String>,
     timestamp: i64,
 ) {
     if messages.iter().any(|message| message.id == message_id) {
@@ -3369,6 +4182,100 @@ fn add_plain_message(
         show_day_label: false,
         server_timestamp: timestamp,
         reactions: Vec::new(),
+        attachments,
+    });
+}
+
+fn merge_imported_history_messages(
+    messages: &mut Vec<MessageEntry>,
+    imported: Vec<history_sync_api::NativeHistoryItem>,
+    account_id: &str,
+    username: &str,
+) {
+    let mut ids = messages
+        .iter()
+        .map(|message| message.id.clone())
+        .collect::<HashSet<_>>();
+    for item in imported {
+        if item.item_kind != "message" || item.item.get("format_version").is_some() {
+            continue;
+        }
+        let Some(payload) = item.item.get("message") else {
+            continue;
+        };
+        let Some(message_id) = payload.get("message_id").and_then(Value::as_str) else {
+            continue;
+        };
+        if !ids.insert(message_id.to_owned()) {
+            continue;
+        }
+        let Some(text) = payload.get("text").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(sender_id) = item.item.get("sender_account_id").and_then(Value::as_str) else {
+            continue;
+        };
+        let timestamp = payload
+            .get("created_at")
+            .and_then(Value::as_i64)
+            .or_else(|| item.item.get("server_timestamp").and_then(Value::as_i64))
+            .unwrap_or_default();
+        let attachments = payload
+            .get("attachment_ids")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect();
+        let reactions = item
+            .item
+            .get("reactions")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|reaction| {
+                let actor_id = reaction.get("actor_id")?.as_str()?;
+                let emoji = reaction.get("emoji")?.as_str()?;
+                Some(ReactionEntry {
+                    actor_id: actor_id.to_owned(),
+                    emoji: emoji.to_owned(),
+                    mine: actor_id == account_id,
+                })
+            })
+            .collect();
+        let own = sender_id == account_id;
+        messages.push(MessageEntry {
+            id: message_id.to_owned(),
+            day_label: utc_day_label(timestamp),
+            author: if own {
+                username.to_owned()
+            } else {
+                short_identifier(sender_id)
+            },
+            author_tag: String::new(),
+            body: text.to_owned(),
+            time_label: utc_time_label(timestamp),
+            delivery_label: if own { "Отправлено" } else { "" }.to_owned(),
+            own,
+            edited: item
+                .item
+                .get("edited_at")
+                .is_some_and(|value| !value.is_null()),
+            show_day_label: false,
+            server_timestamp: item
+                .item
+                .get("server_timestamp")
+                .and_then(Value::as_i64)
+                .unwrap_or(timestamp),
+            reactions,
+            attachments,
+        });
+    }
+    messages.sort_by(|left, right| {
+        left.server_timestamp
+            .cmp(&right.server_timestamp)
+            .then_with(|| left.id.cmp(&right.id))
     });
 }
 
@@ -3449,6 +4356,918 @@ fn load_poll_page(
 }
 
 fn send_text(ctx: &AppContext, text: &str) {
+    send_text_at(ctx, text, None, None);
+}
+
+/// Start native attachment selection for the active direct or group chat.
+pub fn choose_attachments(ctx: &AppContext, kind: &str) -> bool {
+    let Some(session) = ctx.active_session() else {
+        return false;
+    };
+    let Some(window) = ctx.ui.upgrade() else {
+        return false;
+    };
+    let Some(conversation_id) = selected_conversation_id(ctx) else {
+        return false;
+    };
+    let conversation_kind = window.get_conversation_kind().to_string();
+    if window.get_screen() != "chat" || !matches!(conversation_kind.as_str(), "direct" | "group") {
+        window.set_chat_composer_error(
+            localized(
+                "Вложения можно отправлять только в личные и групповые чаты.",
+                "Attachments can only be sent in direct and group chats.",
+            )
+            .into(),
+        );
+        return true;
+    }
+
+    let filters = match kind {
+        "photo" => vec![ExtensionFilter {
+            label: localized("Изображения", "Images").to_owned(),
+            extensions: ["png", "jpg", "jpeg", "webp", "gif", "bmp"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+        }],
+        "video" => vec![ExtensionFilter {
+            label: localized("Видео", "Video").to_owned(),
+            extensions: ["mp4", "mov", "m4v", "webm", "mkv", "avi"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+        }],
+        "file" => Vec::new(),
+        _ => {
+            window.set_chat_composer_error(
+                localized("Неизвестный тип вложения.", "Unknown attachment type.").into(),
+            );
+            return true;
+        }
+    };
+    let request = PickRequest {
+        mode: SelectionMode::Multiple,
+        filters,
+        cache_dir: ctx.data_dir.join("cache").join("picked-attachments"),
+        title: Some(localized("Выберите файлы", "Choose files").to_owned()),
+    };
+    let context = ctx.clone();
+    let expected_session = session.clone();
+    let expected_account_id = session.account.id.clone();
+    let expected_conversation_id = conversation_id.clone();
+    let callback_context = context.clone();
+    let callback_ui_context = callback_context.clone();
+    let callback_session = expected_session.clone();
+    let callback_account_id = expected_account_id.clone();
+    let callback_conversation_id = expected_conversation_id.clone();
+    let result = crate::platform::file_picker::pick_files(request, move |result| {
+        callback_context.apply_ui(move |window| {
+            if !same_active_session(&callback_ui_context, &callback_session)
+                || !is_chat_route_visible(&window, &callback_conversation_id, false, None)
+            {
+                return;
+            }
+            let mut state = state_lock();
+            let Some(chat) = state
+                .accounts
+                .entry(callback_account_id.clone())
+                .or_default()
+                .chats
+                .get_mut(&callback_conversation_id)
+            else {
+                return;
+            };
+            match result {
+                Ok(PickOutcome::Cancelled) => {}
+                Ok(PickOutcome::Selected(files)) => {
+                    if files.is_empty() {
+                        return;
+                    }
+                    let starts_new_batch = chat.attachment_composer.files.is_empty();
+                    chat.attachment_composer
+                        .files
+                        .extend(files.into_iter().map(|file| {
+                            let id = next_pending_attachment_id();
+                            let name = file.file_name().to_string_lossy().trim().to_owned();
+                            PendingAttachment {
+                                id,
+                                name: if name.is_empty() {
+                                    localized("Файл", "File").to_owned()
+                                } else {
+                                    name
+                                },
+                                size_bytes: file.size_bytes(),
+                                file,
+                            }
+                        }));
+                    chat.attachment_composer.open = true;
+                    chat.attachment_composer.error.clear();
+                    if starts_new_batch {
+                        chat.attachment_composer.caption.clear();
+                    }
+                    chat.composer_error.clear();
+                }
+                Err(error) => {
+                    let message = picker_error_message(&error);
+                    chat.attachment_composer.error = message.clone();
+                    chat.composer_error = message;
+                }
+            }
+            apply_chat_models(window, chat);
+        });
+    });
+    match result {
+        Ok(()) => true,
+        Err(error) => {
+            let message = picker_error_message(&error);
+            if let Some(chat) = state_lock()
+                .accounts
+                .get_mut(&expected_account_id)
+                .and_then(|account| account.chats.get_mut(&expected_conversation_id))
+            {
+                chat.attachment_composer.error = message.clone();
+                chat.composer_error = message.clone();
+            }
+            let error_ui_context = context.clone();
+            context.apply_ui(move |window| {
+                if same_active_session(&error_ui_context, &expected_session)
+                    && is_chat_route_visible(&window, &expected_conversation_id, false, None)
+                {
+                    window.set_chat_composer_error(message.into());
+                }
+            });
+            true
+        }
+    }
+}
+
+pub fn update_attachment_caption(ctx: &AppContext, caption: &str) -> bool {
+    let Some((account_id, conversation_id)) = selected_attachment_chat(ctx) else {
+        return false;
+    };
+    let mut state = state_lock();
+    let Some(chat) = state
+        .accounts
+        .get_mut(&account_id)
+        .and_then(|account| account.chats.get_mut(&conversation_id))
+    else {
+        return false;
+    };
+    if chat.attachment_composer.busy {
+        return true;
+    }
+    chat.attachment_composer.caption = caption.to_owned();
+    true
+}
+
+pub fn remove_pending_attachment(ctx: &AppContext, attachment_id: &str) -> bool {
+    let Some((account_id, conversation_id)) = selected_attachment_chat(ctx) else {
+        return false;
+    };
+    let mut state = state_lock();
+    let Some(chat) = state
+        .accounts
+        .get_mut(&account_id)
+        .and_then(|account| account.chats.get_mut(&conversation_id))
+    else {
+        return false;
+    };
+    if chat.attachment_composer.busy {
+        return true;
+    }
+    chat.attachment_composer
+        .files
+        .retain(|file| file.id != attachment_id);
+    if chat.attachment_composer.files.is_empty() {
+        chat.attachment_composer.open = false;
+        chat.attachment_composer.caption.clear();
+    }
+    apply_chat_models_from_context(ctx, &account_id, &conversation_id);
+    true
+}
+
+pub fn close_attachment_composer(ctx: &AppContext) -> bool {
+    let Some((account_id, conversation_id)) = selected_attachment_chat(ctx) else {
+        return false;
+    };
+    let mut state = state_lock();
+    let Some(chat) = state
+        .accounts
+        .get_mut(&account_id)
+        .and_then(|account| account.chats.get_mut(&conversation_id))
+    else {
+        return false;
+    };
+    if chat.attachment_composer.busy {
+        return true;
+    }
+    chat.attachment_composer = AttachmentComposerState::default();
+    apply_chat_models_from_context(ctx, &account_id, &conversation_id);
+    true
+}
+
+/// Upload, persist keys, fan them out, then send one message containing the
+/// real attachment ids. A failed or ambiguous send clears the draft and is not
+/// retried, because the core/server contract has no idempotency key for it.
+pub fn send_attachments(ctx: &AppContext) -> bool {
+    let Some(session) = ctx.active_session() else {
+        return false;
+    };
+    let Some(conversation_id) = selected_conversation_id(ctx) else {
+        return false;
+    };
+    let account_id = session.account.id.clone();
+    let (caption, files, generation) = {
+        let mut state = state_lock();
+        let chat = state
+            .accounts
+            .entry(account_id.clone())
+            .or_default()
+            .chats
+            .entry(conversation_id.clone())
+            .or_default();
+        if chat.busy || chat.loading || chat.attachment_composer.busy {
+            return true;
+        }
+        if chat.attachment_composer.files.is_empty() {
+            chat.attachment_composer.error =
+                localized("Добавьте хотя бы один файл.", "Add at least one file.").to_owned();
+            drop(state);
+            apply_selected_chat(ctx);
+            return true;
+        }
+        if !matches!(chat.kind.as_str(), "direct" | "group") {
+            chat.attachment_composer.error = localized(
+                "Вложения доступны только в личных и групповых чатах.",
+                "Attachments are only available in direct and group chats.",
+            )
+            .to_owned();
+            drop(state);
+            apply_selected_chat(ctx);
+            return true;
+        }
+        let files = chat
+            .attachment_composer
+            .files
+            .iter()
+            .map(|file| file.file.path().to_path_buf())
+            .collect::<Vec<_>>();
+        chat.attachment_composer.busy = true;
+        chat.attachment_composer.error.clear();
+        chat.attachment_composer.active_file = Some(0);
+        chat.attachment_composer.phase_label = localized("Загрузка…", "Uploading…").to_owned();
+        chat.attachment_composer.generation = next_request_generation();
+        chat.busy = true;
+        chat.composer_error.clear();
+        (
+            chat.attachment_composer.caption.clone(),
+            files,
+            chat.attachment_composer.generation,
+        )
+    };
+    apply_selected_chat(ctx);
+
+    let message_id = uuid_v7();
+    let created_at = now_unix();
+    let context = ctx.clone();
+    let progress_context = context.clone();
+    let progress_account_id = account_id.clone();
+    let progress_conversation_id = conversation_id.clone();
+    let worker_conversation_id = conversation_id.clone();
+    let worker_account_id = account_id.clone();
+    let worker_caption = caption.clone();
+    let worker_message_id = message_id.clone();
+    let worker_files = files.clone();
+    let completion_account_id = account_id.clone();
+    let completion_conversation_id = conversation_id.clone();
+    let result = ctx.call(
+        "friendshub-chat-attachments-send",
+        move |client| {
+            let detail = conversations_api::get(client, worker_conversation_id.clone())?;
+            if !matches!(detail.kind.as_str(), "direct" | "group") {
+                return Err(CoreError::InvalidPayload(
+                    "attachments are supported only in direct and group conversations".into(),
+                ));
+            }
+            let mut recipients = Vec::new();
+            let mut seen = HashSet::new();
+            for member in &detail.members {
+                if member != &worker_account_id && seen.insert(member.clone()) {
+                    recipients.push(member.clone());
+                }
+            }
+            if recipients.is_empty() {
+                return Err(CoreError::InvalidPayload(
+                    "conversation has no other attachment recipients".into(),
+                ));
+            }
+
+            let mut attachment_ids = Vec::with_capacity(worker_files.len());
+            for (index, file_path) in worker_files.iter().enumerate() {
+                report_attachment_progress(
+                    &progress_context,
+                    &progress_account_id,
+                    &progress_conversation_id,
+                    generation,
+                    index,
+                    localized("Загрузка…", "Uploading…"),
+                );
+                let upload = crate::features::calls_attachments::upload_attachment(
+                    client,
+                    file_path,
+                    &worker_conversation_id,
+                    crate::features::calls_attachments::AttachmentKind::Attachment,
+                )?;
+                if upload.attachment_id.trim().is_empty() {
+                    return Err(CoreError::InvalidPayload(
+                        "core returned an empty attachment id".into(),
+                    ));
+                }
+                let key = crate::features::calls_attachments::AttachmentKey {
+                    attachment_id: upload.attachment_id.clone(),
+                    key_hex: upload.key_hex.clone(),
+                    base_nonce_hex: upload.base_nonce_hex.clone(),
+                    conversation_id: Some(worker_conversation_id.clone()),
+                };
+                crate::features::calls_attachments::store_attachment_key(client, &key)?;
+                attachment_ids.push(upload.attachment_id);
+            }
+
+            let mut key_failures = 0usize;
+            let mut key_routes = 0usize;
+            let mut successful_key_envelopes = 0usize;
+            for (index, attachment_id) in attachment_ids.iter().enumerate() {
+                report_attachment_progress(
+                    &progress_context,
+                    &progress_account_id,
+                    &progress_conversation_id,
+                    generation,
+                    index,
+                    localized("Передача ключей…", "Sending keys…"),
+                );
+                let key = crate::features::calls_attachments::get_attachment_key(
+                    client,
+                    attachment_id,
+                )?
+                .ok_or_else(|| {
+                    CoreError::InvalidPayload(
+                        "durable attachment key was not found after storing".into(),
+                    )
+                })?;
+                let mut delivered_for_file = 0usize;
+                for recipient in &recipients {
+                    key_routes = key_routes.saturating_add(1);
+                    match crate::features::calls_attachments::send_attachment_key(
+                        client,
+                        recipient,
+                        Some(&worker_conversation_id),
+                        &key,
+                    ) {
+                        Ok(delivery) => {
+                            let envelope_count = delivery.envelopes.len();
+                            delivered_for_file = delivered_for_file.saturating_add(envelope_count);
+                            successful_key_envelopes =
+                                successful_key_envelopes.saturating_add(envelope_count);
+                            if !delivery.device_errors.is_empty() || envelope_count == 0 {
+                                key_failures = key_failures.saturating_add(1);
+                            }
+                        }
+                        Err(_) => key_failures = key_failures.saturating_add(1),
+                    }
+                }
+                if delivered_for_file == 0 {
+                    return Err(CoreError::InvalidPayload(
+                        "attachment key was not delivered to any recipient device".into(),
+                    ));
+                }
+
+                // Match WEB's own-device copy so this account's other active
+                // devices can open the message attachment. It is best-effort:
+                // local storage already keeps the key on this device, and an
+                // own-device failure must not hide a successful recipient send.
+                key_routes = key_routes.saturating_add(1);
+                match crate::features::calls_attachments::send_attachment_key(
+                    client,
+                    &worker_account_id,
+                    Some(&worker_conversation_id),
+                    &key,
+                ) {
+                    Ok(delivery)
+                        if !delivery.device_errors.is_empty() || delivery.envelopes.is_empty() =>
+                    {
+                        key_failures = key_failures.saturating_add(1);
+                    }
+                    Ok(_) => {}
+                    Err(_) => key_failures = key_failures.saturating_add(1),
+                }
+            }
+            if successful_key_envelopes == 0 {
+                return Err(CoreError::InvalidPayload(
+                    "no attachment key envelope was confirmed".into(),
+                ));
+            }
+
+            report_attachment_progress(
+                &progress_context,
+                &progress_account_id,
+                &progress_conversation_id,
+                generation,
+                worker_files.len(),
+                localized("Отправка сообщения…", "Sending message…"),
+            );
+            let sent = chat_api::send_attachment_message(
+                client,
+                &chat_api::AttachmentMessageRequest {
+                    conversation_id: worker_conversation_id,
+                    sender_account_id: worker_account_id,
+                    message_id: worker_message_id,
+                    caption: worker_caption,
+                    attachment_ids: attachment_ids.clone(),
+                    created_at,
+                },
+            )?;
+            Ok(AttachmentBatchDelivery {
+                attachment_ids,
+                key_failures,
+                key_routes,
+                message_delivery: sent,
+            })
+        },
+        move |window, result| {
+            let visible = is_chat_route_visible(&window, &completion_conversation_id, false, None);
+            let mut state = state_lock();
+            let Some(chat) = state
+                .accounts
+                .get_mut(&completion_account_id)
+                .and_then(|account| account.chats.get_mut(&completion_conversation_id))
+            else {
+                return;
+            };
+            if chat.attachment_composer.generation != generation {
+                return;
+            }
+            chat.busy = false;
+            chat.attachment_composer.busy = false;
+            chat.attachment_composer.open = false;
+            chat.attachment_composer.active_file = None;
+            chat.attachment_composer.phase_label.clear();
+            chat.attachment_composer.caption.clear();
+            chat.attachment_composer.files.clear();
+            match result {
+                Ok(delivery) => {
+                    let key_partial = delivery.key_failures > 0;
+                    let message_partial = delivery.message_delivery.recipient_failures > 0
+                        || delivery.message_delivery.sync_failures > 0;
+                    let partial = key_partial || message_partial;
+                    let language = window.get_language().to_string();
+                    let notice = partial.then(|| {
+                        attachment_partial_delivery_notice(
+                            &language,
+                            delivery.key_failures,
+                            delivery.key_routes,
+                            delivery.message_delivery.recipient_failures,
+                            delivery.message_delivery.sync_failures,
+                        )
+                    });
+                    chat.messages.push(MessageEntry {
+                        id: message_id,
+                        author: session.account.username.clone(),
+                        author_tag: String::new(),
+                        body: caption,
+                        time_label: utc_time_label(created_at),
+                        delivery_label: if partial {
+                            localized_for(&language, "Отправлено частично", "Partially sent")
+                        } else {
+                            localized_for(&language, "Отправлено", "Sent")
+                        },
+                        own: true,
+                        edited: false,
+                        day_label: utc_day_label(created_at),
+                        show_day_label: false,
+                        server_timestamp: created_at,
+                        reactions: Vec::new(),
+                        attachments: delivery.attachment_ids,
+                    });
+                    chat.composer_error = notice.clone().unwrap_or_default();
+                    if let Some(notice) = notice {
+                        chat.banner_text = notice;
+                    }
+                }
+                Err(_) => {
+                    chat.attachment_composer.error = localized(
+                        "Результат отправки вложений не подтверждён. Проверьте чат перед повторной попыткой; автоматический повтор не выполнялся.",
+                        "Attachment delivery was not confirmed. Check the chat before trying again; no automatic retry was attempted.",
+                    )
+                    .to_owned();
+                    chat.composer_error = chat.attachment_composer.error.clone();
+                }
+            }
+            if visible && same_active_session(&context, &session) {
+                apply_chat_models(window, chat);
+            }
+        },
+    );
+    if result.is_err() {
+        let mut state = state_lock();
+        if let Some(chat) = state
+            .accounts
+            .get_mut(&account_id)
+            .and_then(|account| account.chats.get_mut(&conversation_id))
+            && chat.attachment_composer.generation == generation
+        {
+            chat.busy = false;
+            chat.attachment_composer.busy = false;
+            chat.attachment_composer.active_file = None;
+            chat.attachment_composer.phase_label.clear();
+            chat.attachment_composer.error = localized(
+                "Не удалось запустить отправку вложений.",
+                "Could not start attachment delivery.",
+            )
+            .to_owned();
+        }
+        drop(state);
+        apply_selected_chat(ctx);
+    }
+    true
+}
+
+/// Download using only a key already persisted by this account, verify the
+/// decrypted result, and ask the platform adapter to open it.
+pub fn open_attachment(ctx: &AppContext, attachment_id: &str) -> bool {
+    let Some(session) = ctx.active_session() else {
+        return false;
+    };
+    let Some(conversation_id) = selected_conversation_id(ctx) else {
+        return false;
+    };
+    if attachment_id.trim().is_empty() {
+        return false;
+    }
+    let account_id = session.account.id.clone();
+    {
+        let mut state = state_lock();
+        let Some(chat) = state
+            .accounts
+            .get_mut(&account_id)
+            .and_then(|account| account.chats.get_mut(&conversation_id))
+        else {
+            return false;
+        };
+        if chat.busy || chat.loading {
+            return true;
+        }
+        chat.busy = true;
+        chat.composer_error =
+            localized("Загружаем вложение…", "Downloading attachment…").to_owned();
+    }
+    apply_selected_chat(ctx);
+
+    let context = ctx.clone();
+    let worker_account_id = account_id.clone();
+    let worker_attachment_id = attachment_id.to_owned();
+    let worker_conversation_id = conversation_id.clone();
+    let worker_data_dir = ctx.data_dir.clone();
+    let completion_account_id = account_id.clone();
+    let completion_conversation_id = conversation_id.clone();
+    let completion_context = context.clone();
+    let expected_session = session.clone();
+    let result = ctx.call(
+        "friendshub-chat-attachment-open",
+        move |client| {
+            let key = crate::features::calls_attachments::get_attachment_key(
+                client,
+                &worker_attachment_id,
+            )?
+            .ok_or_else(|| {
+                CoreError::InvalidPayload(
+                    "attachment key has not been received on this account".into(),
+                )
+            })?;
+            if key
+                .conversation_id
+                .as_deref()
+                .is_some_and(|key_conversation| key_conversation != worker_conversation_id)
+            {
+                return Err(CoreError::InvalidPayload(
+                    "attachment key belongs to another conversation".into(),
+                ));
+            }
+            let path = crate::platform::open_file::create_download_path(
+                &worker_data_dir,
+                &worker_account_id,
+            )
+            .map_err(|error| CoreError::Internal(error.to_string()))?;
+            let downloaded = crate::features::calls_attachments::download_attachment(
+                client,
+                &worker_attachment_id,
+                &path,
+                &key.key_hex,
+                &key.base_nonce_hex,
+            );
+            let downloaded = match downloaded {
+                Ok(downloaded) => downloaded,
+                Err(error) => {
+                    let _ = std::fs::remove_file(&path);
+                    return Err(error);
+                }
+            };
+            if PathBuf::from(downloaded.output_path.as_str()) != path {
+                let _ = std::fs::remove_file(&path);
+                return Err(CoreError::InvalidPayload(
+                    "core returned an unexpected attachment output path".into(),
+                ));
+            }
+            match std::fs::symlink_metadata(&path) {
+                Ok(metadata)
+                    if metadata.file_type().is_file()
+                        && metadata.len() == downloaded.plaintext_size =>
+                {
+                    Ok(path)
+                }
+                Ok(_) => {
+                    let _ = std::fs::remove_file(&path);
+                    Err(CoreError::InvalidPayload(
+                        "downloaded attachment size did not match the decrypted result".into(),
+                    ))
+                }
+                Err(error) => {
+                    let _ = std::fs::remove_file(&path);
+                    Err(CoreError::Internal(error.to_string()))
+                }
+            }
+        },
+        move |window, result| {
+            let visible = is_chat_route_visible(&window, &completion_conversation_id, false, None)
+                && same_active_session(&completion_context, &expected_session);
+            let mut state = state_lock();
+            if let Some(chat) = state
+                .accounts
+                .get_mut(&completion_account_id)
+                .and_then(|account| account.chats.get_mut(&completion_conversation_id))
+            {
+                chat.busy = false;
+                match result {
+                    Ok(path) if visible => {
+                        match crate::platform::open_file::open_downloaded_file(&path, &window) {
+                            Ok(()) => {
+                                chat.composer_error = localized(
+                                    "Вложение передано системному приложению. Приватная копия хранится до 7 дней и очищается при следующем скачивании.",
+                                    "Attachment handed to the system app. Its private copy is retained for up to 7 days and pruned on the next download.",
+                                )
+                                .to_owned();
+                            }
+                            Err(error) => {
+                                let _ = std::fs::remove_file(&path);
+                                chat.composer_error = open_file_error_message(&error);
+                            }
+                        }
+                    }
+                    Ok(path) => {
+                        let _ = std::fs::remove_file(path);
+                    }
+                    Err(error) => {
+                        chat.composer_error = error.user_message().to_owned();
+                    }
+                }
+                if visible {
+                    apply_chat_models(window, chat);
+                }
+            } else if let Ok(path) = result {
+                let _ = std::fs::remove_file(path);
+            }
+        },
+    );
+    if result.is_err() {
+        if let Some(chat) = state_lock()
+            .accounts
+            .get_mut(&account_id)
+            .and_then(|account| account.chats.get_mut(&conversation_id))
+        {
+            chat.busy = false;
+            chat.composer_error = localized(
+                "Не удалось запустить загрузку вложения.",
+                "Could not start attachment download.",
+            )
+            .to_owned();
+        }
+        apply_selected_chat(ctx);
+    }
+    true
+}
+
+struct AttachmentBatchDelivery {
+    attachment_ids: Vec<String>,
+    key_failures: usize,
+    key_routes: usize,
+    message_delivery: chat_api::AttachmentMessageDelivery,
+}
+
+fn report_attachment_progress(
+    ctx: &AppContext,
+    account_id: &str,
+    conversation_id: &str,
+    generation: u64,
+    active_file: usize,
+    phase_label: &str,
+) {
+    let Some(session) = ctx.active_session() else {
+        return;
+    };
+    if session.account.id != account_id {
+        return;
+    }
+    let context = ctx.clone();
+    let account_id = account_id.to_owned();
+    let conversation_id = conversation_id.to_owned();
+    let phase_label = phase_label.to_owned();
+    let session = session.clone();
+    ctx.apply_ui(move |window| {
+        if !same_active_session(&context, &session)
+            || !is_chat_route_visible(&window, &conversation_id, false, None)
+        {
+            return;
+        }
+        let mut state = state_lock();
+        if let Some(chat) = state
+            .accounts
+            .get_mut(&account_id)
+            .and_then(|account| account.chats.get_mut(&conversation_id))
+            && chat.attachment_composer.generation == generation
+        {
+            chat.attachment_composer.active_file =
+                (active_file < chat.attachment_composer.files.len()).then_some(active_file);
+            chat.attachment_composer.phase_label = phase_label;
+            apply_chat_models(window, chat);
+        }
+    });
+}
+
+fn selected_attachment_chat(ctx: &AppContext) -> Option<(String, String)> {
+    let session = ctx.active_session()?;
+    let window = ctx.ui.upgrade()?;
+    if window.get_screen() != "chat"
+        || !matches!(window.get_conversation_kind().as_str(), "direct" | "group")
+    {
+        return None;
+    }
+    let conversation_id = selected_conversation_id(ctx)?;
+    Some((session.account.id, conversation_id))
+}
+
+fn apply_chat_models_from_context(ctx: &AppContext, account_id: &str, conversation_id: &str) {
+    let Some(session) = ctx.active_session() else {
+        return;
+    };
+    if session.account.id != account_id {
+        return;
+    }
+    let context = ctx.clone();
+    let account_id = account_id.to_owned();
+    let conversation_id = conversation_id.to_owned();
+    ctx.apply_ui(move |window| {
+        if !same_active_session(&context, &session)
+            || !is_chat_route_visible(&window, &conversation_id, false, None)
+        {
+            return;
+        }
+        let mut state = state_lock();
+        if let Some(chat) = state
+            .accounts
+            .get_mut(&account_id)
+            .and_then(|account| account.chats.get_mut(&conversation_id))
+        {
+            apply_chat_models(window, chat);
+        }
+    });
+}
+
+fn next_pending_attachment_id() -> String {
+    static PENDING_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+    format!(
+        "pending-{}-{}",
+        now_unix(),
+        PENDING_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
+fn attachment_size_label(bytes: u64) -> String {
+    if bytes < 1024 {
+        format!("{bytes} B")
+    } else if bytes < 1024 * 1024 {
+        format!("{:.1} KiB", bytes as f64 / 1024.0)
+    } else if bytes < 1024 * 1024 * 1024 {
+        format!("{:.1} MiB", bytes as f64 / (1024.0 * 1024.0))
+    } else {
+        format!("{:.1} GiB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+    }
+}
+
+fn picker_error_message(error: &crate::platform::file_picker::PickerError) -> String {
+    use crate::platform::file_picker::PickerError;
+    match error {
+        PickerError::MissingActivityResultHook => localized(
+            "Выбор файлов на Android пока недоступен: системный экран не возвращает выбранный файл приложению.",
+            "Android file selection is unavailable because the native activity does not return the selected file yet.",
+        ),
+        PickerError::UnsupportedPlatform | PickerError::Disabled => {
+            localized("Выбор файлов на этой платформе недоступен.", "File selection is unavailable on this platform.")
+        }
+        PickerError::Busy => localized(
+            "Уже открыт другой выбор файлов.",
+            "Another file selection is already open.",
+        ),
+        PickerError::WrongThread => localized(
+            "Не удалось открыть выбор файлов из текущего потока.",
+            "Could not open the file picker from this thread.",
+        ),
+        PickerError::InvalidRequest(_) => localized(
+            "Не удалось подготовить запрос выбора файлов.",
+            "Could not prepare the file selection request.",
+        ),
+        PickerError::Platform(_) | PickerError::Io(_) => localized(
+            "Не удалось выбрать или импортировать файлы.",
+            "Could not select or import the files.",
+        ),
+    }
+    .to_owned()
+}
+
+fn open_file_error_message(error: &crate::platform::open_file::OpenFileError) -> String {
+    use crate::platform::open_file::OpenFileError;
+    match error {
+        OpenFileError::UnsupportedPlatform => localized(
+            "Открытие вложений на iOS и Android пока не поддерживается.",
+            "Opening attachments is not available on iOS or Android yet.",
+        ),
+        _ => localized(
+            "Не удалось открыть расшифрованный файл в системном просмотрщике.",
+            "Could not open the decrypted file with the system viewer.",
+        ),
+    }
+    .to_owned()
+}
+
+fn attachment_partial_delivery_notice(
+    language: &str,
+    key_failures: usize,
+    key_routes: usize,
+    recipient_failures: usize,
+    sync_failures: usize,
+) -> String {
+    if language == "ru" {
+        format!(
+            "Сообщение отправлено частично: сбои доставки ключей {key_failures} из {key_routes}, сообщения получателям {recipient_failures}, синхронизации устройств {sync_failures}. Часть участников может не открыть вложения; повторная автоматическая отправка не выполнялась."
+        )
+    } else {
+        format!(
+            "Message delivery was partial: attachment key failures {key_failures} of {key_routes}, message recipient failures {recipient_failures}, device sync failures {sync_failures}. Some participants may be unable to open the attachments; no automatic retry was attempted."
+        )
+    }
+}
+
+fn partial_delivery_notice(
+    language: &str,
+    scheduled: bool,
+    recipient_failures: usize,
+    sync_failures: usize,
+) -> String {
+    let status = if scheduled {
+        localized_for(
+            language,
+            "Сообщение запланировано частично.",
+            "The message was only partially scheduled.",
+        )
+    } else {
+        localized_for(
+            language,
+            "Сообщение отправлено частично.",
+            "The message was only partially sent.",
+        )
+    };
+    let failures = localized_for(
+        language,
+        "Сбоев доставки получателям",
+        "Recipient delivery failures",
+    );
+    let sync = localized_for(
+        language,
+        "сбоев синхронизации с вашими устройствами",
+        "failures syncing to your devices",
+    );
+    let retry = localized_for(
+        language,
+        "Повторная отправка только в неудавшиеся назначения пока недоступна. Отправка всего сообщения ещё раз может создать дубликаты.",
+        "Retrying only failed destinations is not available yet. Sending the whole message again may create duplicates.",
+    );
+    format!("{status} {failures}: {recipient_failures}; {sync}: {sync_failures}. {retry}")
+}
+
+fn send_text_at(
+    ctx: &AppContext,
+    text: &str,
+    send_at: Option<i64>,
+    schedule_generation: Option<u64>,
+) {
     if text.trim().is_empty() {
         return;
     }
@@ -3503,8 +5322,16 @@ fn send_text(ctx: &AppContext, text: &str) {
     let session_for_completion = session.clone();
     let session_for_error = session.clone();
     let conversation_id_for_state = conversation_id_for_ui.clone();
+    let scheduled_send_at = send_at;
+    let schedule_rejection = Arc::new(Mutex::new(None));
+    let schedule_rejection_for_call = Arc::clone(&schedule_rejection);
+    let schedule_rejection_for_completion = Arc::clone(&schedule_rejection);
     let result = ctx.call(
-        "friendshub-message-send",
+        if send_at.is_some() {
+            "friendshub-message-schedule"
+        } else {
+            "friendshub-message-send"
+        },
         move |client| {
             let detail = conversations_api::get(client, conversation_id.clone())?;
             let draft = json!({
@@ -3520,7 +5347,7 @@ fn send_text(ctx: &AppContext, text: &str) {
             )
             .map_err(CoreError::InvalidPayload)?;
             let plaintext_hex = encode_hex(&serde_json::to_vec(&payload).map_err(CoreError::from)?);
-            match detail.kind.as_str() {
+            let failures = match detail.kind.as_str() {
                 "direct" => {
                     let recipient = detail
                         .members
@@ -3530,48 +5357,58 @@ fn send_text(ctx: &AppContext, text: &str) {
                         .ok_or_else(|| {
                             CoreError::InvalidPayload("direct conversation has no peer".into())
                         })?;
-                    let sent = chat_api::send_message(
-                        client,
-                        &chat_api::SendMessageRequest {
-                            recipient_account_id: recipient,
-                            plaintext_hex,
-                            device_number: None,
-                            conversation_id: Some(conversation_id.clone()),
-                            refresh_devices: false,
-                            sync: true,
-                        },
-                    )?;
+                    let request = chat_api::SendMessageRequest {
+                        recipient_account_id: recipient,
+                        plaintext_hex,
+                        device_number: None,
+                        conversation_id: Some(conversation_id.clone()),
+                        refresh_devices: false,
+                        sync: true,
+                    };
+                    let sent = match scheduled_send_at {
+                        Some(send_at) => remember_scheduled_rejection(
+                            chat_api::send_scheduled_message(client, &request, send_at),
+                            &schedule_rejection_for_call,
+                        )?,
+                        None => chat_api::send_message(client, &request)?,
+                    };
                     if sent.envelopes.is_empty() {
                         return Err(CoreError::InvalidPayload(
                             "message was not delivered to a peer device".into(),
                         ));
                     }
+                    (sent.device_errors.len(), sent.sync_errors.len())
                 }
                 "group" => {
-                    let sent = chat_api::send_group_message(
-                        client,
-                        &chat_api::SendGroupMessageRequest {
-                            conversation_id: conversation_id.clone(),
-                            plaintext_hex,
-                            sync: true,
-                        },
-                    )?;
+                    let request = chat_api::SendGroupMessageRequest {
+                        conversation_id: conversation_id.clone(),
+                        plaintext_hex,
+                        sync: true,
+                    };
+                    let sent = match scheduled_send_at {
+                        Some(send_at) => remember_scheduled_rejection(
+                            chat_api::send_scheduled_group_message(client, &request, send_at),
+                            &schedule_rejection_for_call,
+                        )?,
+                        None => chat_api::send_group_message(client, &request)?,
+                    };
                     if sent.envelopes.is_empty() {
                         return Err(CoreError::InvalidPayload(
                             "message was not delivered to a group member".into(),
                         ));
                     }
+                    (sent.device_errors.len(), sent.sync_errors.len())
                 }
                 _ => {
                     return Err(CoreError::InvalidPayload(
                         "this conversation does not accept chat messages".into(),
                     ));
                 }
-            }
-            Ok(())
+            };
+            Ok(failures)
         },
         move |window, result| match result {
-            Ok(()) => {
+            Ok((recipient_failures, sync_failures)) => {
                 if !same_active_session(&context, &session_for_completion)
                     || !chat_request_generation_is_current(
                         &account_id_for_ui,
@@ -3582,20 +5419,15 @@ fn send_text(ctx: &AppContext, text: &str) {
                 {
                     return;
                 }
-                let entry = MessageEntry {
-                    id: id_for_ui,
-                    day_label: utc_day_label(created_at),
-                    author: username,
-                    author_tag: String::new(),
-                    body: body_for_ui,
-                    time_label: utc_time_label(created_at),
-                    delivery_label: "Отправлено".to_owned(),
-                    own: true,
-                    edited: false,
-                    show_day_label: false,
-                    server_timestamp: created_at,
-                    reactions: Vec::new(),
-                };
+                let partial = recipient_failures != 0 || sync_failures != 0;
+                let delivery_notice = partial.then(|| {
+                    partial_delivery_notice(
+                        window.get_language().as_str(),
+                        scheduled_send_at.is_some(),
+                        recipient_failures,
+                        sync_failures,
+                    )
+                });
                 let mut state = state_lock();
                 let visible =
                     is_chat_route_visible(&window, &conversation_id_for_state, false, None);
@@ -3606,16 +5438,59 @@ fn send_text(ctx: &AppContext, text: &str) {
                     .chats
                     .entry(conversation_id_for_state.clone())
                     .or_default();
-                chat.messages.push(entry);
-                normalize_day_markers(&mut chat.messages);
+                if scheduled_send_at.is_none() {
+                    chat.messages.push(MessageEntry {
+                        id: id_for_ui,
+                        day_label: utc_day_label(created_at),
+                        author: username,
+                        author_tag: String::new(),
+                        body: body_for_ui.clone(),
+                        time_label: utc_time_label(created_at),
+                        delivery_label: if partial {
+                            localized_for(
+                                window.get_language().as_str(),
+                                "Отправлено частично",
+                                "Partially sent",
+                            )
+                        } else {
+                            localized("Отправлено", "Sent").to_owned()
+                        },
+                        own: true,
+                        edited: false,
+                        show_day_label: false,
+                        server_timestamp: created_at,
+                        reactions: Vec::new(),
+                        attachments: Vec::new(),
+                    });
+                    normalize_day_markers(&mut chat.messages);
+                }
                 chat.busy = false;
-                chat.draft.clear();
-                chat.composer_error.clear();
+                if scheduled_send_at.is_none() || chat.draft == body_for_ui {
+                    chat.draft.clear();
+                }
+                // Some envelopes already exist remotely: consume the submitted
+                // draft and close scheduling so it cannot be retried as a whole.
+                chat.composer_error = delivery_notice.clone().unwrap_or_default();
+                if scheduled_send_at.is_some()
+                    && let Some(notice) = &delivery_notice
+                {
+                    chat.banner_text = notice.clone();
+                }
                 if visible {
                     apply_chat_models(window, chat);
                 }
                 drop(state);
                 apply_list_from_context(&context, &account_id_for_ui);
+                if scheduled_send_at.is_some() {
+                    finish_schedule_create_dialog(
+                        &context,
+                        &account_id_for_ui,
+                        &conversation_id_for_state,
+                        schedule_generation,
+                        true,
+                        delivery_notice,
+                    );
+                }
             }
             Err(error) => {
                 if !same_active_session(&context, &session_for_completion)
@@ -3628,21 +5503,40 @@ fn send_text(ctx: &AppContext, text: &str) {
                 {
                     return;
                 }
+                let language = window.get_language().to_string();
                 let mut state = state_lock();
                 let visible =
                     is_chat_route_visible(&window, &conversation_id_for_state, false, None);
                 if let Some(chat) = state
                     .accounts
-                    .entry(account_id_for_ui)
+                    .entry(account_id_for_ui.clone())
                     .or_default()
                     .chats
                     .get_mut(&conversation_id_for_state)
                 {
                     chat.busy = false;
-                    chat.composer_error = error.user_message().to_owned();
+                    if scheduled_send_at.is_none() {
+                        chat.composer_error = error.user_message().to_owned();
+                    }
                     if visible {
                         apply_chat_models(window, chat);
                     }
+                }
+                drop(state);
+                if scheduled_send_at.is_some() {
+                    let rejection = schedule_rejection_for_completion
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .take();
+                    let message = scheduled_send_error_message(error, rejection, &language);
+                    finish_schedule_create_dialog(
+                        &context,
+                        &account_id_for_ui,
+                        &conversation_id_for_state,
+                        schedule_generation,
+                        false,
+                        Some(message),
+                    );
                 }
             }
         },
@@ -3658,13 +5552,40 @@ fn send_text(ctx: &AppContext, text: &str) {
         {
             return;
         }
-        if let Some(chat) = state_lock()
+        let mut state = state_lock();
+        if let Some(chat) = state
             .accounts
             .get_mut(&account_id)
             .and_then(|account| account.chats.get_mut(&conversation_id_for_error))
         {
             chat.busy = false;
-            chat.composer_error = error.to_string();
+            if send_at.is_none() {
+                chat.composer_error = error.to_string();
+            }
+        }
+        drop(state);
+        if let Some(schedule_generation) = schedule_generation {
+            let message = if error.kind() == std::io::ErrorKind::NotConnected {
+                localized(
+                    "Войдите в аккаунт, чтобы запланировать сообщение.",
+                    "Sign in to schedule a message.",
+                )
+                .to_owned()
+            } else {
+                localized(
+                    "Не удалось запустить планирование сообщения.",
+                    "Could not start scheduling this message.",
+                )
+                .to_owned()
+            };
+            finish_schedule_create_dialog(
+                ctx,
+                &account_id,
+                &conversation_id_for_error,
+                Some(schedule_generation),
+                false,
+                Some(message),
+            );
         }
         apply_selected_chat(ctx);
     }
@@ -3941,7 +5862,7 @@ fn load_older_messages(ctx: &AppContext, conversation_id: &str) -> std::io::Resu
     };
     let account_id = session.account.id.clone();
     let request_generation = next_request_generation();
-    let cursor = {
+    let (cursor, conversation_kind, load_generation, pending_pin_jump) = {
         let mut state = state_lock();
         let Some(chat) = state
             .accounts
@@ -3954,9 +5875,28 @@ fn load_older_messages(ctx: &AppContext, conversation_id: &str) -> std::io::Resu
             return Ok(());
         }
         chat.history_loading_older = true;
+        chat.error.clear();
         chat.request_generations
             .insert("history-older".to_owned(), request_generation);
-        chat.history_cursor.clone()
+        let pending_pin_jump = if chat.message_navigation_notice.is_empty() {
+            None
+        } else {
+            chat.pins
+                .get(chat.selected_pin)
+                .filter(|pinned_id| {
+                    !chat
+                        .messages
+                        .iter()
+                        .any(|message| &message.id == *pinned_id)
+                })
+                .map(|pinned_id| (pinned_id.clone(), chat.message_navigation_notice.clone()))
+        };
+        (
+            chat.history_cursor.clone(),
+            chat.kind.clone(),
+            chat.request_generations.get("load").copied(),
+            pending_pin_jump,
+        )
     };
     let Some(mut cursor) = cursor else {
         if let Some(chat) = state_lock()
@@ -3977,15 +5917,23 @@ fn load_older_messages(ctx: &AppContext, conversation_id: &str) -> std::io::Resu
     let session_for_error = session.clone();
     let account = session.account;
     let account_id_for_ui = account_id.clone();
+    let history_kind = conversation_kind;
     let result = ctx.call(
         "friendshub-chat-history-older",
         move |client| {
             let rows = conversations_api::envelopes(client, id.clone(), cursor)?;
-            let newest_cursor = rows.first().map(|row| conversations_api::HistoryCursor {
-                before: Some(row.server_timestamp),
-                before_id: Some(row.envelope_id.clone()),
-                limit: Some(HISTORY_PAGE_SIZE),
-            });
+            let oldest_cursor = rows
+                .iter()
+                .min_by(|left, right| {
+                    left.server_timestamp
+                        .cmp(&right.server_timestamp)
+                        .then_with(|| left.envelope_id.cmp(&right.envelope_id))
+                })
+                .map(|row| conversations_api::HistoryCursor {
+                    before: Some(row.server_timestamp),
+                    before_id: Some(row.envelope_id.clone()),
+                    limit: Some(HISTORY_PAGE_SIZE),
+                });
             let has_older = rows.len() as i64 >= HISTORY_PAGE_SIZE;
             let mut ordered = rows;
             ordered.sort_by(|left, right| {
@@ -3993,8 +5941,9 @@ fn load_older_messages(ctx: &AppContext, conversation_id: &str) -> std::io::Resu
                     .cmp(&right.server_timestamp)
                     .then_with(|| left.envelope_id.cmp(&right.envelope_id))
             });
-            let messages = decrypt_direct_history(client, &ordered, &id, &account)?;
-            Ok((messages, newest_cursor, has_older))
+            let messages =
+                decrypt_conversation_history(client, &ordered, &id, &account, &history_kind)?;
+            Ok((messages, oldest_cursor, has_older))
         },
         move |window, result| match result {
             Ok((older, cursor, has_older)) => {
@@ -4009,6 +5958,14 @@ fn load_older_messages(ctx: &AppContext, conversation_id: &str) -> std::io::Resu
                     return;
                 }
                 let visible = is_chat_route_visible(&window, &id_for_ui, false, None);
+                let load_generation_is_current = load_generation.is_some_and(|generation| {
+                    chat_request_generation_is_current(
+                        &account_id_for_ui,
+                        &id_for_ui,
+                        "load",
+                        generation,
+                    )
+                });
                 let mut state = state_lock();
                 if let Some(chat) = state
                     .accounts
@@ -4029,9 +5986,36 @@ fn load_older_messages(ctx: &AppContext, conversation_id: &str) -> std::io::Resu
                     );
                     chat.messages.sort_by_key(|entry| entry.server_timestamp);
                     normalize_day_markers(&mut chat.messages);
+                    refresh_chat_search_preserving_selection(chat);
                     chat.history_cursor = cursor;
                     chat.history_has_older = has_older;
                     chat.history_loading_older = false;
+                    let pending_pin_id =
+                        pending_pin_jump
+                            .as_ref()
+                            .and_then(|(pending_id, pending_notice)| {
+                                (chat.pins.get(chat.selected_pin) == Some(pending_id)
+                                    && !chat.message_navigation_notice.is_empty()
+                                    && chat.message_navigation_notice == *pending_notice
+                                    && chat
+                                        .messages
+                                        .iter()
+                                        .any(|message| &message.id == pending_id))
+                                .then(|| pending_id.clone())
+                            });
+                    let scroll_target = pending_pin_id.filter(|_| {
+                        visible
+                            && load_generation_is_current
+                            && load_generation.is_some_and(|generation| {
+                                chat.request_generations.get("load") == Some(&generation)
+                            })
+                    });
+                    if scroll_target.is_some() {
+                        chat.message_navigation_notice.clear();
+                    }
+                    if let Some(message_id) = scroll_target {
+                        window.set_chat_scroll_to_message_id(message_id.into());
+                    }
                     if visible {
                         apply_chat_models(window, chat);
                     }
@@ -4232,12 +6216,15 @@ fn move_pin_selection(ctx: &AppContext, action: &str) {
     let Some(conversation_id) = selected_conversation_id(ctx) else {
         return;
     };
-    let mut state = state_lock();
-    if let Some(chat) = state
-        .accounts
-        .get_mut(&account_id)
-        .and_then(|account| account.chats.get_mut(&conversation_id))
-    {
+    let message_id = {
+        let mut state = state_lock();
+        let Some(chat) = state
+            .accounts
+            .get_mut(&account_id)
+            .and_then(|account| account.chats.get_mut(&conversation_id))
+        else {
+            return;
+        };
         if chat.pins.is_empty() {
             return;
         }
@@ -4253,9 +6240,12 @@ fn move_pin_selection(ctx: &AppContext, action: &str) {
             "pins-next" => chat.selected_pin = (chat.selected_pin + 1) % chat.pins.len(),
             _ => {}
         }
-    }
-    drop(state);
+        chat.pins.get(chat.selected_pin).cloned()
+    };
     apply_selected_chat(ctx);
+    if let Some(message_id) = message_id {
+        request_message_jump(ctx, &account_id, &conversation_id, &message_id, true);
+    }
 }
 
 fn unpin_current(ctx: &AppContext) {
@@ -4399,6 +6389,7 @@ fn vote_poll(ctx: &AppContext, poll_id: &str) {
         }
         selected
     };
+    let submitted_selection = selected.clone();
     let id = poll_id.to_owned();
     let account_id = session.account.id.clone();
     let request_key = format!("poll-vote:{poll_id}");
@@ -4448,8 +6439,15 @@ fn vote_poll(ctx: &AppContext, poll_id: &str) {
                     poll.busy = false;
                     match result {
                         Ok(item) => {
-                            poll.selected = item.my_votes.clone();
-                            poll.item = item;
+                            chat.poll_mutation_generations
+                                .insert(poll_id_for_ui.clone(), next_request_generation());
+                            if item.revision >= poll.item.revision {
+                                if poll.selected == submitted_selection {
+                                    poll.selected = item.my_votes.clone();
+                                    chat.poll_selections.remove(&poll_id_for_ui);
+                                }
+                                poll.item = item;
+                            }
                             poll.error.clear();
                         }
                         Err(error) => poll.error = error.user_message().to_owned(),
@@ -4556,19 +6554,35 @@ fn add_poll_option(ctx: &AppContext, poll_id: &str, text: &str) {
                 {
                     match result {
                         Ok(()) => {
+                            chat.poll_mutation_generations
+                                .insert(poll_id_for_ui.clone(), next_request_generation());
                             poll.extra_texts
                                 .insert(option_id_for_ui.clone(), text_for_ui);
-                            poll.item.extra_options.push(chat_api::PollExtraOption {
-                                option_id: option_id_for_ui.clone(),
-                                encrypted_meta: String::new(),
-                                proposed_by_account_id: Some(owner_id),
-                                proposed_by_device_number: Some(owner_device),
-                                created_at: now_unix(),
-                            });
-                            poll.item.counts.push(chat_api::PollCount {
-                                option_id: option_id_for_ui,
-                                count: 0,
-                            });
+                            if !poll
+                                .item
+                                .extra_options
+                                .iter()
+                                .any(|option| option.option_id == option_id_for_ui)
+                            {
+                                poll.item.extra_options.push(chat_api::PollExtraOption {
+                                    option_id: option_id_for_ui.clone(),
+                                    encrypted_meta: String::new(),
+                                    proposed_by_account_id: Some(owner_id),
+                                    proposed_by_device_number: Some(owner_device),
+                                    created_at: now_unix(),
+                                });
+                            }
+                            if !poll
+                                .item
+                                .counts
+                                .iter()
+                                .any(|count| count.option_id == option_id_for_ui)
+                            {
+                                poll.item.counts.push(chat_api::PollCount {
+                                    option_id: option_id_for_ui,
+                                    count: 0,
+                                });
+                            }
                             poll.error.clear();
                         }
                         Err(error) => poll.error = error.user_message().to_owned(),
@@ -4651,6 +6665,10 @@ fn mutate_poll(ctx: &AppContext, poll_id: &str, mutation: PollMutation) {
                     .and_then(|account| account.chats.get_mut(&conv_id))
                 {
                     chat.polls_error.clear();
+                    chat.deleted_poll_ids.insert(poll_id_for_ui.clone());
+                    chat.poll_mutation_generations.remove(&poll_id_for_ui);
+                    chat.poll_selections.remove(&poll_id_for_ui);
+                    chat.poll_proposals.remove(&poll_id_for_ui);
                     chat.polls.retain(|poll| poll.item.id != poll_id_for_ui);
                     if visible {
                         apply_chat_models(window, chat);
@@ -4662,13 +6680,14 @@ fn mutate_poll(ctx: &AppContext, poll_id: &str, mutation: PollMutation) {
                 .and_then(|account| account.chats.get_mut(&conv_id))
             {
                 chat.polls_error.clear();
+                chat.poll_mutation_generations
+                    .insert(poll_id_for_ui.clone(), next_request_generation());
                 if let Some(poll) = chat
                     .polls
                     .iter_mut()
                     .find(|poll| poll.item.id == poll_id_for_ui)
                 {
-                    poll.item.closed_at = Some(now_unix());
-                    poll.item.revision += 1;
+                    poll.item.closed_at.get_or_insert_with(now_unix);
                 }
                 if visible {
                     apply_chat_models(window, chat);
@@ -4729,10 +6748,15 @@ fn remove_poll_option(ctx: &AppContext, poll_id: &str, option_id: &str) {
                 {
                     match result {
                         Ok(()) => {
+                            chat.poll_mutation_generations
+                                .insert(poll_for_ui.clone(), next_request_generation());
                             if !poll.item.deleted_option_ids.contains(&option_for_ui) {
                                 poll.item.deleted_option_ids.push(option_for_ui.clone());
                             }
                             poll.selected.retain(|id| id != &option_for_ui);
+                            if let Some(selected) = chat.poll_selections.get_mut(&poll_for_ui) {
+                                selected.retain(|id| id != &option_for_ui);
+                            }
                             poll.error.clear();
                         }
                         Err(error) => poll.error = error.user_message().to_owned(),
@@ -4811,7 +6835,7 @@ fn reload_polls(ctx: &AppContext, conversation_id: &str) -> std::io::Result<()> 
                         });
                         chat.poll_has_older = polls.len() as i64 >= POLL_PAGE_SIZE;
                         chat.polls_error.clear();
-                        merge_poll_pages(&mut chat.polls, polls);
+                        merge_poll_pages(chat, polls, request_generation, false);
                     }
                     Err(error) => chat.polls_error = error.user_message().to_owned(),
                 }
@@ -4919,7 +6943,7 @@ fn load_older_polls(ctx: &AppContext, conversation_id: &str) -> std::io::Result<
                         chat.poll_cursor = cursor;
                         chat.poll_has_older = has_older;
                         chat.polls_error.clear();
-                        merge_poll_pages(&mut chat.polls, polls);
+                        merge_poll_pages(chat, polls, request_generation, false);
                     }
                     Err(error) => chat.polls_error = error.user_message().to_owned(),
                 }
@@ -4954,23 +6978,69 @@ fn load_older_polls(ctx: &AppContext, conversation_id: &str) -> std::io::Result<
     Ok(())
 }
 
-fn merge_poll_pages(existing: &mut Vec<PollState>, incoming: Vec<PollState>) {
+fn merge_poll_pages(
+    chat: &mut ChatState,
+    incoming: Vec<PollState>,
+    read_generation: u64,
+    replace: bool,
+) {
+    if replace {
+        // Full route loads still replace the displayed page, except for polls
+        // created or changed locally after this read started.
+        let incoming_ids = incoming
+            .iter()
+            .map(|poll| poll.item.id.as_str())
+            .collect::<HashSet<_>>();
+        chat.polls.retain(|poll| {
+            incoming_ids.contains(poll.item.id.as_str())
+                || chat
+                    .poll_mutation_generations
+                    .get(&poll.item.id)
+                    .is_some_and(|generation| *generation > read_generation)
+        });
+    }
     for mut incoming_poll in incoming {
-        if let Some(current) = existing
-            .iter_mut()
-            .find(|poll| poll.item.id == incoming_poll.item.id)
+        let id = &incoming_poll.item.id;
+        // Delete/stop/option mutation endpoints do not return a poll revision.
+        // A page started before their completion cannot supersede local state.
+        if chat.deleted_poll_ids.contains(id)
+            || chat
+                .poll_mutation_generations
+                .get(id)
+                .is_some_and(|generation| *generation > read_generation)
         {
+            continue;
+        }
+        if let Some(current) = chat.polls.iter_mut().find(|poll| poll.item.id == *id) {
+            if incoming_poll.item.revision < current.item.revision {
+                continue;
+            }
             current.item = incoming_poll.item;
             if current.metadata.is_none() {
                 current.metadata = incoming_poll.metadata.take();
             }
             current.extra_texts.extend(incoming_poll.extra_texts);
-            current.selected = current.item.my_votes.clone();
+            if !chat.poll_selections.contains_key(&current.item.id) {
+                current.selected = current.item.my_votes.clone();
+            }
+            current
+                .selected
+                .retain(|id| !current.item.deleted_option_ids.contains(id));
         } else {
-            existing.push(incoming_poll);
+            if let Some(selected) = chat.poll_selections.get(id) {
+                incoming_poll.selected = selected
+                    .iter()
+                    .filter(|id| !incoming_poll.item.deleted_option_ids.contains(id))
+                    .cloned()
+                    .collect();
+            }
+            if let Some(proposal) = chat.poll_proposals.get(id) {
+                incoming_poll.proposal = proposal.clone();
+            }
+            chat.polls.push(incoming_poll);
         }
     }
-    existing.sort_by(|left, right| {
+    chat.polls.sort_by(|left, right| {
         left.item
             .created_at
             .cmp(&right.item.created_at)
@@ -5212,17 +7282,58 @@ fn apply_chat_models(window: MainWindow, chat: &mut ChatState) {
     window.set_chat_busy(chat.busy);
     window.set_chat_editing(chat.editing);
     window.set_chat_draft(chat.draft.clone().into());
+    window.set_chat_attachment_composer_open(chat.attachment_composer.open);
+    window.set_chat_attachment_composer_busy(chat.attachment_composer.busy);
+    window.set_chat_attachment_composer_send_enabled(
+        !chat.attachment_composer.files.is_empty() && !chat.attachment_composer.busy,
+    );
+    window.set_chat_attachment_composer_error_text(chat.attachment_composer.error.clone().into());
+    window.set_chat_attachment_caption(chat.attachment_composer.caption.clone().into());
+    window.set_chat_pending_attachments(ModelRc::new(VecModel::from(
+        chat.attachment_composer
+            .files
+            .iter()
+            .enumerate()
+            .map(|(index, file)| PendingAttachmentView {
+                id: file.id.clone().into(),
+                name: file.name.clone().into(),
+                size_label: attachment_size_label(file.size_bytes).into(),
+                compress_label: "".into(),
+                preview_image: Image::default(),
+                has_preview: false,
+                can_compress: false,
+                compress: false,
+                active_upload: chat.attachment_composer.active_file == Some(index),
+                progress_label: if chat.attachment_composer.active_file == Some(index) {
+                    chat.attachment_composer.phase_label.clone().into()
+                } else {
+                    "".into()
+                },
+            })
+            .collect::<Vec<_>>(),
+    )));
     window.set_chat_has_older(chat.history_has_older);
+    window.set_chat_history_loading_older(chat.history_loading_older);
     window.set_chat_banner_text(chat.banner_text.clone().into());
+    window.set_chat_navigation_notice_text(chat.message_navigation_notice.clone().into());
     let pinned_text = chat
         .pins
         .get(chat.selected_pin)
-        .and_then(|pinned_id| {
+        .map(|pinned_id| {
             chat.messages
                 .iter()
                 .find(|message| &message.id == pinned_id)
+                .map(|message| {
+                    if message.body.is_empty() {
+                        localized("Сообщение", "Message").to_owned()
+                    } else {
+                        message.body.clone()
+                    }
+                })
+                .unwrap_or_else(|| {
+                    localized("Сообщение не загружено", "Message not loaded").to_owned()
+                })
         })
-        .map(|message| message.body.clone())
         .unwrap_or_default();
     window.set_chat_pinned_text(pinned_text.into());
     window.set_chat_pin_count(i32::try_from(chat.pins.len()).unwrap_or(i32::MAX));
@@ -5237,6 +7348,7 @@ fn apply_chat_models(window: MainWindow, chat: &mut ChatState) {
         chat.search_results
             .iter()
             .map(|result| ChatSearchResult {
+                id: result.id.clone().into(),
                 sender: result.sender.clone().into(),
                 timestamp: result.timestamp.clone().into(),
                 excerpt: result.excerpt.clone().into(),
@@ -5248,11 +7360,14 @@ fn apply_chat_models(window: MainWindow, chat: &mut ChatState) {
     window.set_chat_search_position(
         search_position(chat.search_selected_index, chat.search_results.len()).into(),
     );
-    // The native app has no media-call adapter yet. Poll creation has a typed
-    // core wrapper and is available in group conversations.
-    window.set_chat_can_call(false);
+    // Call signaling is currently available only for direct conversations;
+    // group calls and device media capture are not implemented by the native
+    // call adapter yet. Keep the action hidden while the conversation loads.
+    window.set_chat_can_call(chat.kind == "direct" && !chat.loading);
     window.set_chat_can_poll(chat.kind == "group" && !chat.loading);
-    window.set_chat_can_schedule(false);
+    window.set_chat_can_schedule(
+        matches!(chat.kind.as_str(), "direct" | "group") && !chat.loading && !chat.editing,
+    );
     window.set_chat_composer_enabled(
         matches!(chat.kind.as_str(), "direct" | "group") && !chat.loading,
     );
@@ -5265,7 +7380,14 @@ fn apply_chat_models(window: MainWindow, chat: &mut ChatState) {
     window.set_chat_poll_create_open(composer.open);
     window.set_chat_poll_create_busy(composer.busy);
     window.set_chat_poll_create_can_create(
-        composer.open && !composer.busy && poll_composer_valid(composer),
+        composer.open
+            && !composer.busy
+            && poll_composer_valid(composer)
+            && match chat.kind.as_str() {
+                "group" => window.get_screen() == "chat",
+                "channel" => window.get_screen() == "channel" && window.get_channel_can_publish(),
+                _ => false,
+            },
     );
     window.set_chat_poll_create_is_quiz(composer.is_quiz);
     window.set_chat_poll_create_allows_multiple(composer.allows_multiple);
@@ -5603,7 +7725,21 @@ fn message_model(message: &MessageEntry) -> ChatMessage {
         time_label: message.time_label.clone().into(),
         delivery_label: message.delivery_label.clone().into(),
         reactions: ModelRc::new(VecModel::from(reactions)),
-        attachments: empty_model(),
+        attachments: ModelRc::new(VecModel::from(
+            message
+                .attachments
+                .iter()
+                .map(|attachment_id| ChatAttachmentView {
+                    id: attachment_id.clone().into(),
+                    label: localized("Вложение", "Attachment").into(),
+                    size_label: "".into(),
+                    state_label: "".into(),
+                    preview_image: Image::default(),
+                    has_preview: false,
+                    unavailable: false,
+                })
+                .collect::<Vec<_>>(),
+        )),
         own: message.own,
         edited: message.edited,
         show_day_label: message.show_day_label,
@@ -5674,6 +7810,7 @@ fn update_chat_search(chat: &mut ChatState, query: &str) {
             .iter()
             .filter(|message| message.body.to_lowercase().contains(&needle))
             .map(|message| ChatSearchResultEntry {
+                id: message.id.clone(),
                 sender: message.author.clone(),
                 timestamp: message.time_label.clone(),
                 excerpt: search_excerpt(&message.body),
@@ -5685,6 +7822,27 @@ fn update_chat_search(chat: &mut ChatState, query: &str) {
     } else {
         0
     };
+}
+
+fn selected_search_result_id(chat: &ChatState) -> Option<String> {
+    usize::try_from(chat.search_selected_index)
+        .ok()
+        .and_then(|index| chat.search_results.get(index))
+        .map(|result| result.id.clone())
+}
+
+fn refresh_chat_search_preserving_selection(chat: &mut ChatState) {
+    let selected_id = selected_search_result_id(chat);
+    let query = chat.search_query.clone();
+    update_chat_search(chat, &query);
+    if let Some(selected_id) = selected_id
+        && let Some(index) = chat
+            .search_results
+            .iter()
+            .position(|result| result.id == selected_id)
+    {
+        chat.search_selected_index = i32::try_from(index).unwrap_or(i32::MAX);
+    }
 }
 
 fn search_excerpt(body: &str) -> String {
@@ -5715,6 +7873,81 @@ fn search_position(index: i32, count: usize) -> String {
         .filter(|index| *index < count)
         .map(|index| format!("{} / {count}", index + 1))
         .unwrap_or_default()
+}
+
+fn request_message_jump(
+    ctx: &AppContext,
+    account_id: &str,
+    conversation_id: &str,
+    message_id: &str,
+    pinned: bool,
+) {
+    let Some(session) = ctx.active_session() else {
+        return;
+    };
+    if session.account.id != account_id {
+        return;
+    }
+
+    let (load_generation, target_loaded) = {
+        let mut state = state_lock();
+        let Some(chat) = state
+            .accounts
+            .get_mut(account_id)
+            .and_then(|account| account.chats.get_mut(conversation_id))
+        else {
+            return;
+        };
+        let target_loaded = chat.messages.iter().any(|message| message.id == message_id);
+        if target_loaded {
+            chat.message_navigation_notice.clear();
+            (chat.request_generations.get("load").copied(), true)
+        } else {
+            chat.message_navigation_notice = if pinned {
+                localized(
+                    "Закреплённое сообщение не загружено. Загрузите более ранние сообщения, чтобы найти его.",
+                    "The pinned message is not loaded. Load older messages to find it.",
+                )
+                .to_owned()
+            } else {
+                localized(
+                    "Это сообщение уже отсутствует в загруженной истории.",
+                    "This message is no longer in the loaded history.",
+                )
+                .to_owned()
+            };
+            (None, false)
+        }
+    };
+    if !target_loaded {
+        apply_selected_chat(ctx);
+        return;
+    }
+    let Some(load_generation) = load_generation else {
+        return;
+    };
+
+    apply_selected_chat(ctx);
+    let context = ctx.clone();
+    let session_for_ui = session;
+    let account_id_for_ui = account_id.to_owned();
+    let conversation_id_for_ui = conversation_id.to_owned();
+    let message_id_for_ui = message_id.to_owned();
+    ctx.apply_ui(move |window| {
+        if !same_active_session(&context, &session_for_ui)
+            || window.get_screen() != "chat"
+            || !is_chat_route_visible(&window, &conversation_id_for_ui, false, None)
+            || !chat_request_generation_is_current(
+                &account_id_for_ui,
+                &conversation_id_for_ui,
+                "load",
+                load_generation,
+            )
+        {
+            return;
+        }
+        window.set_chat_scroll_to_message_id(message_id_for_ui.into());
+    });
 }
 
 fn conversation_banner(conversations: &[conversations_api::Conversation], id: &str) -> String {
@@ -5823,7 +8056,7 @@ fn list_request_is_current(
 ) -> bool {
     same_active_session(ctx, session)
         && window.get_route().as_str() == expected_route
-        && is_conversation_screen(window)
+        && (is_conversation_screen(window) || is_settings_sidebar_visible(window))
         && state_lock()
             .accounts
             .get(account_id)
@@ -5841,6 +8074,15 @@ fn is_conversation_screen(window: &MainWindow) -> bool {
         window.get_screen().as_str(),
         "chat_index" | "chat" | "channel"
     )
+}
+
+fn is_settings_sidebar_visible(window: &MainWindow) -> bool {
+    let route = window.get_route();
+    let path = route.split('?').next().unwrap_or(route.as_str());
+    window.get_authenticated()
+        && (path == "/app/settings" || path.starts_with("/app/settings/"))
+        && window.get_screen().starts_with("settings_")
+        && window.get_screen().as_str() == crate::app::screen_for_route(path)
 }
 
 fn is_chat_route_visible(
@@ -5868,6 +8110,19 @@ fn is_chat_route_visible(
     } else {
         window.get_selected_conversation_id().as_str() == conversation_id
             && matches!(screen.as_str(), "chat" | "channel")
+    }
+}
+
+/// Forget only this account's local conversation cache and private drafts.
+/// Called after its core client is shut down, before the removal journal clears.
+pub fn forget_local_account(account_id: &str) {
+    let mut state = state_lock();
+    state.accounts.remove(account_id);
+    if state.scheduled_dialog.account_id == account_id {
+        state.scheduled_dialog = ScheduledDialogState::default();
+    }
+    if state.schedule_create_dialog.account_id == account_id {
+        state.schedule_create_dialog = ScheduleCreateDialogState::default();
     }
 }
 
@@ -5934,6 +8189,14 @@ fn localized(ru: &'static str, en: &'static str) -> &'static str {
     // chat screens gain the same localization contract as the web client.
     let _ = en;
     ru
+}
+
+fn localized_for(language: &str, ru: &str, en: &str) -> String {
+    if language == "ru" {
+        ru.to_owned()
+    } else {
+        en.to_owned()
+    }
 }
 
 fn now_unix() -> i64 {

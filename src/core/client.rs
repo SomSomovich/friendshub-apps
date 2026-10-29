@@ -1,6 +1,8 @@
+use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::thread::{self, JoinHandle};
 
 use friendshub_core::Client;
@@ -78,6 +80,32 @@ impl From<CoreError> for CoreCallFailure {
     }
 }
 
+#[derive(Default)]
+struct DatabaseLifecycle {
+    opening: Mutex<()>,
+    generation: AtomicU64,
+    clients: Mutex<Vec<Weak<Client>>>,
+}
+
+fn database_lifecycle(path: &Path) -> Arc<DatabaseLifecycle> {
+    static PATHS: OnceLock<Mutex<HashMap<PathBuf, Arc<DatabaseLifecycle>>>> = OnceLock::new();
+    PATHS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .entry(path.to_path_buf())
+        .or_default()
+        .clone()
+}
+
+fn removal_requested(path: &Path) -> Result<bool, CoreCallFailure> {
+    match std::fs::symlink_metadata(CoreClient::removal_marker_path(path)) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(_) => Err(CoreCallFailure::Database),
+    }
+}
+
 /// One native `friendshub-core` client instance.
 ///
 /// A client is bound to one database path/account. Keep one instance per local
@@ -95,6 +123,27 @@ impl CoreClient {
     /// Slint event-loop thread.
     pub fn open(db_path: impl Into<PathBuf>) -> Result<Self, CoreCallFailure> {
         let db_path = db_path.into();
+        let lifecycle = database_lifecycle(&db_path);
+        let generation = lifecycle.generation.load(Ordering::SeqCst);
+        if removal_requested(&db_path)? {
+            return Err(CoreCallFailure::Database);
+        }
+        Self::open_with_generation(db_path, lifecycle, generation)
+    }
+
+    fn open_with_generation(
+        db_path: PathBuf,
+        lifecycle: Arc<DatabaseLifecycle>,
+        generation: u64,
+    ) -> Result<Self, CoreCallFailure> {
+        let _guard = lifecycle
+            .opening
+            .lock()
+            .map_err(|_| CoreCallFailure::Runtime)?;
+        if lifecycle.generation.load(Ordering::SeqCst) != generation || removal_requested(&db_path)?
+        {
+            return Err(CoreCallFailure::Database);
+        }
         if !db_path.is_absolute() {
             return Err(CoreCallFailure::Configuration);
         }
@@ -109,11 +158,19 @@ impl CoreClient {
             log_level: "info".to_owned(),
             log_format: "text".to_owned(),
         };
-        Client::open(config)
-            .map(|client| Self {
-                inner: Arc::new(client),
-            })
-            .map_err(CoreCallFailure::from)
+        let client = Client::open(config).map_err(CoreCallFailure::from)?;
+        if lifecycle.generation.load(Ordering::SeqCst) != generation {
+            client.shutdown_local().map_err(CoreCallFailure::from)?;
+            return Err(CoreCallFailure::Database);
+        }
+        let inner = Arc::new(client);
+        let mut clients = lifecycle
+            .clients
+            .lock()
+            .map_err(|_| CoreCallFailure::Runtime)?;
+        clients.retain(|client| client.strong_count() > 0);
+        clients.push(Arc::downgrade(&inner));
+        Ok(Self { inner })
     }
 
     /// Open a native core client on a worker thread.
@@ -127,9 +184,14 @@ impl CoreClient {
         completion: impl FnOnce(Result<Self, CoreCallFailure>) + Send + 'static,
     ) -> io::Result<JoinHandle<()>> {
         let db_path = db_path.into();
+        let lifecycle = database_lifecycle(&db_path);
+        let generation = lifecycle.generation.load(Ordering::SeqCst);
+        if removal_requested(&db_path).unwrap_or(true) {
+            return Err(io::Error::other("local account removal is pending"));
+        }
         thread::Builder::new()
             .name("friendshub-core-open".to_owned())
-            .spawn(move || completion(Self::open(db_path)))
+            .spawn(move || completion(Self::open_with_generation(db_path, lifecycle, generation)))
     }
 
     /// Returns the database path expected by `Client::open` without changing
@@ -146,6 +208,62 @@ impl CoreClient {
                 .collect::<String>()
         };
         data_dir.join("accounts").join(format!("{safe_key}.sqlite"))
+    }
+
+    /// Durable app-owned removal journal checked by core before database open.
+    pub fn removal_marker_path(db_path: &Path) -> PathBuf {
+        friendshub_core::db::pool::removal_marker_path(db_path)
+    }
+
+    /// Invalidate every previously queued open before cleanup begins.
+    pub fn mark_removal(db_path: &Path) {
+        database_lifecycle(db_path)
+            .generation
+            .fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Stop local calls, callback delivery and database handles. This does not
+    /// revoke or otherwise change the server session. Run on a worker thread.
+    pub fn shutdown_local(&self) -> Result<(), CoreCallFailure> {
+        self.inner.shutdown_local().map_err(CoreCallFailure::from)
+    }
+
+    pub fn is_shutdown(&self) -> bool {
+        self.inner.is_shutdown()
+    }
+
+    /// Quiesce all app clients for this database, including clients retained
+    /// by a login completion, a previous account switch or an active call.
+    /// The opening barrier and generation also cancel opens queued earlier.
+    pub fn shutdown_database(db_path: &Path) -> Result<(), CoreCallFailure> {
+        let lifecycle = database_lifecycle(db_path);
+        let _guard = lifecycle
+            .opening
+            .lock()
+            .map_err(|_| CoreCallFailure::Runtime)?;
+        let clients: Vec<_> = lifecycle
+            .clients
+            .lock()
+            .map_err(|_| CoreCallFailure::Runtime)?
+            .iter()
+            .filter_map(Weak::upgrade)
+            .collect();
+        for client in clients {
+            client.shutdown_local().map_err(CoreCallFailure::from)?;
+        }
+        Ok(())
+    }
+
+    /// Retry cleanup only for a durably tombstoned, closed local database.
+    pub fn remove_local_database(
+        db_path: &Path,
+    ) -> Result<(), friendshub_core::db::pool::LocalDatabaseRemovalError> {
+        let lifecycle = database_lifecycle(db_path);
+        let _guard = lifecycle
+            .opening
+            .lock()
+            .map_err(|_| friendshub_core::db::pool::LocalDatabaseRemovalError::LockUnavailable)?;
+        Client::remove_local_database(db_path)
     }
 
     /// Exposes a cloned handle for app-owned typed request closures.

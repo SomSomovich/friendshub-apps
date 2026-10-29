@@ -1,6 +1,7 @@
 import { Theme } from "../theme.slint";
 import { ChatAction, ChatAttachmentView, ChatReaction } from "../chat/chat-controls.slint";
 import { MessageComposer } from "../chat/message-composer.slint";
+import { CreatePollDialog, PollDraftOption } from "../chat/create-poll-dialog.slint";
 import { PollCard, PollViewModel } from "../chat/poll-card.slint";
 import { ScrollView } from "std-widgets.slint";
 
@@ -27,6 +28,26 @@ export component ChannelScreen inherits Rectangle {
     in property <bool> polls-has-older: false;
     in property <bool> polls-loading-older: false;
     in property <string> polls-error-text: "";
+    in property <bool> poll-create-open: false;
+    in property <bool> poll-create-busy: false;
+    in property <bool> poll-create-can-create: false;
+    in property <bool> poll-create-is-quiz: false;
+    in property <bool> poll-create-allows-multiple: false;
+    in property <bool> poll-create-allows-revoting: true;
+    in property <bool> poll-create-allows-user-options: false;
+    in property <bool> poll-create-closes-automatically: false;
+    in property <bool> poll-create-can-add-option: false;
+    in property <bool> poll-create-duration-open: false;
+    in property <bool> poll-create-duration-valid: false;
+    in property <string> poll-create-duration-label: "";
+    in property <string> poll-create-title-count-label: "";
+    in property <string> poll-create-description-count-label: "";
+    in property <string> poll-create-error-text: "";
+    in property <[PollDraftOption]> poll-create-options: [];
+    in-out property <string> poll-create-title: "";
+    in-out property <string> poll-create-description: "";
+    in-out property <string> poll-create-duration-hours: "1";
+    in-out property <string> poll-create-duration-minutes: "0";
     in property <bool> loading: false;
     in property <bool> has-older: false;
     in property <bool> can-publish: false;
@@ -57,6 +78,22 @@ export component ChannelScreen inherits Rectangle {
     callback poll-option-remove-requested(string, string);
     callback poll-stop-requested(string);
     callback poll-remove-requested(string);
+    callback poll-create-title-changed(string);
+    callback poll-create-description-changed(string);
+    callback poll-create-type-changed(bool);
+    callback poll-create-multiple-changed(bool);
+    callback poll-create-revoting-changed(bool);
+    callback poll-create-user-options-changed(bool);
+    callback poll-create-auto-close-changed(bool);
+    callback poll-create-duration-requested();
+    callback poll-create-duration-selected(string, string);
+    callback poll-create-duration-cancelled();
+    callback poll-create-option-changed(int, string);
+    callback poll-create-option-correct-requested(int);
+    callback poll-create-option-remove-requested(int);
+    callback poll-create-option-add-requested();
+    callback poll-create-requested();
+    callback poll-create-close-requested();
     callback draft-changed(string);
     callback publish-requested(string);
     callback attachment-requested(string);
@@ -339,5 +376,44 @@ export component ChannelScreen inherits Rectangle {
             video-note-requested => { root.video-note-requested(); }
             cancel-edit-requested => { root.cancel-edit-requested(); }
         }
+    }
+
+    CreatePollDialog {
+        open: root.poll-create-open && root.can-publish;
+        busy: root.poll-create-busy;
+        can-create: root.poll-create-can-create && root.can-publish && !root.busy;
+        is-quiz: root.poll-create-is-quiz;
+        allows-multiple: root.poll-create-allows-multiple;
+        allows-revoting: root.poll-create-allows-revoting;
+        allows-user-options: root.poll-create-allows-user-options;
+        closes-automatically: root.poll-create-closes-automatically;
+        can-add-option: root.poll-create-can-add-option;
+        duration-open: root.poll-create-duration-open && root.can-publish;
+        duration-valid: root.poll-create-duration-valid;
+        duration-label: root.poll-create-duration-label;
+        title-count-label: root.poll-create-title-count-label;
+        description-count-label: root.poll-create-description-count-label;
+        error-text: root.poll-create-error-text;
+        options: root.poll-create-options;
+        title <=> root.poll-create-title;
+        description <=> root.poll-create-description;
+        duration-hours <=> root.poll-create-duration-hours;
+        duration-minutes <=> root.poll-create-duration-minutes;
+        title-changed(value) => { root.poll-create-title-changed(value); }
+        description-changed(value) => { root.poll-create-description-changed(value); }
+        type-changed(value) => { root.poll-create-type-changed(value); }
+        multiple-changed(value) => { root.poll-create-multiple-changed(value); }
+        revoting-changed(value) => { root.poll-create-revoting-changed(value); }
+        user-options-changed(value) => { root.poll-create-user-options-changed(value); }
+        auto-close-changed(value) => { root.poll-create-auto-close-changed(value); }
+        duration-requested => { root.poll-create-duration-requested(); }
+        duration-selected(hours, minutes) => { root.poll-create-duration-selected(hours, minutes); }
+        duration-cancelled => { root.poll-create-duration-cancelled(); }
+        option-changed(index, value) => { root.poll-create-option-changed(index, value); }
+        option-correct-requested(index) => { root.poll-create-option-correct-requested(index); }
+        option-remove-requested(index) => { root.poll-create-option-remove-requested(index); }
+        option-add-requested => { root.poll-create-option-add-requested(); }
+        create-requested => { root.poll-create-requested(); }
+        close-requested => { root.poll-create-close-requested(); }
     }
 }

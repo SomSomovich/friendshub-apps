@@ -242,7 +242,7 @@ export component AccountSettingsScreen inherits Rectangle {
 
                 FHPrimaryButton {
                     text: "Сохранить статус";
-                    enabled: !root.busy;
+                    enabled: !root.busy && !root.status-text.is-empty;
                     busy: root.busy;
                     clicked => {
                         root.save-status-requested(root.status-text, root.status-emoji, root.status-ttl-seconds);

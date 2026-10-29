@@ -24,6 +24,7 @@ targets:
         CFBundleDisplayName: FriendsHub
         CFBundleShortVersionString: 0.1.0
         CFBundleVersion: "1"
+        NSMicrophoneUsageDescription: "FriendsHub использует микрофон для аудиозвонков."
         CADisableMinimumFrameDurationOnPhone: true
         UILaunchScreen:
           ImageRespectSafeAreaInsets: false

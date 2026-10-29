@@ -58,12 +58,17 @@ struct ActiveCall {
     call_id: String,
     peer_account_id: String,
     peer_name: String,
+    with_audio: bool,
+    offered_video: bool,
     with_video: bool,
     started_at: i64,
     direction: calls_attachments::CallDirection,
     phase: ActiveCallPhase,
+    connected: bool,
     remote_sdp: Option<String>,
     deferred_event_ids: Vec<u64>,
+    pending_local_ice: Vec<calls_attachments::IceCandidate>,
+    seen_local_ice: HashSet<String>,
     action_pending: bool,
 }
 
@@ -95,6 +100,45 @@ fn bot_transcripts() -> &'static Mutex<HashMap<(String, String), BotTranscriptSt
 
 fn call_cache() -> &'static Mutex<HashMap<String, Vec<calls_attachments::CallRecord>>> {
     CALL_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Drop only the removed account's transcripts, call history and local call
+/// handles. Core shutdown releases signaling resources; this stops host audio.
+pub fn forget_local_account(account_id: &str) {
+    bot_transcripts()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .retain(|(owner, _), _| owner != account_id);
+    call_cache()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remove(account_id);
+    let removed_call_id = {
+        let mut call = active_call_slot()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        call.as_ref()
+            .is_some_and(|call| call.account_id == account_id)
+            .then(|| call.take().map(|call| call.call_id))
+            .flatten()
+    };
+    if let Some(call_id) = removed_call_id {
+        crate::platform::call_audio::stop(&call_id);
+    }
+    for events in [&APPLIED_CALL_EVENTS, &IN_FLIGHT_CALL_EVENTS] {
+        if let Some(events) = events.get() {
+            events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .retain(|(owner, _)| owner != account_id);
+        }
+    }
+}
+
+/// Remove downloaded plaintext attachment cache after the account's removal
+/// marker and core shutdown have made deletion irreversible.
+pub fn forget_local_attachment_cache(data_dir: &Path, account_id: &str) -> io::Result<()> {
+    crate::platform::open_file::forget_account_cache(data_dir, account_id)
 }
 
 /// Snapshot loaded call history for one account.
@@ -239,19 +283,25 @@ pub fn receive_core_event(
     match received.signal {
         calls_attachments::CallSignal::Offer { call_id, sdp } => {
             let peer_name = format!("Аккаунт {peer_account_id}");
-            let with_video = sdp_offers_video(&sdp);
+            let with_audio = sdp_offers_audio(&sdp);
+            let offered_video = sdp_offers_video(&sdp);
             let incoming = ActiveCall {
                 core: session.core.clone(),
                 account_id: account_id.to_owned(),
                 call_id: call_id.clone(),
                 peer_account_id: peer_account_id.clone(),
                 peer_name: peer_name.clone(),
-                with_video,
+                with_audio,
+                offered_video,
+                with_video: false,
                 started_at: received.client_timestamp,
                 direction: calls_attachments::CallDirection::Incoming,
                 phase: ActiveCallPhase::IncomingRinging,
+                connected: false,
                 remote_sdp: Some(sdp),
                 deferred_event_ids: event.id.into_iter().collect(),
+                pending_local_ice: Vec::new(),
+                seen_local_ice: HashSet::new(),
                 action_pending: false,
             };
 
@@ -320,11 +370,17 @@ pub fn receive_core_event(
                 }
                 window.set_call_peer_name(peer_name.into());
                 window.set_call_peer_initial(call_initial(&peer_account_id).into());
-                window.set_call_with_video(with_video);
+                window.set_call_with_video(false);
                 window.set_call_state("incoming".into());
                 window.set_call_status(
-                    "Входящий звонок. Звук и видео недоступны без системного медиаподключателя."
-                        .into(),
+                    if !with_audio {
+                        "Входящий вызов не содержит аудиодорожку и не может быть принят как аудиозвонок."
+                    } else if offered_video {
+                        "Входящий аудиозвонок. Видео собеседника пока не поддерживается."
+                    } else {
+                        "Входящий аудиозвонок."
+                    }
+                    .into(),
                 );
                 window.set_call_error(SharedString::default());
                 window.set_call_has_remote_video(false);
@@ -387,6 +443,137 @@ pub fn receive_core_event(
                 )
             })
         }
+    }
+}
+
+/// Route local native WebRTC events to the active account. Local ICE candidates
+/// are held until the outgoing offer has resolved its recipient, then sent as
+/// Signal-encrypted call events by the existing core wrapper.
+pub fn receive_webrtc_event(ctx: &AppContext, account_id: &str, event: &Event) {
+    if event.kind != "webrtc_event" {
+        return;
+    }
+    let Some(session) = ctx
+        .active_session()
+        .filter(|session| session.account.id == account_id)
+    else {
+        return;
+    };
+    let event = match calls_attachments::web_rtc_event(event) {
+        Ok(Some(event)) => event,
+        Ok(None) => return,
+        Err(error) => {
+            report_background_error("WebRTC event decode", CoreCallFailure::from(error));
+            return;
+        }
+    };
+    match event {
+        calls_attachments::WebRtcEvent::IceCandidate { call_id, candidate } => {
+            let call = {
+                let Ok(mut active_slot) = active_call_slot().lock() else {
+                    return;
+                };
+                let Some(active) = active_slot.as_mut().filter(|active| {
+                    active.account_id == account_id
+                        && active.call_id == call_id
+                        && std::sync::Arc::ptr_eq(&active.core, &session.core)
+                }) else {
+                    return;
+                };
+                if !active.seen_local_ice.insert(ice_candidate_key(&candidate)) {
+                    return;
+                }
+                if active.peer_account_id.is_empty() {
+                    active.pending_local_ice.push(candidate);
+                    return;
+                }
+                Some(active.clone())
+            };
+            if let Some(call) = call {
+                send_local_ice_candidate(ctx, &call, candidate);
+            }
+        }
+        calls_attachments::WebRtcEvent::ConnectionStateChanged { call_id, state }
+            if state.eq_ignore_ascii_case("connected") =>
+        {
+            let call = active_call_slot().lock().ok().and_then(|mut active| {
+                let active = active.as_mut().filter(|active| {
+                    active.account_id == account_id
+                        && active.call_id == call_id
+                        && std::sync::Arc::ptr_eq(&active.core, &session.core)
+                })?;
+                if active.connected {
+                    return None;
+                }
+                active.connected = true;
+                Some(active.clone())
+            });
+            if let Some(call) = call {
+                update_active_call_status(
+                    ctx,
+                    &call,
+                    account_id,
+                    if call.offered_video {
+                        "Аудиосоединение установлено. Видео отключено."
+                    } else {
+                        "Аудиосоединение установлено."
+                    },
+                    None,
+                );
+            }
+        }
+        _ => {}
+    }
+}
+
+fn ice_candidate_key(candidate: &calls_attachments::IceCandidate) -> String {
+    format!(
+        "{}\u{1f}{}\u{1f}{}",
+        candidate.candidate,
+        candidate.sdp_mid.as_deref().unwrap_or_default(),
+        candidate
+            .sdp_mline_index
+            .map(|index| index.to_string())
+            .unwrap_or_default(),
+    )
+}
+
+fn send_local_ice_candidate(
+    ctx: &AppContext,
+    call: &ActiveCall,
+    candidate: calls_attachments::IceCandidate,
+) {
+    let call = call.clone();
+    let completion_context = ctx.clone();
+    let completion_call = call.clone();
+    let operation_call_id = call.call_id.clone();
+    let operation_peer_id = call.peer_account_id.clone();
+    if let Err(error) = ctx.call(
+        "friendshub-call-local-ice",
+        move |client| {
+            calls_attachments::send_ice_candidate(
+                client,
+                &operation_peer_id,
+                &operation_call_id,
+                &candidate,
+            )
+            .map(|_| ())
+        },
+        move |window, result| {
+            if let Err(error) = result {
+                if is_current_account(&completion_context, &completion_call.account_id)
+                    && active_call_matches(&completion_call.account_id, &completion_call.call_id)
+                {
+                    window.set_call_error(
+                        "Не удалось передать сетевые параметры аудиозвонка. Проверьте подключение."
+                            .into(),
+                    );
+                }
+                report_background_error("local ICE signaling", error);
+            }
+        },
+    ) {
+        report_spawn_error("local ICE signaling", error);
     }
 }
 
@@ -478,7 +665,7 @@ fn apply_remote_answer(
                     &completion_context,
                     &completion_call,
                     &expected_account_id,
-                    "Ответ собеседника получен. Звук и видео недоступны без системного медиаподключателя.",
+                    "Ответ собеседника получен. Устанавливаем аудиосоединение; видео недоступно.",
                     None,
                 );
             }
@@ -486,7 +673,11 @@ fn apply_remote_answer(
                 if let Some(event_id) = event_id {
                     clear_call_event_in_flight(&expected_account_id, event_id);
                 }
-                show_incoming_call_error(&completion_context, &completion_call, error.user_message());
+                show_incoming_call_error(
+                    &completion_context,
+                    &completion_call,
+                    error.user_message(),
+                );
                 report_background_error("call answer", error);
             }
         },
@@ -560,14 +751,15 @@ fn finish_remote_call(
     let Some(call) = active_call_for_signal(&core, account_id, &peer_account_id, &call_id) else {
         return CoreEventDisposition::Unapplied;
     };
+    crate::platform::call_audio::stop(&call.call_id);
     let is_ringing_incoming = call.phase == ActiveCallPhase::IncomingRinging;
-    let status = if is_ringing_incoming {
+    let status = if call.connected {
+        calls_attachments::CallStatus::Completed
+    } else if is_ringing_incoming {
         calls_attachments::CallStatus::Missed
     } else if rejected {
         calls_attachments::CallStatus::Rejected
     } else {
-        // Connection-state events are not wired, so the app cannot claim that
-        // audio/video reached a connected state.
         calls_attachments::CallStatus::Cancelled
     };
     let completion_core = core.clone();
@@ -708,6 +900,15 @@ fn accept_incoming_call(ctx: &AppContext) -> bool {
             return true;
         }
     };
+    if !call.with_audio {
+        reset_incoming_action(&call);
+        show_incoming_call_error(
+            ctx,
+            &call,
+            "Этот входящий вызов не предлагает Opus-аудиодорожку. Принятие недоступно; отклоните вызов.",
+        );
+        return true;
+    }
     let Some(remote_sdp) = call.remote_sdp.clone() else {
         reset_incoming_action(&call);
         show_incoming_call_error(ctx, &call, "Не получено описание входящего звонка.");
@@ -726,6 +927,7 @@ fn accept_incoming_call(ctx: &AppContext) -> bool {
                 &call_for_worker.peer_account_id,
                 &call_for_worker.call_id,
                 &remote_sdp,
+                call_for_worker.with_audio,
             )
         },
         move |window, result| match result {
@@ -750,19 +952,20 @@ fn accept_incoming_call(ctx: &AppContext) -> bool {
                     window.set_call_with_video(call.with_video);
                     window.set_call_state("active".into());
                     window.set_call_status(
-                        "Сигнал вызова принят. Голос и видео недоступны без системного медиаподключателя."
-                            .into(),
+                        if call.offered_video {
+                            "Аудиовызов принят. Видео дорожка не поддерживается и отключена."
+                        } else {
+                            "Аудиовызов принят. Подключаем микрофон и динамик…"
+                        }
+                        .into(),
                     );
                     window.set_call_error(SharedString::default());
                 }
+                start_call_audio(&completion_context, &call);
             }
             Err(error) => {
                 reset_incoming_action(&call);
-                show_incoming_call_error(
-                    &completion_context,
-                    &call,
-                    error.user_message(),
-                );
+                show_incoming_call_error(&completion_context, &call, error.user_message());
                 report_background_error("call accept", error);
             }
         },
@@ -809,6 +1012,7 @@ fn decline_incoming_call(ctx: &AppContext) -> bool {
         }
     };
     set_incoming_call_status(ctx, &call, "Отклоняем вызов…");
+    crate::platform::call_audio::stop(&call.call_id);
 
     let call_for_worker = call.clone();
     let call_for_spawn_error = call.clone();
@@ -1058,6 +1262,23 @@ fn sdp_offers_video(sdp: &str) -> bool {
         .any(|line| line.trim_start().starts_with("m=video "))
 }
 
+fn sdp_offers_audio(sdp: &str) -> bool {
+    let mut in_audio_section = false;
+    for line in sdp.lines().map(str::trim) {
+        if let Some(media_line) = line.strip_prefix("m=") {
+            in_audio_section = media_line.starts_with("audio ");
+            continue;
+        }
+        if in_audio_section {
+            let line = line.to_ascii_lowercase();
+            if line.starts_with("a=rtpmap:") && line.contains(" opus/48000") {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 fn call_initial(peer_account_id: &str) -> String {
     peer_account_id
         .chars()
@@ -1228,7 +1449,7 @@ fn handle_bots(ctx: &AppContext, action: &str, arg1: &str, _arg2: &str, _arg3: &
 
 fn handle_calls(ctx: &AppContext, action: &str, arg1: &str, _arg2: &str, _arg3: &str) -> bool {
     match action {
-        "audio" | "video" => {
+        "audio" => {
             let is_history_peer = current_screen(ctx).as_deref() == Some("calls");
             let target = if is_history_peer {
                 arg1.to_owned()
@@ -1238,7 +1459,15 @@ fn handle_calls(ctx: &AppContext, action: &str, arg1: &str, _arg2: &str, _arg3: 
                 };
                 conversation_id
             };
-            start_outgoing_call(ctx, target, is_history_peer, action == "video");
+            start_outgoing_call(ctx, target, is_history_peer);
+            true
+        }
+        "video" => {
+            report_call_message(
+                ctx,
+                "Видеозвонки пока недоступны. Используйте аудиозвонок.",
+                true,
+            );
             true
         }
         "hang-up" => {
@@ -1343,28 +1572,49 @@ fn handle_calls(ctx: &AppContext, action: &str, arg1: &str, _arg2: &str, _arg3: 
             load_call_history(ctx);
             true
         }
-        // Incoming call callbacks carry no sender, call id, or SDP. Speaker,
-        // camera, and camera-switch actions are host-device operations.
-        "profile-call" | "toggle-speaker" | "toggle-camera" | "switch-camera" => false,
+        "toggle-speaker" => {
+            let call = active_call_slot()
+                .lock()
+                .ok()
+                .and_then(|active| active.clone());
+            let Some(call) = call else {
+                return false;
+            };
+            let enabled = !ctx
+                .ui
+                .upgrade()
+                .is_some_and(|window| window.get_call_speaker_on());
+            if crate::platform::call_audio::set_playback(&call.call_id, enabled) {
+                ctx.apply_ui(move |window| window.set_call_speaker_on(enabled));
+            } else {
+                #[cfg(target_os = "android")]
+                if call.with_audio && active_call_matches(&call.account_id, &call.call_id) {
+                    start_call_audio_with_user_action(ctx, &call);
+                    return true;
+                }
+                report_call_message(ctx, "Динамик недоступен для этого звонка.", true);
+            }
+            true
+        }
+        // There is no local video capture/render adapter yet.
+        "profile-call" | "toggle-camera" | "switch-camera" => false,
         _ => false,
     }
 }
 
-fn handle_attachments(
-    _ctx: &AppContext,
-    action: &str,
-    _arg1: &str,
-    _arg2: &str,
-    _arg3: &str,
-) -> bool {
+fn handle_attachments(ctx: &AppContext, action: &str, arg1: &str, arg2: &str, _arg3: &str) -> bool {
     match action {
-        // The Slint callbacks currently provide no absolute file path. Open
-        // callbacks provide only an attachment id, with no local key material.
-        // Voice and video note callbacks have no capture/encoding adapter.
-        "choose" | "open-message" | "open-post" | "voice-record" | "video-note" => false,
-        // File transfer helpers are reachable once the platform/UI supplies a
-        // path and the surrounding attachment message/key workflow.
-        "upload" | "download" => false,
+        "choose" => super::chat::choose_attachments(ctx, arg1),
+        "caption" => super::chat::update_attachment_caption(ctx, arg1),
+        "remove" => super::chat::remove_pending_attachment(ctx, arg1),
+        "send" => super::chat::send_attachments(ctx),
+        "close" => super::chat::close_attachment_composer(ctx),
+        "open-message" => super::chat::open_attachment(ctx, arg2),
+        // Channel posts need a separate server contract and voice/video notes
+        // need capture adapters. They remain unavailable instead of returning
+        // a misleading success.
+        "open-post" | "voice-record" | "video-note" | "upload" | "download" => false,
+        "compress-toggle" => false,
         _ => false,
     }
 }
@@ -1726,12 +1976,7 @@ fn format_call_timestamp(timestamp: i64) -> String {
     format!("{day:02}.{month:02}.{year:04} {hours:02}:{minutes:02} UTC")
 }
 
-fn start_outgoing_call(
-    ctx: &AppContext,
-    target: String,
-    target_is_account_id: bool,
-    with_video: bool,
-) {
+fn start_outgoing_call(ctx: &AppContext, target: String, target_is_account_id: bool) {
     let Some(session) = ctx.active_session() else {
         report_call_message(ctx, "Войдите в аккаунт, чтобы начать звонок.", true);
         return;
@@ -1763,12 +2008,17 @@ fn start_outgoing_call(
             call_id: call_id.clone(),
             peer_account_id: String::new(),
             peer_name: peer_name.clone(),
-            with_video,
+            with_audio: true,
+            offered_video: false,
+            with_video: false,
             started_at,
             direction: calls_attachments::CallDirection::Outgoing,
             phase: ActiveCallPhase::OutgoingStarting,
+            connected: false,
             remote_sdp: None,
             deferred_event_ids: Vec::new(),
+            pending_local_ice: Vec::new(),
+            seen_local_ice: HashSet::new(),
             action_pending: false,
         });
     }
@@ -1803,41 +2053,55 @@ fn start_outgoing_call(
                         CoreError::InvalidPayload("direct conversation has no other member".into())
                     })?
             };
-            let signal =
-                calls_attachments::initiate_call(client, &peer_account_id, &call_id_for_call)?;
+            let signal = calls_attachments::initiate_call(
+                client,
+                &peer_account_id,
+                &call_id_for_call,
+                true,
+            )?;
             Ok((peer_account_id, signal))
         },
         move |window, result| match result {
             Ok((peer_account_id, _signal)) => {
-                if let Ok(mut active) = active_call_slot().lock() {
-                    if let Some(active) = active
-                        .as_mut()
-                        .filter(|active| {
+                let (call_for_audio, pending_candidates) =
+                    if let Ok(mut active) = active_call_slot().lock() {
+                        if let Some(active) = active.as_mut().filter(|active| {
                             active.account_id == expected_account_id
                                 && active.call_id == call_id_for_completion
-                        })
-                    {
-                        active.peer_account_id = peer_account_id;
-                        active.phase = ActiveCallPhase::Outgoing;
-                    }
-                }
+                        }) {
+                            active.peer_account_id = peer_account_id.clone();
+                            active.phase = ActiveCallPhase::Outgoing;
+                            let pending = std::mem::take(&mut active.pending_local_ice);
+                            (Some(active.clone()), pending)
+                        } else {
+                            (None, Vec::new())
+                        }
+                    } else {
+                        (None, Vec::new())
+                    };
                 if is_current_account(&completion_context, &expected_account_id)
                     && active_call_matches(&expected_account_id, &call_id_for_completion)
                 {
                     window.set_call_peer_name(SharedString::from(peer_name.clone()));
                     window.set_call_peer_initial(peer_initial.clone().into());
-                    window.set_call_with_video(with_video);
+                    window.set_call_with_video(false);
                     window.set_call_state("outgoing".into());
                     window.set_call_status(
-                        "Сигнал вызова отправлен. Звук и видео недоступны без системного медиаадаптера."
+                        "Вызов отправлен. Подключаем микрофон и динамик… Видео пока недоступно."
                             .into(),
                     );
                     window.set_call_error(SharedString::default());
                     window.set_call_has_remote_video(false);
                     window.set_call_has_local_video(false);
-                    window.set_call_speaker_on(false);
+                    window.set_call_speaker_on(true);
                     window.set_call_camera_off(false);
                     window.set_call_overlay_visible(true);
+                }
+                if let Some(call) = call_for_audio {
+                    for candidate in pending_candidates {
+                        send_local_ice_candidate(&completion_context, &call, candidate);
+                    }
+                    start_call_audio(&completion_context, &call);
                 }
             }
             Err(error) => {
@@ -1847,7 +2111,7 @@ fn start_outgoing_call(
                 {
                     window.set_call_peer_name(peer_name.clone().into());
                     window.set_call_peer_initial(peer_initial.clone().into());
-                    window.set_call_with_video(with_video);
+                    window.set_call_with_video(false);
                     window.set_call_state("failed".into());
                     window.set_call_overlay_visible(true);
                     window.set_call_error(error.user_message().into());
@@ -1865,6 +2129,294 @@ fn start_outgoing_call(
         clear_active_call(&call_id);
         report_spawn_error("call signaling", error);
         report_call_message(ctx, "Не удалось запустить звонок.", true);
+    }
+}
+
+fn start_call_audio(ctx: &AppContext, call: &ActiveCall) {
+    start_call_audio_inner(ctx, call, false);
+}
+
+#[cfg(target_os = "android")]
+fn start_call_audio_with_user_action(ctx: &AppContext, call: &ActiveCall) {
+    start_call_audio_inner(ctx, call, true);
+}
+
+fn start_call_audio_inner(ctx: &AppContext, call: &ActiveCall, _user_action: bool) {
+    if !call.with_audio || !active_call_matches(&call.account_id, &call.call_id) {
+        return;
+    }
+    #[cfg(target_os = "android")]
+    if ensure_android_microphone_permission(ctx, call, _user_action) {
+        return;
+    }
+    let call = call.clone();
+    let worker_context = ctx.clone();
+    let failure_call = call.clone();
+    let failure_context = ctx.clone();
+    let spawn_failure_call = call.clone();
+    let spawn_result = std::thread::Builder::new()
+        .name("friendshub-call-audio-open".to_owned())
+        .spawn(move || {
+            let result = crate::platform::call_audio::start(
+                call.core.client(),
+                call.call_id.clone(),
+                move |failure| fail_call_audio(&failure_context, &failure_call, failure),
+            );
+            match result {
+                Ok(()) => {
+                    if !active_call_matches(&call.account_id, &call.call_id) {
+                        crate::platform::call_audio::stop(&call.call_id);
+                        return;
+                    }
+                    let context = worker_context.clone();
+                    let account_id = call.account_id.clone();
+                    let call_id = call.call_id.clone();
+                    let status = if call.offered_video {
+                        "Аудиоканал готов. Видео дорожка не поддерживается и отключена."
+                    } else {
+                        "Аудиоканал готов. Видео недоступно."
+                    };
+                    worker_context.apply_ui(move |window| {
+                        if is_current_account(&context, &account_id)
+                            && active_call_matches(&account_id, &call_id)
+                            && !active_call_action_pending(&account_id, &call_id)
+                        {
+                            window.set_call_status(status.into());
+                            window.set_call_speaker_on(true);
+                            window.set_call_error(SharedString::default());
+                        }
+                    });
+                }
+                Err(failure) => fail_call_audio(&worker_context, &call, failure),
+            }
+        });
+    if spawn_result.is_err() {
+        fail_call_audio(
+            ctx,
+            &spawn_failure_call,
+            crate::platform::call_audio::CallAudioFailure::CoreTransport,
+        );
+    }
+}
+
+/// Returns true while the user must grant or enable RECORD_AUDIO before a
+/// CPAL stream can be opened. This is called from the Slint event thread so
+/// `Activity.requestPermissions` runs on Android's UI thread.
+#[cfg(target_os = "android")]
+fn ensure_android_microphone_permission(
+    ctx: &AppContext,
+    call: &ActiveCall,
+    user_action: bool,
+) -> bool {
+    use crate::platform::notifications::{
+        self, MicrophonePermissionState, MicrophoneRequestOutcome,
+    };
+
+    let state = notifications::microphone_permission_state();
+    let outcome = match state {
+        MicrophonePermissionState::Granted => return false,
+        MicrophonePermissionState::Prompt => match notifications::request_microphone_permission() {
+            Ok(MicrophoneRequestOutcome::AlreadyGranted) => return false,
+            Ok(MicrophoneRequestOutcome::Requested) => {
+                show_microphone_permission_status(
+                    ctx,
+                    call,
+                    "Разрешите доступ к микрофону в системном окне, затем нажмите «Динамик».",
+                    None,
+                );
+                return true;
+            }
+            Ok(MicrophoneRequestOutcome::SettingsRequired) => {
+                MicrophonePermissionState::SettingsRequired
+            }
+            Err(error) => {
+                show_microphone_permission_status(
+                    ctx,
+                    call,
+                    "Не удалось запросить доступ к микрофону.",
+                    Some(error.to_string()),
+                );
+                return true;
+            }
+        },
+        state => state,
+    };
+
+    match outcome {
+        MicrophonePermissionState::Granted => false,
+        MicrophonePermissionState::Prompt => true,
+        MicrophonePermissionState::SettingsRequired => {
+            if user_action {
+                match notifications::open_microphone_settings() {
+                    Ok(()) => show_microphone_permission_status(
+                        ctx,
+                        call,
+                        "Включите микрофон в настройках Android, вернитесь в FriendsHub и нажмите «Динамик».",
+                        None,
+                    ),
+                    Err(error) => show_microphone_permission_status(
+                        ctx,
+                        call,
+                        "Не удалось открыть настройки разрешения микрофона.",
+                        Some(error.to_string()),
+                    ),
+                }
+            } else {
+                show_microphone_permission_status(
+                    ctx,
+                    call,
+                    "Разрешите микрофон в настройках Android, затем нажмите «Динамик».",
+                    None,
+                );
+            }
+            true
+        }
+        MicrophonePermissionState::Unsupported => {
+            show_microphone_permission_status(
+                ctx,
+                call,
+                "Доступ к микрофону недоступен в этой сборке Android.",
+                None,
+            );
+            true
+        }
+    }
+}
+
+#[cfg(target_os = "android")]
+fn show_microphone_permission_status(
+    ctx: &AppContext,
+    call: &ActiveCall,
+    status: &str,
+    error: Option<String>,
+) {
+    let status = status.to_owned();
+    let error = error.unwrap_or_default();
+    let context = ctx.clone();
+    let account_id = call.account_id.clone();
+    let call_id = call.call_id.clone();
+    ctx.apply_ui(move |window| {
+        if is_current_account(&context, &account_id)
+            && active_call_matches(&account_id, &call_id)
+            && !active_call_action_pending(&account_id, &call_id)
+        {
+            window.set_call_status(status.into());
+            window.set_call_error(error.into());
+            window.set_call_speaker_on(false);
+        }
+    });
+}
+
+fn fail_call_audio(
+    ctx: &AppContext,
+    call: &ActiveCall,
+    failure: crate::platform::call_audio::CallAudioFailure,
+) {
+    #[cfg(target_os = "android")]
+    if failure == crate::platform::call_audio::CallAudioFailure::PermissionRequired {
+        let context = ctx.clone();
+        let account_id = call.account_id.clone();
+        let call_id = call.call_id.clone();
+        ctx.apply_ui(move |window| {
+            if is_current_account(&context, &account_id)
+                && active_call_matches(&account_id, &call_id)
+            {
+                window.set_call_status(
+                    "Разрешите доступ к микрофону и нажмите «Динамик», чтобы включить аудио."
+                        .into(),
+                );
+                window.set_call_error(audio_failure_message(failure).into());
+                window.set_call_speaker_on(false);
+            }
+        });
+        return;
+    }
+    let Some(active_call) = active_call_slot().lock().ok().and_then(|mut active| {
+        let active = active.as_mut().filter(|active| {
+            active.account_id == call.account_id && active.call_id == call.call_id
+        })?;
+        if active.action_pending {
+            return None;
+        }
+        active.action_pending = true;
+        Some(active.clone())
+    }) else {
+        return;
+    };
+    crate::platform::call_audio::stop(&active_call.call_id);
+    let core = active_call.core.clone();
+    let call_for_worker = active_call.clone();
+    let completion_call = active_call.clone();
+    let completion_context = ctx.clone();
+    let result = core.call(
+        "friendshub-call-audio-failure",
+        move |client| {
+            let hangup_result = calls_attachments::hang_up(
+                client,
+                &call_for_worker.peer_account_id,
+                &call_for_worker.call_id,
+                Some("media_unavailable"),
+            );
+            let record_result = calls_attachments::record_call(
+                client,
+                &calls_attachments::CallRecordInput {
+                    peer_account_id: &call_for_worker.peer_account_id,
+                    direction: call_for_worker.direction,
+                    status: calls_attachments::CallStatus::Failed,
+                    started_at: call_for_worker.started_at,
+                    ended_at: Some(unix_seconds()),
+                },
+            );
+            hangup_result?;
+            record_result.map(|_| ())
+        },
+        move |result| {
+            clear_active_call(&completion_call.call_id);
+            let context = completion_context.clone();
+            let account_id = completion_call.account_id.clone();
+            let message = audio_failure_message(failure);
+            completion_context.apply_ui(move |window| {
+                if is_current_account(&context, &account_id) {
+                    window.set_call_peer_name(completion_call.peer_name.clone().into());
+                    window.set_call_peer_initial(
+                        call_initial(&completion_call.peer_account_id).into(),
+                    );
+                    window.set_call_with_video(false);
+                    window.set_call_has_remote_video(false);
+                    window.set_call_has_local_video(false);
+                    window.set_call_speaker_on(false);
+                    window.set_call_camera_off(false);
+                    window.set_call_state("failed".into());
+                    window.set_call_status("Звонок завершён: аудио не удалось запустить.".into());
+                    window.set_call_error(message.into());
+                    window.set_call_overlay_visible(true);
+                }
+            });
+            if let Err(error) = result {
+                report_background_error("call audio shutdown", error);
+            }
+        },
+    );
+    if let Err(error) = result {
+        clear_active_call(&active_call.call_id);
+        report_spawn_error("call audio shutdown", error);
+        report_call_message(ctx, audio_failure_message(failure), true);
+    }
+}
+
+fn audio_failure_message(failure: crate::platform::call_audio::CallAudioFailure) -> &'static str {
+    use crate::platform::call_audio::CallAudioFailure;
+    match failure {
+        CallAudioFailure::PermissionRequired => {
+            "Для аудиозвонка нужен системный доступ к микрофону на этой платформе."
+        }
+        CallAudioFailure::MicrophoneUnavailable => "Не удалось открыть микрофон.",
+        CallAudioFailure::SpeakerUnavailable => "Не удалось открыть динамик.",
+        CallAudioFailure::UnsupportedDeviceFormat => {
+            "Формат микрофона или динамика не поддерживается."
+        }
+        CallAudioFailure::CodecUnavailable => "Не удалось запустить кодек аудиозвонка.",
+        CallAudioFailure::CoreTransport => "Не удалось передавать аудио через клиент FriendsHub.",
     }
 }
 
@@ -1939,6 +2491,9 @@ fn end_active_call(ctx: &AppContext) {
         return;
     }
 
+    // Stop capture synchronously before starting the network hangup operation.
+    crate::platform::call_audio::stop(&call.call_id);
+
     let call_for_worker = call.clone();
     let call_for_completion = call.clone();
     let refresh_ctx = ctx.clone();
@@ -1954,9 +2509,11 @@ fn end_active_call(ctx: &AppContext) {
             let input = calls_attachments::CallRecordInput {
                 peer_account_id: &call_for_worker.peer_account_id,
                 direction: call_for_worker.direction,
-                // The current runtime has no connection-state event wiring or
-                // media adapter, so it can only record this as cancelled.
-                status: calls_attachments::CallStatus::Cancelled,
+                status: if call_for_worker.connected {
+                    calls_attachments::CallStatus::Completed
+                } else {
+                    calls_attachments::CallStatus::Cancelled
+                },
                 started_at: call_for_worker.started_at,
                 ended_at: Some(unix_seconds()),
             };
@@ -2146,6 +2703,20 @@ fn active_call_matches(account_id: &str, call_id: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn active_call_action_pending(account_id: &str, call_id: &str) -> bool {
+    active_call_slot()
+        .lock()
+        .ok()
+        .and_then(|active| {
+            active.as_ref().map(|active| {
+                active.account_id == account_id
+                    && active.call_id == call_id
+                    && active.action_pending
+            })
+        })
+        .unwrap_or(true)
+}
+
 fn account_has_active_call(account_id: &str) -> bool {
     active_call_slot()
         .lock()
@@ -2216,9 +2787,10 @@ fn clear_active_call(call_id: &str) {
             .as_ref()
             .is_some_and(|active| active.call_id == call_id)
         {
-            *active = None;
+            active.take();
         }
     }
+    crate::platform::call_audio::stop(call_id);
 }
 
 fn new_call_id() -> String {

@@ -59,7 +59,7 @@ export component ScheduledMessagesDialog inherits Rectangle {
                 }
                 if !root.loading && !root.error-text.is-empty : VerticalLayout {
                     alignment: center;
-                    vertical-stretch: 1;
+                    vertical-stretch: root.messages.length == 0 ? 1 : 0;
                     spacing: 8px;
                     Text { text: root.error-text; color: Theme.danger; font-size: 12px; wrap: word-wrap; horizontal-alignment: center; }
                     ChatAction { label: root.retry-label; clicked => { root.refresh-requested(); } }
@@ -71,7 +71,7 @@ export component ScheduledMessagesDialog inherits Rectangle {
                     Text { text: root.empty-title; color: Theme.foreground; font-size: 14px; horizontal-alignment: center; }
                     Text { text: root.empty-description; color: Theme.muted; font-size: 12px; wrap: word-wrap; horizontal-alignment: center; }
                 }
-                if !root.loading && root.error-text.is-empty && root.messages.length > 0 : ScrollView {
+                if !root.loading && root.messages.length > 0 : ScrollView {
                     width: 100%;
                     vertical-stretch: 1;
                     vertical-scrollbar-policy: as-needed;

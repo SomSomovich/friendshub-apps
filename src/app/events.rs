@@ -118,7 +118,8 @@ fn install_session_handler(context: AppContext, session: ActiveSession, generati
 /// Core owns the durable queue in its encrypted database. The callback must
 /// not copy decrypted event payloads to a second, unencrypted journal. A
 /// semantic envelope is acknowledged only after its source envelope is
-/// confirmed by a core history reload or its feature controller applies it.
+/// confirmed by a core history reload, its feature controller applies it, or
+/// an attachment key is saved in the SQLCipher database.
 fn receive_event(
     context: &AppContext,
     account_id: &str,
@@ -130,8 +131,238 @@ fn receive_event(
         schedule_call_signal(context, account_id, generation, core, event);
         return;
     }
+    if event.kind == "webrtc_event" {
+        schedule_webrtc_event(context, account_id, generation, event);
+        return;
+    }
+    if event.kind == "attachment_key_received" {
+        schedule_attachment_key_store(context, account_id, generation, core, event);
+        return;
+    }
+    if matches!(
+        event.kind.as_str(),
+        "history_chunk_received" | "history_complete_received"
+    ) {
+        schedule_history_chunk(context, account_id, generation, core, event);
+        return;
+    }
+    if event.kind == "history_request" {
+        schedule_history_response(context, account_id, generation, core, event);
+        return;
+    }
 
     schedule_event_refresh(context, account_id, generation, core, &event);
+}
+
+/// Persist each decrypted history fragment in SQLCipher before acknowledging
+/// its durable envelope event. The core validates the own-device identity,
+/// assembles items and stores attachment keys atomically.
+fn schedule_history_chunk(
+    context: &AppContext,
+    account_id: &str,
+    generation: u64,
+    core: &Arc<CoreClient>,
+    event: Event,
+) {
+    if !is_current_handler(context, account_id, generation) {
+        return;
+    }
+    let Some(event_id) = event.id else { return };
+    let dedupe_key = (account_id.to_owned(), generation, event_id);
+    if !begin_durable_event(&dedupe_key) {
+        return;
+    }
+    let event_kind = event.kind.clone();
+    let completion_context = context.clone();
+    let completion_account_id = account_id.to_owned();
+    let completion_core = core.clone();
+    let completion_event_kind = event_kind.clone();
+    let completion_key = dedupe_key.clone();
+    let result = crate::app::call_client(
+        core.clone(),
+        context.ui.clone(),
+        "friendshub-history-receive",
+        move |client| crate::features::history_sync::receive_chunk(client, &event),
+        move |window, result| {
+            if !is_current_handler(&completion_context, &completion_account_id, generation) {
+                finish_durable_event(&completion_key, false);
+                return;
+            }
+            match result {
+                Ok(result) => {
+                    let status = if result.conversation_complete {
+                        format!(
+                            "История беседы загружена: {} сообщений.",
+                            result.received_messages
+                        )
+                    } else {
+                        format!("Получено сообщений: {}.", result.received_messages)
+                    };
+                    if window.get_screen() == "settings_security" {
+                        window.set_security_history_progress(status.into());
+                        window.set_security_history_error(slint::SharedString::default());
+                    }
+                    if result.item_kind == "message"
+                        && result.item.is_some()
+                        && window.get_selected_conversation_id().as_str() == result.conversation_id
+                        && matches!(
+                            window.get_screen().as_str(),
+                            "chat_index" | "chat" | "channel"
+                        )
+                    {
+                        super::chat::load(&completion_context, window.get_route().as_str());
+                    }
+                    acknowledge_confirmed_event(
+                        &completion_core,
+                        event_id,
+                        &completion_event_kind,
+                        completion_key,
+                    );
+                }
+                Err(error) => {
+                    eprintln!(
+                        "[events] history fragment was not committed: code={}",
+                        error.code()
+                    );
+                    finish_durable_event(&completion_key, false);
+                }
+            }
+        },
+    );
+    if let Err(error) = result {
+        eprintln!(
+            "[events] history receiver could not start: error_kind={:?}",
+            error.kind()
+        );
+        finish_durable_event(&dedupe_key, false);
+    }
+}
+
+/// Respond to the core's ephemeral request from another active account device.
+fn schedule_history_response(
+    context: &AppContext,
+    account_id: &str,
+    generation: u64,
+    core: &Arc<CoreClient>,
+    event: Event,
+) {
+    if !is_current_handler(context, account_id, generation) {
+        return;
+    }
+    let account_id = account_id.to_owned();
+    let completion_context = context.clone();
+    let payload = event.payload;
+    let result = crate::app::call_client(
+        core.clone(),
+        context.ui.clone(),
+        "friendshub-history-respond",
+        move |client| crate::features::history_sync::respond_to_request(client, &payload),
+        move |window, result| {
+            if !is_current_handler(&completion_context, &account_id, generation) {
+                return;
+            }
+            match result {
+                Ok(response) => {
+                    let complete = response
+                        .get("complete")
+                        .and_then(serde_json::Value::as_bool)
+                        == Some(true);
+                    let submitted = response
+                        .get("submitted_chunks")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or_default();
+                    let chunks = response
+                        .get("chunk_count")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or_default();
+                    let text = if complete {
+                        format!("История отправлена: {submitted} зашифрованных фрагментов.")
+                    } else {
+                        format!(
+                            "Передача истории прервана: {submitted} из {chunks} фрагментов. Запросите её повторно."
+                        )
+                    };
+                    if window.get_screen() == "settings_security" {
+                        window.set_security_history_progress(text.into());
+                    }
+                }
+                Err(error) => {
+                    eprintln!("[events] history relay failed: code={}", error.code());
+                }
+            }
+        },
+    );
+    if let Err(error) = result {
+        eprintln!(
+            "[events] history response could not start: error_kind={:?}",
+            error.kind()
+        );
+    }
+}
+
+/// Acknowledge an incoming key envelope only after the key is durable in the
+/// account's encrypted core database. A failed save stays available for replay.
+fn schedule_attachment_key_store(
+    context: &AppContext,
+    account_id: &str,
+    generation: u64,
+    core: &Arc<CoreClient>,
+    event: Event,
+) {
+    if !is_current_handler(context, account_id, generation) {
+        return;
+    }
+    let Some(event_id) = event.id else {
+        return;
+    };
+    let dedupe_key = (account_id.to_owned(), generation, event_id);
+    if !begin_durable_event(&dedupe_key) {
+        return;
+    }
+    let key = match crate::features::calls_attachments::received_attachment_key(&event) {
+        Ok(Some(received)) => received.key,
+        Ok(None) | Err(_) => {
+            finish_durable_event(&dedupe_key, false);
+            return;
+        }
+    };
+    let event_kind = event.kind;
+    let completion_context = context.clone();
+    let completion_account_id = account_id.to_owned();
+    let completion_core = core.clone();
+    let completion_key = dedupe_key.clone();
+    let completion_kind = event_kind.clone();
+    let result = crate::app::call_client(
+        core.clone(),
+        context.ui.clone(),
+        "friendshub-attachment-key-store",
+        move |client| crate::features::calls_attachments::store_attachment_key(client, &key),
+        move |_, result| {
+            if !is_current_handler(&completion_context, &completion_account_id, generation) {
+                finish_durable_event(&completion_key, false);
+                return;
+            }
+            match result {
+                Ok(()) => acknowledge_confirmed_event(
+                    &completion_core,
+                    event_id,
+                    &completion_kind,
+                    completion_key,
+                ),
+                Err(error) => {
+                    eprintln!("[events] attachment key save failed: code={}", error.code());
+                    finish_durable_event(&completion_key, false);
+                }
+            }
+        },
+    );
+    if let Err(error) = result {
+        eprintln!(
+            "[events] attachment key save could not start: error_kind={:?}",
+            error.kind()
+        );
+        finish_durable_event(&dedupe_key, false);
+    }
 }
 
 fn schedule_call_signal(
@@ -157,6 +388,18 @@ fn schedule_call_signal(
         }
         // Deferred events are acknowledged by media only after its async core
         // action succeeds. Unapplied events remain in core for redelivery.
+    });
+}
+
+/// Native WebRTC events are transient media state, so process them on Slint's
+/// thread without acknowledging them as durable application events.
+fn schedule_webrtc_event(context: &AppContext, account_id: &str, generation: u64, event: Event) {
+    let ui_context = context.clone();
+    let account_id = account_id.to_owned();
+    context.apply_ui(move |_| {
+        if is_current_handler(&ui_context, &account_id, generation) {
+            super::media::receive_webrtc_event(&ui_context, &account_id, &event);
+        }
     });
 }
 
@@ -256,10 +499,8 @@ fn durable_envelope_confirmation(event: &Event) -> Option<(u64, String, String)>
 }
 
 fn is_confirmable_semantic_event(kind: &str) -> bool {
-    // Attachment keys are decoded by the feature layer, but there is no
-    // account-scoped encrypted app store or download flow that consumes them.
-    // History replay events also require the begin/commit protocol. Both stay
-    // pending until those application contracts exist.
+    // Attachment keys use a dedicated save-before-ack path. History replay
+    // events still require their own begin/commit protocol.
     matches!(
         kind,
         "message_received"

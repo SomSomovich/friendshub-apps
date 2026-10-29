@@ -10,6 +10,7 @@ export component LoginScreen inherits Rectangle {
     callback login-requested(string, string);
     callback register-requested();
     callback back-requested();
+    callback local-accounts-requested();
 
     private property <bool> password-visible: false;
 
@@ -83,6 +84,15 @@ export component LoginScreen inherits Rectangle {
                             text: "Создать аккаунт";
                             enabled: true;
                             clicked => { root.register-requested(); }
+                        }
+                    }
+
+                    HorizontalLayout {
+                        alignment: center;
+                        FHTextButton {
+                            text: "Локальные аккаунты";
+                            enabled: !root.busy;
+                            clicked => { root.local-accounts-requested(); }
                         }
                     }
 
