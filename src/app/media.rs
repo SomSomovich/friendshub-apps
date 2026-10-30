@@ -1597,9 +1597,39 @@ fn handle_calls(ctx: &AppContext, action: &str, arg1: &str, _arg2: &str, _arg3: 
             true
         }
         // There is no local video capture/render adapter yet.
-        "profile-call" | "toggle-camera" | "switch-camera" => false,
+        "toggle-camera" | "switch-camera" => false,
         _ => false,
     }
+}
+
+/// Start an audio call from a public profile, whose ID is already an account
+/// ID rather than a conversation ID. Video remains unavailable until the
+/// native capture and negotiation paths are implemented.
+pub(super) fn start_profile_call(
+    ctx: &AppContext,
+    peer_account_id: String,
+    request_video: bool,
+) -> bool {
+    if request_video {
+        report_call_message(
+            ctx,
+            "Видеозвонки пока недоступны. Используйте аудиозвонок.",
+            true,
+        );
+        return true;
+    }
+    if peer_account_id.trim().is_empty() {
+        return false;
+    }
+    if ctx
+        .active_session()
+        .is_some_and(|session| session.account.id == peer_account_id)
+    {
+        report_call_message(ctx, "Нельзя позвонить самому себе.", true);
+        return true;
+    }
+    start_outgoing_call(ctx, peer_account_id, true);
+    true
 }
 
 fn handle_attachments(ctx: &AppContext, action: &str, arg1: &str, arg2: &str, _arg3: &str) -> bool {
@@ -1610,11 +1640,12 @@ fn handle_attachments(ctx: &AppContext, action: &str, arg1: &str, arg2: &str, _a
         "send" => super::chat::send_attachments(ctx),
         "close" => super::chat::close_attachment_composer(ctx),
         "open-message" => super::chat::open_attachment(ctx, arg2),
-        // Channel posts need a separate server contract and voice/video notes
-        // need capture adapters. They remain unavailable instead of returning
-        // a misleading success.
-        "open-post" | "voice-record" | "video-note" | "upload" | "download" => false,
-        "compress-toggle" => false,
+        "voice-record" => super::chat::toggle_voice_recording(ctx),
+        "preview-voice" => super::chat::preview_voice_attachment(ctx, arg1),
+        // Channel posts need a separate server contract. Video-note capture
+        // still needs its own camera adapter.
+        "open-post" | "video-note" | "upload" | "download" => false,
+        "compress-toggle" => super::chat::toggle_attachment_compression(ctx, arg1, arg2 == "true"),
         _ => false,
     }
 }

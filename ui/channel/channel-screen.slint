@@ -1,5 +1,7 @@
 import { Theme } from "../theme.slint";
 import { ChatAction, ChatAttachmentView, ChatReaction } from "../chat/chat-controls.slint";
+import { FHEmptyState, FHIconButton, FHSecondaryButton, FHScreenHeader, FHSkeleton } from "../components.slint";
+import { IconFileText, IconMessageSquare, IconMoreHorizontal, IconRefreshCw, IconSettings, IconUserRound } from "../icons.slint";
 import { MessageComposer } from "../chat/message-composer.slint";
 import { CreatePollDialog, PollDraftOption } from "../chat/create-poll-dialog.slint";
 import { PollCard, PollViewModel } from "../chat/poll-card.slint";
@@ -15,6 +17,47 @@ export struct ChannelPost {
     discussion-label: string,
     edited: bool,
     pinned: bool,
+}
+
+component PinnedPostLink inherits Rectangle {
+    in property <string> label;
+    callback clicked();
+
+    height: 32px;
+    background: mouse-area.has-hover ? Theme.hover : transparent;
+    border-radius: 8px;
+    border-width: key-scope.has-focus ? 1px : 0px;
+    border-color: Theme.accent;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-action-default => { root.clicked(); }
+    forward-focus: key-scope;
+
+    Text {
+        x: 8px;
+        width: parent.width - 16px;
+        height: 100%;
+        text: root.label;
+        color: Theme.accent;
+        font-size: 12px;
+        vertical-alignment: center;
+        overflow: elide;
+        accessible-role: none;
+    }
+    mouse-area := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    key-scope := FocusScope {
+        width: 0px;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
 }
 
 export component ChannelScreen inherits Rectangle {
@@ -107,24 +150,27 @@ export component ChannelScreen inherits Rectangle {
     VerticalLayout {
         spacing: 0px;
 
-        Rectangle {
-            height: 56px;
-            background: Theme.background;
-            border-width: 0px;
-            HorizontalLayout {
-                padding: 8px;
-                spacing: 6px;
-                ChatAction { label: "←"; width: 36px; clicked => { root.back-requested(); } }
-                VerticalLayout {
-                    alignment: center;
-                    spacing: 2px;
-                    horizontal-stretch: 1;
-                    Text { text: root.title; color: Theme.foreground; font-size: 14px; font-weight: 600; overflow: elide; }
-                    Text { text: "Публикации канала"; color: Theme.muted; font-size: 11px; }
-                }
-                ChatAction { label: "●"; accessible-name: "Профиль"; clicked => { root.profile-requested(); } }
-                ChatAction { label: "↻"; accessible-name: "Обновить ленту"; enabled: !root.busy; clicked => { root.refresh-requested(); } }
-                ChatAction { label: "⚙"; accessible-name: "Настройки"; clicked => { root.settings-requested(); } }
+        FHScreenHeader {
+            title: root.title;
+            subtitle: "Публикации канала";
+            back-requested => { root.back-requested(); }
+            title-requested => { root.profile-requested(); }
+
+            FHIconButton {
+                label: "Профиль канала";
+                clicked => { root.profile-requested(); }
+                IconUserRound { width: 18px; height: 18px; x: 9px; y: 9px; stroke: Theme.muted; }
+            }
+            FHIconButton {
+                label: "Обновить ленту";
+                enabled: !root.busy;
+                clicked => { root.refresh-requested(); }
+                IconRefreshCw { width: 18px; height: 18px; x: 9px; y: 9px; stroke: Theme.muted; }
+            }
+            FHIconButton {
+                label: "Настройки канала";
+                clicked => { root.settings-requested(); }
+                IconSettings { width: 18px; height: 18px; x: 9px; y: 9px; stroke: Theme.muted; }
             }
         }
 
@@ -156,7 +202,7 @@ export component ChannelScreen inherits Rectangle {
                         padding: 10px;
                         spacing: 6px;
                         Text { text: "Закреплённые публикации"; color: Theme.accent; font-size: 12px; font-weight: 600; }
-                        for post[index] in root.pinned-posts : ChatAction {
+                        for post[index] in root.pinned-posts : PinnedPostLink {
                             label: post.body.is-empty ? post.author : post.body;
                             width: 100%;
                             clicked => { root.post-open-requested(index); }
@@ -164,29 +210,39 @@ export component ChannelScreen inherits Rectangle {
                     }
                 }
 
-                if root.loading && root.posts.length == 0 : Text {
-                    text: "Загружаем публикации…";
-                    color: Theme.muted;
-                    font-size: 12px;
-                    horizontal-alignment: center;
+                if root.loading && root.posts.length == 0 : VerticalLayout {
+                    spacing: 8px;
+                    for row in 3 : Rectangle {
+                        height: 140px;
+                        background: Theme.surface;
+                        border-width: 1px;
+                        border-color: Theme.border;
+                        border-radius: 16px;
+                        VerticalLayout {
+                            padding: 16px;
+                            spacing: 9px;
+                            FHSkeleton { width: 30%; height: 12px; }
+                            FHSkeleton { width: 90%; height: 14px; }
+                            FHSkeleton { width: 75%; height: 14px; }
+                        }
+                    }
                 }
 
-                if !root.loading && root.posts.length == 0 && root.polls.length == 0 && !root.polls-loading : VerticalLayout {
-                    alignment: center;
-                    spacing: 8px;
-                    Text { text: "Публикаций пока нет."; color: Theme.foreground; font-size: 14px; horizontal-alignment: center; }
-                    if root.can-publish : Text { text: "Создайте первую публикацию."; color: Theme.muted; font-size: 12px; horizontal-alignment: center; }
+                if !root.loading && root.posts.length == 0 && root.polls.length == 0 && !root.polls-loading : FHEmptyState {
+                    title: "Публикаций пока нет";
+                    description: root.can-publish ? "Создайте первую публикацию." : "Здесь появятся публикации канала.";
+
+                    IconMessageSquare { width: 32px; height: 32px; stroke: Theme.muted; }
                 }
 
                 if !root.polls-error-text.is-empty : HorizontalLayout {
                     Text { text: root.polls-error-text; color: Theme.danger; font-size: 11px; wrap: word-wrap; horizontal-stretch: 1; }
-                    ChatAction { label: "Повторить"; clicked => { root.polls-retry-requested(); } }
+                    FHSecondaryButton { text: "Повторить"; height: 28px; clicked => { root.polls-retry-requested(); } }
                 }
-                if root.polls-loading && root.polls.length == 0 : Text {
-                    text: "Загружаем опросы…";
-                    color: Theme.muted;
-                    font-size: 11px;
-                    horizontal-alignment: center;
+                if root.polls-loading && root.polls.length == 0 : VerticalLayout {
+                    spacing: 6px;
+                    FHSkeleton { width: 40%; height: 12px; }
+                    FHSkeleton { width: 100%; height: 96px; corner-radius: 12px; }
                 }
                 for poll[index] in root.polls : PollCard {
                     poll: poll;
@@ -200,9 +256,11 @@ export component ChannelScreen inherits Rectangle {
                 }
                 if root.polls-has-older : HorizontalLayout {
                     alignment: center;
-                    ChatAction {
-                        label: root.polls-loading-older ? "Загружаем…" : "Более ранние опросы";
+                    FHSecondaryButton {
+                        text: root.polls-loading-older ? "Загрузка" : "Более ранние опросы";
+                        height: 32px;
                         enabled: !root.polls-loading-older;
+                        busy: root.polls-loading-older;
                         clicked => { root.polls-load-older-requested(); }
                     }
                 }
@@ -227,30 +285,32 @@ export component ChannelScreen inherits Rectangle {
                     background: Theme.surface;
                     border-width: 1px;
                     border-color: Theme.border;
-                    border-radius: 12px;
+                    border-radius: 16px;
 
                     post-layout := VerticalLayout {
-                        padding: 12px;
-                        spacing: 8px;
+                        padding: 16px;
+                        spacing: 10px;
                         HorizontalLayout {
                             VerticalLayout {
                                 spacing: 3px;
                                 horizontal-stretch: 1;
-                                Text { text: post.author; color: Theme.foreground; font-size: 13px; font-weight: 600; }
+                                Text { text: post.author; color: Theme.muted; font-size: 12px; font-weight: 500; }
                                 Text {
                                     text: post.edited ? "изменено" : post.time-label;
                                     color: Theme.muted;
-                                    font-size: 10px;
+                                    font-size: 11px;
                                 }
                             }
                             if post.pinned : Text { text: "Закреплено"; color: Theme.accent; font-size: 10px; }
-                            ChatAction {
-                                label: "Ещё";
-                                accessible-name: "Дополнительные действия публикации";
+                            FHIconButton {
+                                button-size: 28px;
+                                label: "Дополнительные действия публикации";
                                 active: root.open-post-menu-index == index;
                                 clicked => {
                                     root.open-post-menu-index = root.open-post-menu-index == index ? -1 : index;
                                 }
+
+                                IconMoreHorizontal { width: 16px; height: 16px; x: 6px; y: 6px; stroke: Theme.muted; }
                             }
                         }
                         if !post.body.is-empty : Text {
@@ -294,16 +354,43 @@ export component ChannelScreen inherits Rectangle {
                                 clicked => { root.post-attachment-requested(index, attachment.id); }
                             }
                         }
-                        if post.reactions.length > 0 : HorizontalLayout {
+                        if post.reactions.length > 0 : FlexboxLayout {
                             spacing: 4px;
-                            for reaction[reaction-index] in post.reactions : ChatAction {
-                                label: reaction.emoji + " " + reaction.count-label;
-                                active: reaction.mine;
-                                accessible-name: reaction.emoji + " " + reaction.count-label;
-                                clicked => { root.post-reaction-requested(index, reaction.emoji); }
+                            for reaction[reaction-index] in post.reactions : Rectangle {
+                                width: max(34px, reaction-label.preferred-width + 14px);
+                                height: 24px;
+                                background: reaction.mine ? Theme.accent.with-alpha(0.15) : Theme.background;
+                                border-width: 1px;
+                                border-color: reaction.mine ? Theme.accent.with-alpha(0.5) : Theme.border;
+                                border-radius: 12px;
+                                accessible-role: button;
+                                accessible-label: reaction.emoji + " " + reaction.count-label;
+                                accessible-action-default => { root.post-reaction-requested(index, reaction.emoji); }
+
+                                Text {
+                                    text: reaction.emoji + " " + reaction.count-label;
+                                    color: reaction.mine ? Theme.accent : Theme.foreground;
+                                    font-size: 12px;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                    width: 100%;
+                                    height: 100%;
+                                    accessible-role: none;
+                                }
+
+                                reaction-label := Text {
+                                    text: reaction.emoji + " " + reaction.count-label;
+                                    font-size: 12px;
+                                    visible: false;
+                                }
+
+                                TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.post-reaction-requested(index, reaction.emoji); }
+                                }
                             }
                         }
-                        if root.open-post-menu-index == index : HorizontalLayout {
+                        if root.open-post-menu-index == index : FlexboxLayout {
                             spacing: 6px;
                             for reaction-option[reaction-option-index] in root.reaction-options : ChatAction {
                                 label: reaction-option.emoji;
@@ -342,8 +429,9 @@ export component ChannelScreen inherits Rectangle {
                         }
                         HorizontalLayout {
                             spacing: 6px;
-                            if !post.discussion-label.is-empty : ChatAction {
-                                label: post.discussion-label;
+                            if !post.discussion-label.is-empty : FHSecondaryButton {
+                                text: post.discussion-label;
+                                height: 32px;
                                 clicked => { root.post-discussion-requested(index); }
                             }
                         }
@@ -352,9 +440,11 @@ export component ChannelScreen inherits Rectangle {
 
                 if root.has-older : HorizontalLayout {
                     alignment: center;
-                    ChatAction {
-                        label: root.busy ? "Загружаем…" : "Более ранние публикации";
+                    FHSecondaryButton {
+                        text: root.busy ? "Загрузка" : "Более ранние публикации";
+                        height: 32px;
                         enabled: !root.busy;
+                        busy: root.busy;
                         clicked => { root.load-older-requested(); }
                     }
                 }

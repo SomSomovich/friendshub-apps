@@ -1,5 +1,5 @@
 import { Theme } from "../theme.slint";
-import { FHPrimaryButton, FHTextButton } from "../components.slint";
+import { FHSecondaryButton, FHScreenHeader, FHTextButton, FHPrimaryButton } from "../components.slint";
 import { ScrollView } from "std-widgets.slint";
 
 export component CreateWizard inherits Rectangle {
@@ -21,49 +21,27 @@ export component CreateWizard inherits Rectangle {
     VerticalLayout {
         spacing: 0px;
 
-        HorizontalLayout {
-            height: 52px;
-            padding-left: 12px;
-            padding-right: 16px;
-            spacing: 8px;
-            alignment: center;
-
-            FHTextButton {
-                text: "‹";
-                enabled: true;
-                clicked => { root.back-requested(); }
-            }
-
-            Text {
-                text: root.title;
-                color: Theme.foreground;
-                font-size: 14px;
-                font-weight: 600;
-                vertical-alignment: center;
-                horizontal-stretch: 1;
-                overflow: elide;
-            }
+        FHScreenHeader {
+            title: root.title;
+            show-back: true;
+            back-requested => { root.back-requested(); }
         }
 
-        Rectangle {
-            height: 1px;
-            background: Theme.border;
-        }
-
-        HorizontalLayout {
+        FlexboxLayout {
             padding-left: 16px;
             padding-right: 16px;
             padding-top: 16px;
             spacing: 8px;
             alignment: start;
+            cross-axis-alignment: center;
 
             for step[index] in [root.first-step-label, root.second-step-label, root.final-step-label]: Rectangle {
                 height: 28px;
-                width: step-text.preferred-width + 42px;
+                width: min(step-text.preferred-width + 42px, max((parent.width - 48px) / 3, 0px));
                 border-radius: 14px;
                 border-width: 1px;
                 border-color: index == root.current-step ? Theme.accent : Theme.border;
-                background: index == root.current-step ? Theme.surface : transparent;
+                background: index == root.current-step ? Theme.accent.with-alpha(0.15) : transparent;
 
                 HorizontalLayout {
                     padding-left: 8px;
@@ -93,6 +71,8 @@ export component CreateWizard inherits Rectangle {
                         font-size: 12px;
                         font-weight: index == root.current-step ? 600 : 400;
                         vertical-alignment: center;
+                        min-width: 0px;
+                        overflow: elide;
                     }
                 }
             }
@@ -129,12 +109,14 @@ export component CreateWizard inherits Rectangle {
 
             FHTextButton {
                 text: "Отмена";
+                muted: true;
                 enabled: !root.busy;
                 clicked => { root.cancel-requested(); }
             }
 
-            if root.current-step > 0: FHTextButton {
+            if root.current-step > 0: FHSecondaryButton {
                 text: "Назад";
+                height: 40px;
                 enabled: !root.busy;
                 clicked => { root.back-requested(); }
             }

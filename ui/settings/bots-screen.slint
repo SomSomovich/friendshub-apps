@@ -1,5 +1,6 @@
 import { Theme } from "../theme.slint";
-import { FHInput, FHPrimaryButton, FHTextButton } from "../components.slint";
+import { FHIconButton, FHInput, FHSecondaryButton, FHSkeleton, FHPrimaryButton } from "../components.slint";
+import { IconKeyRound, IconTrash2 } from "../icons.slint";
 import { SettingsCard, SettingsFrame } from "common.slint";
 
 export struct SettingsBot {
@@ -9,6 +10,7 @@ export struct SettingsBot {
 }
 
 component ManagedBotRow inherits Rectangle {
+    in property <string> language: "ru";
     in property <string> bot-id;
     in property <string> handle;
     in property <string> token-prefix;
@@ -35,33 +37,40 @@ component ManagedBotRow inherits Rectangle {
         spacing: 10px;
 
         HorizontalLayout {
-            spacing: 8px;
-            alignment: center;
+            spacing: 6px;
+            cross-axis-alignment: center;
 
             Text {
-                text: root.handle.is-empty ? "Бот без адреса" : "@\{root.handle}";
+                text: root.handle.is-empty ? (root.language == "ru" ? "Бот без адреса" : "Bot without a handle") : "@\{root.handle}";
                 color: Theme.foreground;
                 font-size: 14px;
                 font-weight: 500;
                 horizontal-stretch: 1;
-                wrap: word-wrap;
+                horizontal-alignment: left;
+                overflow: elide;
             }
 
-            FHTextButton {
-                text: "Перевыпустить токен";
+            FHIconButton {
+                button-size: 32px;
+                label: root.language == "ru" ? "Перевыпустить токен" : "Rotate token";
                 enabled: !root.busy;
                 clicked => { root.confirm-rotate = true; }
+
+                IconKeyRound { width: 16px; height: 16px; x: 8px; y: 8px; stroke: Theme.muted; }
             }
 
-            FHTextButton {
-                text: "Удалить";
+            FHIconButton {
+                button-size: 32px;
+                label: root.language == "ru" ? "Удалить бота" : "Delete bot";
                 enabled: !root.busy;
                 clicked => { root.confirm-delete = true; }
+
+                IconTrash2 { width: 16px; height: 16px; x: 8px; y: 8px; stroke: Theme.danger; }
             }
         }
 
         Text {
-            text: "Префикс токена: \{root.token-prefix}";
+            text: root.language == "ru" ? "Префикс токена: \{root.token-prefix}" : "Token prefix: \{root.token-prefix}";
             color: Theme.muted;
             font-size: 12px;
             wrap: word-wrap;
@@ -71,12 +80,14 @@ component ManagedBotRow inherits Rectangle {
         HorizontalLayout {
             spacing: 8px;
             FHInput {
-                label: "Адрес бота";
+                language: root.language;
+                label: root.language == "ru" ? "Адрес бота" : "Bot handle";
                 placeholder: "my_example_bot";
                 value <=> root.draft-handle;
             }
-            FHPrimaryButton {
-                text: "Сохранить";
+            FHSecondaryButton {
+                text: root.language == "ru" ? "Сохранить" : "Save";
+                height: 40px;
                 enabled: !root.busy;
                 busy: root.busy;
                 clicked => { root.set-handle-requested(root.bot-id, root.draft-handle); }
@@ -92,7 +103,7 @@ component ManagedBotRow inherits Rectangle {
                 padding: 10px;
                 spacing: 8px;
                 Text {
-                    text: "Прежний токен перестанет работать. Подключённое приложение нужно будет обновить новым токеном.";
+                    text: root.language == "ru" ? "Прежний токен перестанет работать. Подключённое приложение нужно будет обновить новым токеном." : "The previous token will stop working. Update your connected application with the new token.";
                     color: Theme.foreground;
                     font-size: 12px;
                     wrap: word-wrap;
@@ -101,7 +112,7 @@ component ManagedBotRow inherits Rectangle {
                 HorizontalLayout {
                     spacing: 8px;
                     FHPrimaryButton {
-                        text: "Перевыпустить токен";
+                        text: root.language == "ru" ? "Перевыпустить токен" : "Rotate token";
                         enabled: !root.busy;
                         busy: root.busy;
                         clicked => {
@@ -109,11 +120,11 @@ component ManagedBotRow inherits Rectangle {
                             root.confirm-rotate = false;
                         }
                     }
-                    FHTextButton {
-                        text: "Отмена";
+                    FHSecondaryButton {
+                height: 32px;
+                        text: root.language == "ru" ? "Отмена" : "Cancel";
                         enabled: !root.busy;
-                        clicked => { root.confirm-rotate = false; }
-                    }
+                        clicked => { root.confirm-rotate = false; }}
                 }
             }
         }
@@ -127,7 +138,7 @@ component ManagedBotRow inherits Rectangle {
                 padding: 10px;
                 spacing: 8px;
                 Text {
-                    text: "Бот будет удалён и перестанет работать. Это действие нельзя отменить.";
+                    text: root.language == "ru" ? "Бот будет удалён и перестанет работать. Это действие нельзя отменить." : "The bot will be deleted and stop working. This cannot be undone.";
                     color: Theme.foreground;
                     font-size: 12px;
                     wrap: word-wrap;
@@ -136,7 +147,8 @@ component ManagedBotRow inherits Rectangle {
                 HorizontalLayout {
                     spacing: 8px;
                     FHPrimaryButton {
-                        text: "Удалить бота";
+                        danger: true;
+                        text: root.language == "ru" ? "Удалить бота" : "Delete bot";
                         enabled: !root.busy;
                         busy: root.busy;
                         clicked => {
@@ -144,11 +156,11 @@ component ManagedBotRow inherits Rectangle {
                             root.confirm-delete = false;
                         }
                     }
-                    FHTextButton {
-                        text: "Отмена";
+                    FHSecondaryButton {
+                height: 32px;
+                        text: root.language == "ru" ? "Отмена" : "Cancel";
                         enabled: !root.busy;
-                        clicked => { root.confirm-delete = false; }
-                    }
+                        clicked => { root.confirm-delete = false; }}
                 }
             }
         }
@@ -156,6 +168,7 @@ component ManagedBotRow inherits Rectangle {
 }
 
 export component BotsSettingsScreen inherits Rectangle {
+    in property <string> language: "ru";
     in property <[SettingsBot]> bots: [];
     in property <bool> loading: false;
     in property <bool> can-create: true;
@@ -179,12 +192,13 @@ export component BotsSettingsScreen inherits Rectangle {
     background: Theme.background;
 
     SettingsFrame {
-        title: "Мои боты";
+        language: root.language;
+        title: root.language == "ru" ? "Мои боты" : "My bots";
         back-requested => { root.back-requested(); }
 
         SettingsCard {
-            title: "Мои боты";
-            description: "До 20 ботов на аккаунт. Для работы бота подключите его токен в своём приложении.";
+            title: root.language == "ru" ? "Мои боты" : "My bots";
+            description: root.language == "ru" ? "До 20 ботов на аккаунт. Для работы бота подключите его токен в своём приложении." : "Up to 20 bots per account. Connect a bot token to your application to run it.";
 
             if !root.error-text.is-empty : Text {
                 text: root.error-text;
@@ -195,24 +209,25 @@ export component BotsSettingsScreen inherits Rectangle {
             }
 
             FHPrimaryButton {
-                text: "Создать бота";
+                text: root.language == "ru" ? "Создать бота" : "Create bot";
                 enabled: root.can-create && !root.loading && !root.busy;
                 busy: root.busy;
                 clicked => { root.create-bot-requested(); }
             }
 
-            if root.loading : Text {
-                text: "Загрузка ботов…";
-                color: Theme.muted;
-                font-size: 12px;
+            if root.loading : VerticalLayout {
+                spacing: 8px;
+                FHSkeleton { width: 100%; height: 96px; corner-radius: 8px; }
+                FHSkeleton { width: 100%; height: 96px; corner-radius: 8px; }
             }
             if !root.loading && root.bots.length == 0 && root.error-text.is-empty : Text {
-                text: "У вас пока нет ботов.";
+                text: root.language == "ru" ? "У вас пока нет ботов." : "You have no bots yet.";
                 color: Theme.muted;
                 font-size: 12px;
             }
 
             for bot in root.bots : ManagedBotRow {
+                language: root.language;
                 bot-id: bot.id;
                 handle: bot.handle;
                 token-prefix: bot.token-prefix;
@@ -222,18 +237,19 @@ export component BotsSettingsScreen inherits Rectangle {
                 delete-requested(id) => { root.delete-bot-requested(id); }
             }
 
-            if !root.error-text.is-empty : FHTextButton {
-                text: "Повторить загрузку";
-                clicked => { root.retry-requested(); }
-            }
+            if !root.error-text.is-empty : FHSecondaryButton {
+                height: 32px;
+                text: root.language == "ru" ? "Повторить загрузку" : "Retry loading";
+                clicked => { root.retry-requested(); }}
         }
 
         if !root.token-secret.is-empty : SettingsCard {
-            title: "Токен бота";
-            description: "Скопируйте токен сейчас: после закрытия его нельзя будет посмотреть снова. Не передавайте его посторонним.";
+            title: root.language == "ru" ? "Токен бота" : "Bot token";
+            description: root.language == "ru" ? "Скопируйте токен сейчас: после закрытия его нельзя будет посмотреть снова. Не передавайте его посторонним." : "Copy this token now: you cannot view it again after closing. Keep it private.";
 
             FHInput {
-                label: "Токен бота";
+                language: root.language;
+                label: root.language == "ru" ? "Токен бота" : "Bot token";
                 value <=> root.token-secret;
                 password: true;
                 password-visible <=> root.token-revealed;
@@ -241,12 +257,12 @@ export component BotsSettingsScreen inherits Rectangle {
 
             HorizontalLayout {
                 spacing: 8px;
-                FHTextButton {
-                    text: "Копировать";
-                    clicked => { root.copy-token-requested(root.token-secret); }
-                }
+                FHSecondaryButton {
+                height: 32px;
+                    text: root.language == "ru" ? "Копировать" : "Copy";
+                    clicked => { root.copy-token-requested(root.token-secret); }}
                 FHPrimaryButton {
-                    text: "Закрыть";
+                    text: root.language == "ru" ? "Закрыть" : "Close";
                     clicked => {
                         root.token-secret = "";
                         root.token-revealed = false;

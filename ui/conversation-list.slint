@@ -1,4 +1,6 @@
 import { Theme } from "theme.slint";
+import { FHSecondaryButton, FHSkeleton, FHEmptyState } from "components.slint";
+import { IconBellOff, IconFolderPlus, IconLanguages, IconMenu, IconMessageSquare, IconMoon, IconPin, IconSearch, IconSun, IconTriangleAlert } from "icons.slint";
 import { ListView } from "std-widgets.slint";
 
 export struct ConversationRow {
@@ -43,9 +45,10 @@ component FilterButton inherits Rectangle {
     in property <bool> active: false;
     callback selected(string);
 
-    width: label-text.preferred-width + (root.unread-count > 0 ? 52px : 20px);
-    height: 30px;
+    width: label-text.preferred-width + (root.unread-count > 0 ? 44px : 16px);
+    height: 28px;
     background: root.active ? Theme.accent : (tap.has-hover ? Theme.hover : transparent);
+    animate background { duration: 120ms; }
     border-radius: 8px;
     accessible-role: button;
     accessible-label: root.label;
@@ -53,9 +56,9 @@ component FilterButton inherits Rectangle {
     forward-focus: keyboard-scope;
 
     HorizontalLayout {
-        padding-left: 10px;
-        padding-right: 10px;
-        spacing: 6px;
+        padding-left: 8px;
+        padding-right: 8px;
+        spacing: 5px;
         alignment: center;
 
         label-text := Text {
@@ -69,7 +72,7 @@ component FilterButton inherits Rectangle {
         if root.unread-count > 0 : Rectangle {
             min-width: 20px;
             height: 17px;
-            background: root.active ? #ffffff33 : Theme.accent;
+            background: root.active ? Theme.accent-foreground.with-alpha(0.2) : Theme.accent;
             border-radius: 9px;
 
             HorizontalLayout {
@@ -113,9 +116,10 @@ component FolderFilterButton inherits Rectangle {
     callback selected(string);
     callback edit-requested(string);
 
-    width: label-text.preferred-width + (root.folder.unread-count > 0 ? 52px : 20px);
-    height: 30px;
+    width: label-text.preferred-width + (root.folder.unread-count > 0 ? 44px : 16px);
+    height: 28px;
     background: root.active ? Theme.accent : (tap.has-hover ? Theme.hover : transparent);
+    animate background { duration: 120ms; }
     border-radius: 8px;
     accessible-role: button;
     accessible-label: root.language == "ru"
@@ -125,9 +129,9 @@ component FolderFilterButton inherits Rectangle {
     forward-focus: keyboard-scope;
 
     HorizontalLayout {
-        padding-left: 10px;
-        padding-right: 10px;
-        spacing: 6px;
+        padding-left: 8px;
+        padding-right: 8px;
+        spacing: 5px;
         alignment: center;
 
         label-text := Text {
@@ -141,7 +145,7 @@ component FolderFilterButton inherits Rectangle {
         if root.folder.unread-count > 0 : Rectangle {
             min-width: 20px;
             height: 17px;
-            background: root.active ? #ffffff33 : Theme.accent;
+            background: root.active ? Theme.accent-foreground.with-alpha(0.2) : Theme.accent;
             border-radius: 9px;
 
             HorizontalLayout {
@@ -195,8 +199,9 @@ component ConversationRowView inherits Rectangle {
     callback profile-requested(string);
     callback context-action(string, string);
 
-    height: 68px;
+    height: 60px;
     background: root.active ? Theme.hover : (row-area.has-hover ? Theme.hover : transparent);
+    animate background { duration: 120ms; }
     accessible-role: button;
     accessible-label: root.language == "ru" ? "Открыть чат: \{root.conversation.title}" : "Open chat: \{root.conversation.title}";
     accessible-action-default => { root.selected(root.conversation.id); }
@@ -211,7 +216,7 @@ component ConversationRowView inherits Rectangle {
         padding-left: 12px;
         padding-right: 12px;
         spacing: 12px;
-        alignment: center;
+        cross-axis-alignment: center;
 
         Rectangle {
             width: 40px;
@@ -263,18 +268,16 @@ component ConversationRowView inherits Rectangle {
                     accessible-role: none;
                 }
 
-                if root.conversation.muted : Text {
-                    text: "🔕";
-                    color: Theme.muted;
-                    font-size: 12px;
-                    accessible-label: root.language == "ru" ? "Без уведомлений" : "Muted";
+                if root.conversation.muted : IconBellOff {
+                    width: 14px;
+                    height: 14px;
+                    stroke: Theme.muted;
                 }
 
-                if root.conversation.has-pinned : Text {
-                    text: "📌";
-                    color: Theme.muted;
-                    font-size: 12px;
-                    accessible-label: root.language == "ru" ? "Есть закреплённые сообщения" : "Pinned messages";
+                if root.conversation.has-pinned : IconPin {
+                    width: 14px;
+                    height: 14px;
+                    stroke: Theme.muted;
                 }
 
                 if !root.conversation.timestamp.is-empty : Text {
@@ -403,13 +406,13 @@ export component ConversationList inherits Rectangle {
         spacing: 0px;
 
         Rectangle {
-            height: 57px;
+            height: 65px;
             background: Theme.surface;
 
             Rectangle {
                 x: 0px;
                 y: parent.height - 1px;
-                width: parent.width;
+                width: root.width;
                 height: 1px;
                 background: Theme.border;
             }
@@ -418,29 +421,27 @@ export component ConversationList inherits Rectangle {
                 padding-left: 12px;
                 padding-right: 12px;
                 spacing: 8px;
-                alignment: center;
+                cross-axis-alignment: center;
 
                 Rectangle {
-                    width: 32px;
-                    height: 32px;
-                    background: transparent;
+                    width: 36px;
+                    height: 36px;
+                    background: menu-area.has-hover ? Theme.hover : transparent;
                     border-radius: 8px;
+                    animate background { duration: 120ms; }
                     accessible-role: button;
                     accessible-label: root.language == "ru" ? "Меню" : "Menu";
                     accessible-action-default => { root.menu-requested(); }
 
-                    Text {
-                        text: "☰";
-                        color: Theme.muted;
-                        font-size: 19px;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                        width: 100%;
-                        height: 100%;
-                        accessible-role: none;
+                    IconMenu {
+                        width: 20px;
+                        height: 20px;
+                        x: (parent.width - self.width) / 2;
+                        y: (parent.height - self.height) / 2;
+                        stroke: menu-area.has-hover ? Theme.foreground : Theme.muted;
                     }
 
-                    TouchArea {
+                    menu-area := TouchArea {
                         mouse-cursor: pointer;
                         clicked => { root.menu-requested(); }
                     }
@@ -449,8 +450,9 @@ export component ConversationList inherits Rectangle {
                 if !root.username.is-empty : Rectangle {
                     horizontal-stretch: 1;
                     height: 40px;
-                    background: transparent;
+                    background: account-area.has-hover ? Theme.hover : transparent;
                     border-radius: 8px;
+                    animate background { duration: 120ms; }
                     accessible-role: button;
                     accessible-label: root.language == "ru"
                         ? "Профиль \{root.username}, \{root.fh-number}"
@@ -460,7 +462,7 @@ export component ConversationList inherits Rectangle {
                     HorizontalLayout {
                         padding: 4px;
                         spacing: 8px;
-                        alignment: center;
+                        cross-axis-alignment: center;
 
                         Rectangle {
                             width: 32px;
@@ -511,7 +513,7 @@ export component ConversationList inherits Rectangle {
                         }
                     }
 
-                    TouchArea {
+                    account-area := TouchArea {
                         mouse-cursor: pointer;
                         clicked => { root.profile-requested(); }
                     }
@@ -535,21 +537,18 @@ export component ConversationList inherits Rectangle {
                     border-color: search-input.has-focus ? Theme.accent : Theme.border;
                     border-radius: 8px;
 
-                    Text {
-                        text: "⌕";
-                        x: 10px;
-                        width: 18px;
-                        height: parent.height;
-                        color: Theme.muted;
-                        font-size: 18px;
-                        vertical-alignment: center;
-                        accessible-role: none;
+                    IconSearch {
+                        width: 16px;
+                        height: 16px;
+                        x: 12px;
+                        y: (parent.height - self.height) / 2;
+                        stroke: Theme.muted;
                     }
 
                     if root.search-query.is-empty : Text {
                         text: root.language == "ru" ? "Поиск" : "Search";
-                        x: 34px;
-                        width: parent.width - 42px;
+                        x: 36px;
+                        width: parent.width - 44px;
                         height: parent.height;
                         color: Theme.muted;
                         font-size: 14px;
@@ -558,8 +557,8 @@ export component ConversationList inherits Rectangle {
                     }
 
                     search-input := TextInput {
-                        x: 34px;
-                        width: parent.width - 42px;
+                        x: 36px;
+                        width: parent.width - 44px;
                         height: parent.height;
                         text <=> root.search-query;
                         font-size: 14px;
@@ -580,7 +579,7 @@ export component ConversationList inherits Rectangle {
             Rectangle {
                 x: 0px;
                 y: parent.height - 1px;
-                width: parent.width;
+                width: root.width;
                 height: 1px;
                 background: Theme.border;
             }
@@ -589,58 +588,69 @@ export component ConversationList inherits Rectangle {
                 padding-left: 8px;
                 padding-right: 8px;
                 spacing: 4px;
-                alignment: center;
+                cross-axis-alignment: center;
 
-                Flickable {
+                Rectangle {
                     horizontal-stretch: 1;
+                    min-width: 0px;
                     height: 34px;
-                    content-height: self.height;
-                    content-width: filter-strip.preferred-width;
 
-                    filter-strip := HorizontalLayout {
-                        x: 0px;
-                        y: 0px;
-                        width: self.preferred-width;
-                        height: parent.height;
-                        spacing: 4px;
+                    Flickable {
+                        width: 100%;
+                        height: 100%;
+                        content-height: self.height;
+                        content-width: filter-strip.preferred-width;
 
-                        for tab in root.filters : FilterButton {
-                            visible: tab.visible && (tab.id != "archived" || root.has-archived || root.selected-filter == "archived");
-                            label: tab.label;
-                            key: tab.id;
-                            unread-count: tab.unread-count;
-                            active: root.selected-filter == tab.id;
-                            selected(key) => { root.filter-changed(key); }
-                        }
+                        filter-strip := HorizontalLayout {
+                            x: 0px;
+                            y: 0px;
+                            width: self.preferred-width;
+                            height: parent.height;
+                            spacing: 4px;
 
-                        for folder in root.folders : FolderFilterButton {
-                            folder: folder;
-                            active: root.selected-folder == folder.id;
-                            language: root.language;
-                            selected(id) => { root.filter-changed("folder:\{id}"); }
-                            edit-requested(id) => { root.folder-edit-requested(id); }
+                            for tab in root.filters : FilterButton {
+                                visible: tab.visible && (tab.id != "archived" || root.has-archived || root.selected-filter == "archived");
+                                label: tab.label;
+                                key: tab.id;
+                                unread-count: tab.unread-count;
+                                active: root.selected-filter == tab.id;
+                                selected(key) => { root.filter-changed(key); }
+                            }
+
+                            for folder in root.folders : FolderFilterButton {
+                                folder: folder;
+                                active: root.selected-folder == folder.id;
+                                language: root.language;
+                                selected(id) => { root.filter-changed("folder:\{id}"); }
+                                edit-requested(id) => { root.folder-edit-requested(id); }
+                            }
                         }
                     }
+                    Rectangle {
+                        x: parent.width - 44px;
+                        width: 44px;
+                        height: parent.height;
+                        background: @linear-gradient(90deg, transparent 0%, Theme.surface 55%, Theme.surface 100%);
+                    }
+
                 }
 
                 Rectangle {
-                    width: 32px;
-                    height: 32px;
+                    width: 30px;
+                    height: 30px;
                     background: folder-add.has-hover ? Theme.hover : transparent;
                     border-radius: 8px;
+                    animate background { duration: 120ms; }
                     accessible-role: button;
                     accessible-label: root.language == "ru" ? "Создайте папку с чатами" : "Create a chat folder";
                     accessible-action-default => { root.folder-create-requested(); }
 
-                    Text {
-                        text: "+";
-                        color: Theme.muted;
-                        font-size: 22px;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                        width: 100%;
-                        height: 100%;
-                        accessible-role: none;
+                    IconFolderPlus {
+                        width: 16px;
+                        height: 16px;
+                        x: (parent.width - self.width) / 2;
+                        y: (parent.height - self.height) / 2;
+                        stroke: folder-add.has-hover ? Theme.foreground : Theme.muted;
                     }
 
                     folder-add := TouchArea {
@@ -656,14 +666,30 @@ export component ConversationList inherits Rectangle {
             background: Theme.surface;
 
             VerticalLayout {
-                alignment: center;
-                spacing: 6px;
+                padding-top: 4px;
+                spacing: 0px;
 
-                Text {
-                    text: root.language == "ru" ? "Загрузка чатов…" : "Loading chats…";
-                    color: Theme.muted;
-                    font-size: 12px;
-                    horizontal-alignment: center;
+                for index in 7 : Rectangle {
+                    height: 60px;
+
+                    HorizontalLayout {
+                        padding-left: 12px;
+                        padding-right: 12px;
+                        spacing: 12px;
+                        cross-axis-alignment: center;
+
+                        FHSkeleton { width: 40px; height: 40px; corner-radius: 20px; }
+
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            spacing: 7px;
+
+                            FHSkeleton { width: 55%; height: 14px; }
+                            FHSkeleton { width: 78%; height: 12px; }
+                        }
+
+                        FHSkeleton { width: 30px; height: 12px; }
+                    }
                 }
             }
         }
@@ -672,9 +698,18 @@ export component ConversationList inherits Rectangle {
             background: Theme.surface;
 
             VerticalLayout {
-                padding: 20px;
+                padding-left: 24px;
+                padding-right: 24px;
+                padding-top: 40px;
+                padding-bottom: 40px;
                 alignment: center;
                 spacing: 8px;
+
+                IconTriangleAlert {
+                    width: 32px;
+                    height: 32px;
+                    stroke: Theme.muted;
+                }
 
                 Text {
                     text: root.language == "ru" ? "Не удалось загрузить список чатов" : "Could not load chats";
@@ -683,6 +718,7 @@ export component ConversationList inherits Rectangle {
                     font-weight: 500;
                     horizontal-alignment: center;
                     wrap: word-wrap;
+                    width: 100%;
                 }
 
                 Text {
@@ -691,32 +727,12 @@ export component ConversationList inherits Rectangle {
                     font-size: 12px;
                     horizontal-alignment: center;
                     wrap: word-wrap;
+                    width: 100%;
                 }
 
-                Rectangle {
-                    width: 92px;
-                    height: 32px;
-                    background: Theme.hover;
-                    border-radius: 8px;
-                    accessible-role: button;
-                    accessible-label: root.language == "ru" ? "Повторить" : "Retry";
-                    accessible-action-default => { root.retry-requested(); }
-
-                    Text {
-                        text: root.language == "ru" ? "Повторить" : "Retry";
-                        color: Theme.foreground;
-                        font-size: 12px;
-                        font-weight: 500;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                        width: 100%;
-                        height: 100%;
-                    }
-
-                    TouchArea {
-                        mouse-cursor: pointer;
-                        clicked => { root.retry-requested(); }
-                    }
+                FHSecondaryButton {
+                    text: root.language == "ru" ? "Повторить" : "Retry";
+                    clicked => { root.retry-requested(); }
                 }
             }
         }
@@ -724,37 +740,24 @@ export component ConversationList inherits Rectangle {
             vertical-stretch: 1;
             background: Theme.surface;
 
-            VerticalLayout {
-                padding: 20px;
-                alignment: center;
-                spacing: 8px;
+            FHEmptyState {
+                title: !root.search-query.is-empty
+                    ? (root.language == "ru" ? "Ничего не найдено" : "Nothing found")
+                    : root.empty-title;
+                description: !root.search-query.is-empty
+                    ? (root.language == "ru" ? "Попробуйте изменить запрос." : "Try a different search.")
+                    : root.empty-description;
 
-                Text {
-                    text: "▢";
-                    color: Theme.muted;
-                    font-size: 28px;
-                    horizontal-alignment: center;
-                }
-
-                Text {
-                    text: root.empty-title;
-                    color: Theme.foreground;
-                    font-size: 14px;
-                    font-weight: 500;
-                    horizontal-alignment: center;
-                    wrap: word-wrap;
-                }
-
-                Text {
-                    text: root.empty-description;
-                    color: Theme.muted;
-                    font-size: 12px;
-                    horizontal-alignment: center;
-                    wrap: word-wrap;
+                IconMessageSquare {
+                    width: 32px;
+                    height: 32px;
+                    stroke: Theme.muted;
                 }
             }
         }
-        if !root.loading && root.load-error.is-empty && root.rows.length > 0 : ListView {
+        if root.rows.length > 0 : ListView {
+            width: 100%;
+            horizontal-stretch: 1;
             vertical-stretch: 1;
             for row in root.rows : ConversationRowView {
                 conversation: row;
@@ -767,98 +770,143 @@ export component ConversationList inherits Rectangle {
         }
 
         Rectangle {
-            height: 57px;
+            height: root.width < language-group.width + theme-group.width + 32px ? 104px : 60px;
             background: Theme.surface;
 
             Rectangle {
                 x: 0px;
                 y: 0px;
-                width: parent.width;
+                width: root.width;
                 height: 1px;
                 background: Theme.border;
             }
 
-            HorizontalLayout {
+            FlexboxLayout {
                 padding: 12px;
                 spacing: 8px;
-                alignment: center;
+                alignment: start;
+                cross-axis-alignment: center;
+                cross-axis-line-alignment: start;
 
-                HorizontalLayout {
-                    spacing: 2px;
-                    alignment: center;
+                language-group := Rectangle {
+                    width: 100px;
+                    height: 36px;
+                    background: transparent;
+                    border-width: 1px;
+                    border-color: Theme.border;
+                    border-radius: 12px;
 
-                    Rectangle {
-                        width: 32px;
-                        height: 30px;
-                        background: !root.light-mode ? Theme.accent : transparent;
-                        border-radius: 8px;
-                        accessible-role: button;
-                        accessible-label: root.language == "ru" ? "Тёмная тема" : "Dark theme";
-                        accessible-action-default => { root.theme-selected(false); }
+                    HorizontalLayout {
+                        padding: 4px;
+                        spacing: 4px;
+                        cross-axis-alignment: center;
 
-                        Text {
-                            text: "◐";
-                            color: !root.light-mode ? Theme.accent-foreground : Theme.muted;
-                            font-size: 16px;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                            width: 100%;
-                            height: 100%;
+                        IconLanguages {
+                            width: 16px;
+                            height: 16px;
+                            stroke: Theme.muted;
                         }
 
-                        TouchArea { mouse-cursor: pointer; clicked => { root.theme-selected(false); } }
-                    }
+                        for code in ["ru", "en"] : Rectangle {
+                            width: 30px;
+                            height: 26px;
+                            background: root.language == code ? Theme.accent : (language-tap.has-hover ? Theme.hover : transparent);
+                            border-radius: 8px;
+                            accessible-role: button;
+                            accessible-label: code == "ru" ? "Русский" : "English";
+                            accessible-action-default => { root.language-selected(code); }
 
-                    Rectangle {
-                        width: 32px;
-                        height: 30px;
-                        background: root.light-mode ? Theme.accent : transparent;
-                        border-radius: 8px;
-                        accessible-role: button;
-                        accessible-label: root.language == "ru" ? "Светлая тема" : "Light theme";
-                        accessible-action-default => { root.theme-selected(true); }
+                            Text {
+                                text: code == "ru" ? "RU" : "EN";
+                                color: root.language == code ? Theme.accent-foreground : Theme.muted;
+                                font-size: 12px;
+                                font-weight: 500;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                                width: 100%;
+                                height: 100%;
+                                accessible-role: none;
+                            }
 
-                        Text {
-                            text: "☼";
-                            color: root.light-mode ? Theme.accent-foreground : Theme.muted;
-                            font-size: 16px;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                            width: 100%;
-                            height: 100%;
+                            language-tap := TouchArea { mouse-cursor: pointer; clicked => { root.language-selected(code); } }
                         }
-
-                        TouchArea { mouse-cursor: pointer; clicked => { root.theme-selected(true); } }
                     }
                 }
 
-                Rectangle { horizontal-stretch: 1; background: transparent; }
+                theme-group := Rectangle {
+                    width: dark-button.width + light-button.width + 12px;
+                    height: 36px;
+                    background: transparent;
+                    border-width: 1px;
+                    border-color: Theme.border;
+                    border-radius: 12px;
 
-                HorizontalLayout {
-                    spacing: 2px;
-                    alignment: center;
+                    HorizontalLayout {
+                        padding: 4px;
+                        spacing: 4px;
+                        cross-axis-alignment: center;
 
-                    for code in ["ru", "en"] : Rectangle {
-                        width: 32px;
-                        height: 30px;
-                        background: root.language == code ? Theme.accent : transparent;
-                        border-radius: 8px;
-                        accessible-role: button;
-                        accessible-label: code == "ru" ? "Русский" : "English";
-                        accessible-action-default => { root.language-selected(code); }
+                        dark-button := Rectangle {
+                            width: dark-label.preferred-width + 38px;
+                            height: 26px;
+                            background: !root.light-mode ? Theme.accent : (dark-tap.has-hover ? Theme.hover : transparent);
+                            border-radius: 8px;
+                            accessible-role: button;
+                            accessible-label: root.language == "ru" ? "Тёмная тема" : "Dark theme";
+                            accessible-action-default => { root.theme-selected(false); }
 
-                        Text {
-                            text: code;
-                            color: root.language == code ? Theme.accent-foreground : Theme.muted;
-                            font-size: 11px;
-                            font-weight: 600;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                            width: 100%;
-                            height: 100%;
+                            HorizontalLayout {
+                                padding-left: 8px;
+                                padding-right: 8px;
+                                spacing: 6px;
+                                cross-axis-alignment: center;
+
+                                IconMoon {
+                                    width: 16px;
+                                    height: 16px;
+                                    stroke: !root.light-mode ? Theme.accent-foreground : Theme.muted;
+                                }
+                                dark-label := Text {
+                                    text: root.language == "ru" ? "Тёмная" : "Dark";
+                                    color: !root.light-mode ? Theme.accent-foreground : Theme.muted;
+                                    font-size: 12px;
+                                    font-weight: 500;
+                                    accessible-role: none;
+                                }
+                            }
+                            dark-tap := TouchArea { mouse-cursor: pointer; clicked => { root.theme-selected(false); } }
                         }
 
-                        TouchArea { mouse-cursor: pointer; clicked => { root.language-selected(code); } }
+                        light-button := Rectangle {
+                            width: light-label.preferred-width + 38px;
+                            height: 26px;
+                            background: root.light-mode ? Theme.accent : (light-tap.has-hover ? Theme.hover : transparent);
+                            border-radius: 8px;
+                            accessible-role: button;
+                            accessible-label: root.language == "ru" ? "Светлая тема" : "Light theme";
+                            accessible-action-default => { root.theme-selected(true); }
+
+                            HorizontalLayout {
+                                padding-left: 8px;
+                                padding-right: 8px;
+                                spacing: 6px;
+                                cross-axis-alignment: center;
+
+                                IconSun {
+                                    width: 16px;
+                                    height: 16px;
+                                    stroke: root.light-mode ? Theme.accent-foreground : Theme.muted;
+                                }
+                                light-label := Text {
+                                    text: root.language == "ru" ? "Светлая" : "Light";
+                                    color: root.light-mode ? Theme.accent-foreground : Theme.muted;
+                                    font-size: 12px;
+                                    font-weight: 500;
+                                    accessible-role: none;
+                                }
+                            }
+                            light-tap := TouchArea { mouse-cursor: pointer; clicked => { root.theme-selected(true); } }
+                        }
                     }
                 }
             }

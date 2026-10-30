@@ -2,13 +2,13 @@ import { Theme } from "theme.slint";
 import { FHInput, FHPrimaryButton, FHTextButton } from "components.slint";
 
 export component RegisterScreen inherits Rectangle {
+    in property <string> language: "ru";
     in-out property <string> password: "";
     in property <string> error-text: "";
     in property <bool> busy: false;
 
     callback register-requested(string);
     callback login-requested();
-    callback back-requested();
 
     background: Theme.background;
 
@@ -31,32 +31,33 @@ export component RegisterScreen inherits Rectangle {
                     spacing: 16px;
 
                     Text {
-                        text: "Регистрация";
+                        text: root.language == "ru" ? "Регистрация" : "Create account";
                         color: Theme.foreground;
                         font-size: 18px;
                         font-weight: 600;
                     }
 
                     Text {
-                        text: "Номер вида FH1234567 выдаётся сразу после создания аккаунта.";
+                        text: root.language == "ru" ? "Номер вида FH1234567 выдаётся сразу после создания аккаунта." : "An FH1234567-style number is issued as soon as the account exists.";
                         color: Theme.muted;
                         font-size: 12px;
                         wrap: word-wrap;
                     }
 
                     FHInput {
-                        width: parent.width;
-                        label: "Пароль";
+                        language: root.language;
+                        label: root.language == "ru" ? "Пароль" : "Password";
                         placeholder: "";
                         value <=> root.password;
+                        enabled: !root.busy;
                         password: true;
-                        helper: "Минимум 8 символов.";
+                        helper: root.language == "ru" ? "Минимум 8 символов." : "At least 8 characters.";
                         error: root.error-text;
                     }
 
                     FHPrimaryButton {
-                        width: parent.width;
-                        text: "Создать аккаунт";
+                    block: true;
+                        text: root.language == "ru" ? "Создать аккаунт" : "Create account";
                         enabled: !root.busy;
                         busy: root.busy;
                         clicked => {
@@ -70,18 +71,12 @@ export component RegisterScreen inherits Rectangle {
                         HorizontalLayout {
                             alignment: center;
                             FHTextButton {
-                                text: "Вернуться ко входу";
+                                text: root.language == "ru" ? "Уже зарегистрированы? Перейти к логину" : "Already registered? Sign in";
+                                enabled: !root.busy;
                                 clicked => { root.login-requested(); }
                             }
                         }
 
-                        HorizontalLayout {
-                            alignment: center;
-                            FHTextButton {
-                                text: "Назад";
-                                clicked => { root.back-requested(); }
-                            }
-                        }
                     }
                 }
             }

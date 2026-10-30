@@ -1,10 +1,58 @@
 import { ColorPickerDialog } from "color-picker-dialog.slint";
 import { Theme } from "../theme.slint";
-import { FHPrimaryButton, FHTextButton } from "../components.slint";
+import { FHSecondaryButton, FHPrimaryButton } from "../components.slint";
 import { SettingsCard, SettingsDivider, SettingsFrame, SettingsChoice } from "common.slint";
+
+component RgbChannelField inherits VerticalLayout {
+    in property <string> label;
+    in property <string> accessible-name;
+    in-out property <string> value;
+    in property <bool> enabled: true;
+    callback value-edited(string);
+
+    spacing: 6px;
+    horizontal-stretch: 1;
+
+    Text {
+        text: root.label;
+        color: Theme.muted;
+        font-size: 12px;
+        font-weight: 600;
+        accessible-role: none;
+    }
+    Rectangle {
+        width: 100%;
+        height: 40px;
+        background: Theme.surface;
+        border-width: 1px;
+        border-radius: 8px;
+        border-color: input.has-focus ? Theme.accent : Theme.border;
+        clip: true;
+        input := TextInput {
+            x: 12px;
+            width: max(parent.width - 24px, self.preferred-width);
+            height: parent.height;
+            text <=> root.value;
+            enabled: root.enabled;
+            font-size: 14px;
+            color: Theme.foreground;
+            vertical-alignment: center;
+            accessible-label: root.accessible-name;
+            edited => { root.value-edited(root.value); }
+            cursor-position-changed(position) => {
+                if position.x + self.x < 12px {
+                    self.x = 12px - position.x;
+                } else if position.x + self.x > parent.width - 12px - self.text-cursor-width {
+                    self.x = parent.width - position.x - 12px - self.text-cursor-width;
+                }
+            }
+        }
+    }
+}
 
 component RgbColorField inherits VerticalLayout {
     in property <string> id;
+    in property <string> language: "ru";
     in property <string> label;
     in property <color> preview;
     in-out property <string> red;
@@ -19,7 +67,7 @@ component RgbColorField inherits VerticalLayout {
 
     HorizontalLayout {
         spacing: 8px;
-        alignment: center;
+        cross-axis-alignment: center;
 
         Rectangle {
             width: 28px;
@@ -38,8 +86,9 @@ component RgbColorField inherits VerticalLayout {
             vertical-alignment: center;
         }
 
-        FHTextButton {
-            text: "Выбрать цвет";
+        FHSecondaryButton {
+            text: (root.language == "ru" ? "Выбрать цвет" : "Choose color");
+            height: 28px;
             enabled: root.enabled;
             clicked => { root.choose-color(root.id); }
         }
@@ -48,32 +97,26 @@ component RgbColorField inherits VerticalLayout {
     HorizontalLayout {
         spacing: 8px;
 
-        TextInput {
-            height: 36px;
-            horizontal-stretch: 1;
-            text <=> root.red;
-            font-size: 13px;
-            color: Theme.foreground;
-            accessible-label: "\{root.label} RGB красный";
-            edited => { root.channel-edited("\{root.id}.r", self.text); }
+        RgbChannelField {
+            label: "R";
+            accessible-name: "\{root.label} RGB R";
+            value <=> root.red;
+            enabled: root.enabled;
+            value-edited(value) => { root.channel-edited("\{root.id}.r", value); }
         }
-        TextInput {
-            height: 36px;
-            horizontal-stretch: 1;
-            text <=> root.green;
-            font-size: 13px;
-            color: Theme.foreground;
-            accessible-label: "\{root.label} RGB зелёный";
-            edited => { root.channel-edited("\{root.id}.g", self.text); }
+        RgbChannelField {
+            label: "G";
+            accessible-name: "\{root.label} RGB G";
+            value <=> root.green;
+            enabled: root.enabled;
+            value-edited(value) => { root.channel-edited("\{root.id}.g", value); }
         }
-        TextInput {
-            height: 36px;
-            horizontal-stretch: 1;
-            text <=> root.blue;
-            font-size: 13px;
-            color: Theme.foreground;
-            accessible-label: "\{root.label} RGB синий";
-            edited => { root.channel-edited("\{root.id}.b", self.text); }
+        RgbChannelField {
+            label: "B";
+            accessible-name: "\{root.label} RGB B";
+            value <=> root.blue;
+            enabled: root.enabled;
+            value-edited(value) => { root.channel-edited("\{root.id}.b", value); }
         }
     }
 }
@@ -126,16 +169,18 @@ export component AppearanceSettingsScreen inherits Rectangle {
     background: Theme.background;
 
     SettingsFrame {
-        title: "Оформление";
+        language: root.language-value;
+        title: (root.language-value == "ru" ? "Оформление" : "Appearance");
         back-requested => { root.back-requested(); }
 
-        SettingsCard { title: "Тема";
+        SettingsCard { title: (root.language-value == "ru" ? "Тема" : "Theme");
             SettingsChoice {
-                label: "Тема";
+                label: (root.language-value == "ru" ? "Тема" : "Theme");
+                show-label: false;
                 value: root.theme-value;
                 options: [
-                    { value: "dark", label: "Тёмная" },
-                    { value: "light", label: "Светлая" },
+                    { value: "dark", label: (root.language-value == "ru" ? "Тёмная" : "Dark") },
+                    { value: "light", label: (root.language-value == "ru" ? "Светлая" : "Light") },
                 ];
                 changed(value) => {
                     root.theme-changed(value);
@@ -143,12 +188,13 @@ export component AppearanceSettingsScreen inherits Rectangle {
             }
         }
 
-        SettingsCard { title: "Язык";
+        SettingsCard { title: (root.language-value == "ru" ? "Язык" : "Language");
             SettingsChoice {
-                label: "Язык";
+                label: (root.language-value == "ru" ? "Язык" : "Language");
+                show-label: false;
                 value: root.language-value;
                 options: [
-                    { value: "ru", label: "Русский" },
+                    { value: "ru", label: (root.language-value == "ru" ? "Русский" : "Russian") },
                     { value: "en", label: "English" },
                 ];
                 changed(value) => {
@@ -158,8 +204,8 @@ export component AppearanceSettingsScreen inherits Rectangle {
         }
 
         SettingsCard {
-            title: "Цвета интерфейса";
-            description: "Настройте основные цвета интерфейса в формате RGB.";
+            title: (root.language-value == "ru" ? "Цвета интерфейса" : "Interface colours");
+            description: (root.language-value == "ru" ? "Настройте основные цвета интерфейса в формате RGB." : "Choose the main interface colours with RGB values.");
 
             Text {
                 text: root.language-value == "ru" ? "Выберите цвет или введите значения каналов от 0 до 255. Затем нажмите «Применить»." : "Choose a color or enter channel values from 0 to 255. Then select Apply.";
@@ -173,7 +219,8 @@ export component AppearanceSettingsScreen inherits Rectangle {
 
             RgbColorField {
                 id: "background";
-                label: "Фон";
+                language: root.language-value;
+                label: (root.language-value == "ru" ? "Фон" : "Background");
                 preview: root.background-preview;
                 red: root.background-r;
                 green: root.background-g;
@@ -186,7 +233,8 @@ export component AppearanceSettingsScreen inherits Rectangle {
 
             RgbColorField {
                 id: "button";
-                label: "Кнопки";
+                language: root.language-value;
+                label: (root.language-value == "ru" ? "Кнопки" : "Buttons");
                 preview: root.button-preview;
                 red: root.button-r;
                 green: root.button-g;
@@ -199,7 +247,8 @@ export component AppearanceSettingsScreen inherits Rectangle {
 
             RgbColorField {
                 id: "bubble";
-                label: "Пузыри сообщений";
+                language: root.language-value;
+                label: (root.language-value == "ru" ? "Пузыри сообщений" : "Message bubbles");
                 preview: root.bubble-preview;
                 red: root.bubble-r;
                 green: root.bubble-g;
@@ -212,7 +261,8 @@ export component AppearanceSettingsScreen inherits Rectangle {
 
             RgbColorField {
                 id: "text";
-                label: "Текст";
+                language: root.language-value;
+                label: (root.language-value == "ru" ? "Текст" : "Text");
                 preview: root.text-preview;
                 red: root.text-r;
                 green: root.text-g;
@@ -222,7 +272,7 @@ export component AppearanceSettingsScreen inherits Rectangle {
             }
 
             Text {
-                text: "Разница между фоном и текстом: \{root.contrast-score} из 765.";
+                text: root.language-value == "ru" ? "Разница между фоном и текстом: \{root.contrast-score} из 765." : "Background/text difference: \{root.contrast-score} of 765.";
                 color: root.contrast-score >= 20 ? Theme.muted : Theme.danger;
                 font-size: 12px;
                 wrap: word-wrap;
@@ -230,7 +280,7 @@ export component AppearanceSettingsScreen inherits Rectangle {
             }
 
             if root.contrast-score < 20 : Text {
-                text: "Цвет текста слишком близок к фону: нужно минимум 20.";
+                text: (root.language-value == "ru" ? "Цвет текста слишком близок к фону: нужно минимум 20." : "The text colour is too close to the background: at least 20 is required.");
                 color: Theme.danger;
                 font-size: 12px;
                 wrap: word-wrap;
@@ -241,14 +291,15 @@ export component AppearanceSettingsScreen inherits Rectangle {
                 spacing: 8px;
 
                 FHPrimaryButton {
-                    text: "Применить";
+                    text: (root.language-value == "ru" ? "Применить" : "Apply");
                     enabled: root.contrast-score >= 20 && !root.busy;
                     busy: root.busy;
                     clicked => { root.apply-colors-requested(); }
                 }
 
-                FHTextButton {
-                    text: "Сбросить цвета";
+                FHSecondaryButton {
+                    text: (root.language-value == "ru" ? "Сбросить цвета" : "Reset colours");
+                    height: 40px;
                     enabled: root.has-custom-colors && !root.busy;
                     clicked => { root.reset-colors-requested(); }
                 }

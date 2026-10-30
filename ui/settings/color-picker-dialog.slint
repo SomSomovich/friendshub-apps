@@ -1,6 +1,5 @@
-import { SpinBox } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
-import { FHPrimaryButton, FHTextButton } from "../components.slint";
+import { FHNumberInput, FHSecondaryButton, FHPrimaryButton } from "../components.slint";
 
 // This dialog owns a temporary selection. Only Choose sends it to the RGB draft.
 export component ColorPickerDialog inherits Rectangle {
@@ -34,7 +33,6 @@ export component ColorPickerDialog inherits Rectangle {
         // Consume card clicks so only the backdrop dismisses the dialog.
         TouchArea {}
         focus := FocusScope {
-            forward-focus: red-input;
             key-pressed(event) => {
                 if event.text == Key.Escape {
                     root.close-requested();
@@ -69,42 +67,32 @@ export component ColorPickerDialog inherits Rectangle {
                 }
                 HorizontalLayout {
                     spacing: 8px;
-                    VerticalLayout {
-                        spacing: 5px;
-                        Text { text: "R"; color: Theme.foreground; }
-                        red-input := SpinBox {
-                            minimum: 0;
-                            maximum: 255;
-                            value <=> root.red;
-                            accessible-label: root.russian ? "Красный, от 0 до 255" : "Red, 0 to 255";
-                        }
+
+                    FHNumberInput {
+                        label: "R";
+                        value <=> root.red;
+                        minimum: 0;
+                        maximum: 255;
                     }
-                    VerticalLayout {
-                        spacing: 5px;
-                        Text { text: "G"; color: Theme.foreground; }
-                        SpinBox {
-                            minimum: 0;
-                            maximum: 255;
-                            value <=> root.green;
-                            accessible-label: root.russian ? "Зелёный, от 0 до 255" : "Green, 0 to 255";
-                        }
+                    FHNumberInput {
+                        label: "G";
+                        value <=> root.green;
+                        minimum: 0;
+                        maximum: 255;
                     }
-                    VerticalLayout {
-                        spacing: 5px;
-                        Text { text: "B"; color: Theme.foreground; }
-                        SpinBox {
-                            minimum: 0;
-                            maximum: 255;
-                            value <=> root.blue;
-                            accessible-label: root.russian ? "Синий, от 0 до 255" : "Blue, 0 to 255";
-                        }
+                    FHNumberInput {
+                        label: "B";
+                        value <=> root.blue;
+                        minimum: 0;
+                        maximum: 255;
                     }
                 }
                 HorizontalLayout {
                     alignment: end;
                     spacing: 8px;
-                    FHTextButton {
+                    FHSecondaryButton {
                         text: root.russian ? "Отмена" : "Cancel";
+                        height: 36px;
                         clicked => { root.close-requested(); }
                     }
                     FHPrimaryButton {

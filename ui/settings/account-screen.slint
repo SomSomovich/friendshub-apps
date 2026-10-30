@@ -1,5 +1,6 @@
 import { Theme } from "../theme.slint";
-import { FHInput, FHPrimaryButton, FHTextButton } from "../components.slint";
+import { FHIconButton, FHInput, FHSecondaryButton, FHSkeleton, FHPrimaryButton } from "../components.slint";
+import { IconUserMinus } from "../icons.slint";
 import { SettingsCard, SettingsChoice, SettingsDivider, SettingsFrame } from "common.slint";
 
 export struct SettingsProfileField {
@@ -8,7 +9,9 @@ export struct SettingsProfileField {
 }
 
 component ProfileFieldRow inherits Rectangle {
+    in property <string> language: "ru";
     in property <int> index;
+    in property <bool> enabled: true;
     in-out property <string> label;
     in-out property <string> value;
     callback label-edited(int, string);
@@ -16,48 +19,48 @@ component ProfileFieldRow inherits Rectangle {
     callback remove-requested(int);
 
     width: 100%;
-    height: 94px;
+    height: content.preferred-height;
     background: Theme.background;
     border-width: 1px;
     border-color: Theme.border;
     border-radius: 8px;
 
-    VerticalLayout {
-        padding: 8px;
-        spacing: 6px;
+    content := VerticalLayout {
+        padding: 10px;
+        spacing: 8px;
 
         HorizontalLayout {
             spacing: 8px;
+            cross-axis-alignment: end;
 
-            TextInput {
-                height: 32px;
-                horizontal-stretch: 1;
-                text <=> root.label;
-                font-size: 13px;
-                color: Theme.foreground;
-                accessible-label: "Название дополнительного поля";
-                edited => { root.label-edited(root.index, self.text); }
+            FHInput {
+                label: root.language == "ru" ? "Название поля" : "Field name";
+                value <=> root.label;
+                enabled: root.enabled;
+                value-edited(value) => { root.label-edited(root.index, value); }
             }
 
-            FHTextButton {
-                text: "Удалить";
+            FHIconButton {
+                button-size: 40px;
+                label: root.language == "ru" ? "Удалить поле" : "Remove field";
+                enabled: root.enabled;
                 clicked => { root.remove-requested(root.index); }
+
+                IconUserMinus { width: 16px; height: 16px; x: 8px; y: 8px; stroke: Theme.danger; }
             }
         }
 
-        TextInput {
-            width: 100%;
-            height: 32px;
-            text <=> root.value;
-            font-size: 13px;
-            color: Theme.foreground;
-            accessible-label: "Значение дополнительного поля";
-            edited => { root.value-edited(root.index, self.text); }
+        FHInput {
+            label: root.language == "ru" ? "Значение" : "Value";
+            value <=> root.value;
+            enabled: root.enabled;
+            value-edited(value) => { root.value-edited(root.index, value); }
         }
     }
 }
 
 export component AccountSettingsScreen inherits Rectangle {
+    in property <string> language: "ru";
     in-out property <string> username;
     in property <string> fh-number;
     in property <string> avatar-url: "";
@@ -67,6 +70,9 @@ export component AccountSettingsScreen inherits Rectangle {
     in-out property <string> status-emoji: "";
     in property <int> status-ttl-seconds: 3600;
     in property <[SettingsProfileField]> profile-fields: [];
+    in property <bool> profile-fields-loading: false;
+    in property <bool> profile-fields-loaded: false;
+    in property <string> profile-fields-error: "";
     in property <bool> username-valid: true;
     in property <string> username-error: "";
     in property <string> account-error-text: "";
@@ -86,26 +92,28 @@ export component AccountSettingsScreen inherits Rectangle {
     callback add-profile-field-requested();
     callback remove-profile-field-requested(int);
     callback save-profile-fields-requested();
+    callback retry-profile-fields-requested();
 
     width: 100%;
     height: 100%;
     background: Theme.background;
 
     SettingsFrame {
-        title: "Аккаунт";
+        language: root.language;
+        title: root.language == "ru" ? "Аккаунт" : "Account";
         back-requested => { root.back-requested(); }
 
         SettingsCard {
-            title: "Профиль";
+            title: root.language == "ru" ? "Профиль" : "Profile";
 
             HorizontalLayout {
                 spacing: 12px;
                 alignment: center;
 
                 Rectangle {
-                    width: 72px;
-                    height: 72px;
-                    border-radius: 36px;
+                    width: 80px;
+                    height: 80px;
+                    border-radius: 40px;
                     background: Theme.hover;
                     clip: true;
 
@@ -130,14 +138,17 @@ export component AccountSettingsScreen inherits Rectangle {
                     spacing: 8px;
                     horizontal-stretch: 1;
 
-                    FHTextButton {
-                        text: "Сменить аватар";
+                    FHSecondaryButton {
+                        text: root.language == "ru" ? "Сменить аватар" : "Change avatar";
+                        height: 32px;
                         enabled: !root.busy;
                         clicked => { root.choose-avatar-requested(); }
                     }
 
-                    if !root.avatar-url.is-empty : FHTextButton {
-                        text: "Удалить аватар";
+                    if !root.avatar-url.is-empty : FHSecondaryButton {
+                        text: root.language == "ru" ? "Удалить аватар" : "Remove avatar";
+                        height: 32px;
+                        danger: true;
                         enabled: !root.busy;
                         clicked => { root.remove-avatar-requested(); }
                     }
@@ -153,17 +164,19 @@ export component AccountSettingsScreen inherits Rectangle {
         }
 
         SettingsCard {
-            title: "Имя";
-            description: "1–64 символа: латинские буквы, цифры, «_», «.» и одиночные пробелы.";
+            title: root.language == "ru" ? "Имя" : "Name";
+            description: root.language == "ru" ? "1–64 символа: латинские буквы, цифры, «_», «.» и одиночные пробелы." : "1–64 characters: Latin letters, digits, underscores, dots and single spaces.";
 
             FHInput {
-                label: "Имя";
+                language: root.language;
+                label: root.language == "ru" ? "Имя" : "Name";
+                hide-label: true;
                 value <=> root.username;
                 error: root.username-error;
             }
 
             FHPrimaryButton {
-                text: "Сохранить";
+                text: root.language == "ru" ? "Сохранить" : "Save";
                 enabled: root.username-valid && !root.busy;
                 busy: root.busy;
                 clicked => { root.save-username-requested(root.username); }
@@ -171,47 +184,51 @@ export component AccountSettingsScreen inherits Rectangle {
         }
 
         SettingsCard {
-            title: "FH-номер";
-            description: "Постоянный номер аккаунта. Его можно передать собеседнику.";
+            title: root.language == "ru" ? "FH-номер" : "FH number";
+            description: root.language == "ru" ? "Постоянный номер аккаунта. Его можно передать собеседнику." : "Your permanent account number. You can share it with others.";
 
             HorizontalLayout {
                 spacing: 8px;
-                alignment: center;
+                cross-axis-alignment: center;
 
                 Text {
                     text: root.fh-number;
                     color: Theme.foreground;
                     font-size: 14px;
                     horizontal-stretch: 1;
+                    horizontal-alignment: left;
                     vertical-alignment: center;
                 }
 
-                FHTextButton {
-                    text: "Копировать";
+                FHSecondaryButton {
+                    text: root.language == "ru" ? "Копировать" : "Copy";
+                    height: 32px;
                     clicked => { root.copy-fh-number-requested(root.fh-number); }
                 }
             }
         }
 
         SettingsCard {
-            title: "Статус";
-            description: "Короткая подпись рядом с именем.";
+            title: root.language == "ru" ? "Статус" : "Status";
+            description: root.language == "ru" ? "Короткая подпись рядом с именем." : "A short message displayed next to your name.";
 
             FHInput {
-                label: "Текст";
-                placeholder: "Чем занимаетесь?";
+                language: root.language;
+                label: root.language == "ru" ? "Текст" : "Text";
+                placeholder: root.language == "ru" ? "Чем занимаетесь?" : "What are you doing?";
                 value <=> root.status-text;
             }
 
             FHInput {
-                label: "Эмодзи";
-                placeholder: "До 8 символов";
+                language: root.language;
+                label: root.language == "ru" ? "Эмодзи" : "Emoji";
+                placeholder: root.language == "ru" ? "До 8 символов" : "Up to 8 characters";
                 value <=> root.status-emoji;
-                helper: "До 8 символов — обычно один эмодзи.";
+                helper: root.language == "ru" ? "До 8 символов — обычно один эмодзи." : "Up to 8 characters, usually one emoji.";
             }
 
             SettingsChoice {
-                label: "Срок";
+                label: root.language == "ru" ? "Срок" : "Duration";
                 enabled: !root.busy;
                 value: root.status-ttl-seconds == 0 ? "forever"
                     : root.status-ttl-seconds == 3600 ? "hour"
@@ -219,11 +236,11 @@ export component AccountSettingsScreen inherits Rectangle {
                     : root.status-ttl-seconds == 604800 ? "week"
                     : "custom";
                 options: [
-                    { value: "hour", label: "На час" },
-                    { value: "eight-hours", label: "На 8 часов" },
-                    { value: "week", label: "На неделю" },
-                    { value: "custom", label: "Кастомный срок" },
-                    { value: "forever", label: "Навсегда" },
+                    { value: "hour", label: root.language == "ru" ? "На час" : "For one hour" },
+                    { value: "eight-hours", label: root.language == "ru" ? "На 8 часов" : "For 8 hours" },
+                    { value: "week", label: root.language == "ru" ? "На неделю" : "For one week" },
+                    { value: "custom", label: root.language == "ru" ? "Кастомный срок" : "Custom duration" },
+                    { value: "forever", label: root.language == "ru" ? "Навсегда" : "Forever" },
                 ];
                 changed(value) => { root.status-duration-choice-requested(value); }
             }
@@ -231,8 +248,9 @@ export component AccountSettingsScreen inherits Rectangle {
             if root.status-ttl-seconds != 0
                 && root.status-ttl-seconds != 3600
                 && root.status-ttl-seconds != 28800
-                && root.status-ttl-seconds != 604800 : FHTextButton {
-                text: "Изменить срок";
+                && root.status-ttl-seconds != 604800 : FHSecondaryButton {
+                text: root.language == "ru" ? "Изменить срок" : "Change duration";
+                height: 32px;
                 enabled: !root.busy;
                 clicked => { root.status-duration-requested(); }
             }
@@ -241,7 +259,7 @@ export component AccountSettingsScreen inherits Rectangle {
                 spacing: 8px;
 
                 FHPrimaryButton {
-                    text: "Сохранить статус";
+                    text: root.language == "ru" ? "Сохранить статус" : "Save status";
                     enabled: !root.busy && !root.status-text.is-empty;
                     busy: root.busy;
                     clicked => {
@@ -249,8 +267,9 @@ export component AccountSettingsScreen inherits Rectangle {
                     }
                 }
 
-                FHTextButton {
-                    text: "Сбросить статус";
+                FHSecondaryButton {
+                    text: root.language == "ru" ? "Сбросить статус" : "Clear status";
+                    height: 40px;
                     enabled: !root.busy;
                     clicked => { root.clear-status-requested(); }
                 }
@@ -258,10 +277,32 @@ export component AccountSettingsScreen inherits Rectangle {
         }
 
         SettingsCard {
-            title: "Дополнительные поля профиля";
-            description: "До 10 публичных полей: название до 64 символов, значение до 128.";
+            title: root.language == "ru" ? "Дополнительные поля профиля" : "Additional profile fields";
+            description: root.language == "ru" ? "До 10 публичных полей: название до 64 символов, значение до 128." : "Up to 10 public fields: names up to 64 characters, values up to 128.";
+
+            if root.profile-fields-loading : VerticalLayout {
+                spacing: 8px;
+                FHSkeleton { width: 100%; height: 40px; corner-radius: 8px; }
+                FHSkeleton { width: 100%; height: 40px; corner-radius: 8px; }
+            }
+
+            if !root.profile-fields-error.is-empty : Text {
+                text: root.profile-fields-error;
+                color: Theme.danger;
+                font-size: 12px;
+                wrap: word-wrap;
+            }
+
+            if !root.profile-fields-loading && !root.profile-fields-error.is-empty : FHSecondaryButton {
+                text: root.language == "ru" ? "Повторить" : "Retry";
+                height: 32px;
+                clicked => { root.retry-profile-fields-requested(); }
+            }
 
             for field[index] in root.profile-fields : ProfileFieldRow {
+                visible: root.profile-fields-loaded;
+                enabled: root.profile-fields-loaded && !root.busy;
+                language: root.language;
                 index: index;
                 label: field.label;
                 value: field.value;
@@ -270,15 +311,16 @@ export component AccountSettingsScreen inherits Rectangle {
                 remove-requested(index) => { root.remove-profile-field-requested(index); }
             }
 
-            FHTextButton {
-                text: "Добавить поле";
-                enabled: root.profile-fields.length < 10;
+            FHSecondaryButton {
+                text: root.language == "ru" ? "Добавить поле" : "Add field";
+                height: 36px;
+                enabled: root.profile-fields-loaded && !root.busy && root.profile-fields.length < 10;
                 clicked => { root.add-profile-field-requested(); }
             }
 
             FHPrimaryButton {
-                text: "Сохранить поля профиля";
-                enabled: !root.busy;
+                text: root.language == "ru" ? "Сохранить поля профиля" : "Save profile fields";
+                enabled: root.profile-fields-loaded && !root.busy;
                 busy: root.busy;
                 clicked => { root.save-profile-fields-requested(); }
             }

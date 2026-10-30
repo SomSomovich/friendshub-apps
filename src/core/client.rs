@@ -20,6 +20,7 @@ use friendshub_core::events::Event;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CoreCallFailure {
     Configuration,
+    AndroidContext,
     Database,
     Runtime,
     Unsupported,
@@ -34,6 +35,7 @@ impl CoreCallFailure {
     pub const fn code(self) -> &'static str {
         match self {
             Self::Configuration => "configuration",
+            Self::AndroidContext => "android_context",
             Self::Database => "database",
             Self::Runtime => "runtime",
             Self::Unsupported => "unsupported",
@@ -48,6 +50,9 @@ impl CoreCallFailure {
     pub const fn user_message(self) -> &'static str {
         match self {
             Self::Configuration => "Не удалось настроить клиент FriendsHub.",
+            Self::AndroidContext => {
+                "Не удалось инициализировать FriendsHub на Android. Перезапустите приложение."
+            }
             Self::Database => "Не удалось открыть защищённое хранилище.",
             Self::Runtime => "Не удалось запустить клиент FriendsHub.",
             Self::Unsupported => "Эта операция не поддерживается текущей версией ядра.",
@@ -85,6 +90,30 @@ struct DatabaseLifecycle {
     opening: Mutex<()>,
     generation: AtomicU64,
     clients: Mutex<Vec<Weak<Client>>>,
+}
+
+#[cfg(target_os = "android")]
+static ANDROID_CONTEXT_READY: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Registers the Android application context before the first core open.
+///
+/// The Android wrapper normally does this before starting Slint, but a host
+/// that starts the UI earlier (or a context that was not ready yet) must not
+/// lose the whole session. The helper in the core is idempotent while no core
+/// client has opened successfully, so retry it at the point of use.
+#[cfg(target_os = "android")]
+fn ensure_android_context() -> Result<(), CoreCallFailure> {
+    use std::sync::atomic::Ordering;
+    if ANDROID_CONTEXT_READY.load(Ordering::Acquire) {
+        return Ok(());
+    }
+    if friendshub_core::ffi::fh_android_init_from_ndk_context() == 0 {
+        ANDROID_CONTEXT_READY.store(true, Ordering::Release);
+        Ok(())
+    } else {
+        Err(CoreCallFailure::AndroidContext)
+    }
 }
 
 fn database_lifecycle(path: &Path) -> Arc<DatabaseLifecycle> {
@@ -158,6 +187,8 @@ impl CoreClient {
             log_level: "info".to_owned(),
             log_format: "text".to_owned(),
         };
+        #[cfg(target_os = "android")]
+        ensure_android_context()?;
         let client = Client::open(config).map_err(CoreCallFailure::from)?;
         if lifecycle.generation.load(Ordering::SeqCst) != generation {
             client.shutdown_local().map_err(CoreCallFailure::from)?;

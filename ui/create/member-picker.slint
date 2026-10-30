@@ -1,4 +1,6 @@
 import { Theme } from "../theme.slint";
+import { FHSkeleton } from "../components.slint";
+import { IconCheck, IconSearch, IconX } from "../icons.slint";
 import { ScrollView } from "std-widgets.slint";
 
 export struct GroupMemberRow {
@@ -28,11 +30,11 @@ export component MemberPicker inherits VerticalLayout {
 
         for contact[index] in root.selected-contacts : Rectangle {
             height: 28px;
-            width: selected-name.preferred-width + 38px;
+            width: min(selected-name.preferred-width + 52px, parent.width);
             border-radius: 14px;
             border-width: 1px;
             border-color: Theme.accent;
-            background: Theme.surface;
+            background: Theme.accent.with-alpha(0.15);
             HorizontalLayout {
                 padding-left: 3px;
                 padding-right: 8px;
@@ -43,10 +45,10 @@ export component MemberPicker inherits VerticalLayout {
                     height: 20px;
                     border-radius: 10px;
                     background: Theme.hover;
-                    Text { text: contact.initial; color: Theme.foreground; font-size: 10px; horizontal-alignment: center; vertical-alignment: center; width: 100%; height: 100%; }
+                    Text { text: contact.initial; color: Theme.muted; font-size: 10px; horizontal-alignment: center; vertical-alignment: center; width: 100%; height: 100%; }
                 }
-                selected-name := Text { text: contact.name; color: Theme.foreground; font-size: 12px; overflow: elide; }
-                Text { text: "×"; color: Theme.muted; font-size: 14px; }
+                selected-name := Text { text: contact.name; color: Theme.foreground; font-size: 12px; min-width: 0px; overflow: elide; }
+                IconX { width: 14px; height: 14px; stroke: Theme.muted; }
             }
             TouchArea {
                 mouse-cursor: pointer;
@@ -62,13 +64,21 @@ export component MemberPicker inherits VerticalLayout {
         border-color: search-input.has-focus ? Theme.accent : Theme.border;
         background: Theme.background;
 
-        Text {
+        IconSearch {
+            width: 16px;
+            height: 16px;
             x: 12px;
-            width: 22px;
+            y: (parent.height - self.height) / 2;
+            stroke: Theme.muted;
+        }
+
+        if root.search-query.is-empty && search-input.preedit-text.is-empty : Text {
+            x: 36px;
+            width: parent.width - 48px;
             height: parent.height;
-            text: "⌕";
+            text: "Поиск по контактам";
             color: Theme.muted;
-            font-size: 18px;
+            font-size: 14px;
             vertical-alignment: center;
             accessible-role: none;
         }
@@ -96,8 +106,8 @@ export component MemberPicker inherits VerticalLayout {
                 padding: 8px;
                 spacing: 10px;
                 alignment: center;
-                Rectangle { width: 36px; height: 36px; border-radius: 18px; background: Theme.hover; }
-                Rectangle { height: 8px; width: 45%; border-radius: 4px; background: Theme.hover; }
+                FHSkeleton { width: 36px; height: 36px; corner-radius: 18px; }
+                FHSkeleton { height: 12px; width: 45%; }
             }
         }
     }
@@ -167,14 +177,13 @@ export component MemberPicker inherits VerticalLayout {
                             border-width: 1px;
                             border-color: contact.selected ? Theme.accent : Theme.border;
                             background: contact.selected ? Theme.accent : transparent;
-                            Text {
-                                text: contact.selected ? "✓" : "";
-                                color: Theme.accent-foreground;
-                                font-size: 12px;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                                width: 100%;
-                                height: 100%;
+                            if contact.selected : IconCheck {
+                                width: 14px;
+                                height: 14px;
+                                x: 2px;
+                                y: 2px;
+                                stroke: Theme.accent-foreground;
+                                stroke-width: 3px;
                             }
                         }
                     }

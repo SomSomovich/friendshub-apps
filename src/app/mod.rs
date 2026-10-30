@@ -170,8 +170,8 @@ fn same_event_session(previous: Option<&ActiveSession>, next: Option<&ActiveSess
 /// Navigate to a normalized app route, apply its top-level Slint state, and
 /// ask the feature controller to load data for the destination.
 pub fn navigate(ctx: &AppContext, requested_path: &str) {
-    let mut route = normalize_route(requested_path);
     let authenticated = ctx.active_session().is_some();
+    let mut route = normalize_route(requested_path, authenticated);
     // Local account cleanup must remain reachable after tombstoning the last
     // active account, including after a restart with unfinished cleanup.
     let local_accounts_route = route == "/app/settings/accounts";
@@ -244,13 +244,15 @@ pub fn navigate(ctx: &AppContext, requested_path: &str) {
     }
 }
 
-fn normalize_route(path: &str) -> String {
+fn normalize_route(path: &str, authenticated: bool) -> String {
     let (path_only, query) = match path.split_once('?') {
         Some((path_only, query)) => (path_only, Some(query)),
         None => (path, None),
     };
 
     let normalized = match path_only {
+        "/" if authenticated => "/app".to_owned(),
+        "/" => "/register".to_owned(),
         "dating" => "/app/dating".to_owned(),
         "calls" => "/app/calls".to_owned(),
         "settings" => "/app/settings".to_owned(),
@@ -277,7 +279,7 @@ fn normalize_route(path: &str) -> String {
 fn screen_for_route(route: &str) -> String {
     let route = route.split('?').next().unwrap_or(route);
     match route {
-        "/" => "landing".to_owned(),
+        "/" => "register".to_owned(),
         "/login" => "login".to_owned(),
         "/register" => "register".to_owned(),
         "/login/2fa" | "/two-factor" => "two_factor".to_owned(),
@@ -318,7 +320,7 @@ fn screen_for_route(route: &str) -> String {
 fn is_protected_route(route: &str) -> bool {
     !matches!(
         screen_for_route(route).as_str(),
-        "landing" | "login" | "register" | "two_factor" | "connect" | "invite"
+        "login" | "register" | "two_factor" | "connect" | "invite"
     )
 }
 

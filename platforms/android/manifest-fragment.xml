@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <provider
+            android:name="com.somuchsystem.friendshub.AttachmentProvider"
+            android:authorities="com.somuchsystem.friendshub.attachments"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <grant-uri-permission android:pathPrefix="/attachment/" />
+        </provider>
+    </application>
+</manifest>

@@ -1,35 +1,43 @@
 import { Theme } from "theme.slint";
 import { ConversationList, ConversationRow, FilterTab, FolderTab } from "conversation-list.slint";
+import { IconClock, IconHeart, IconMessageSquare, IconPhone, IconRefreshCw, IconSettings, IconUsers } from "icons.slint";
 
 component AppMenuItem inherits Rectangle {
     in property <string> label;
-    in property <string> icon;
     in property <string> action;
     callback selected(string);
 
     width: 100%;
-    height: 40px;
+    height: 36px;
     background: tap.has-hover ? Theme.hover : transparent;
     border-radius: 8px;
+    border-width: 2px;
+    border-color: transparent;
+    animate background { duration: 120ms; }
     accessible-role: button;
     accessible-label: root.label;
     accessible-action-default => { root.selected(root.action); }
     forward-focus: keyboard-scope;
 
-    HorizontalLayout {
-        padding-left: 12px;
-        padding-right: 12px;
-        spacing: 10px;
-        alignment: center;
-
-        Text {
-            text: root.icon;
-            color: Theme.muted;
-            font-size: 16px;
-            horizontal-alignment: center;
-            width: 20px;
-            accessible-role: none;
+    states [
+        focus when keyboard-scope.has-focus : {
+            root.border-color: Theme.accent;
         }
+    ]
+
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 10px;
+        cross-axis-alignment: center;
+
+        if root.action == "dating" : IconHeart { width: 18px; height: 18px; stroke: tap.has-hover ? Theme.foreground : Theme.muted; }
+        if root.action == "calls" : IconPhone { width: 18px; height: 18px; stroke: tap.has-hover ? Theme.foreground : Theme.muted; }
+        if root.action == "settings" : IconSettings { width: 18px; height: 18px; stroke: tap.has-hover ? Theme.foreground : Theme.muted; }
+        if root.action == "create-group" : IconUsers { width: 18px; height: 18px; stroke: tap.has-hover ? Theme.foreground : Theme.muted; }
+        if root.action == "temporary-room" : IconClock { width: 18px; height: 18px; stroke: tap.has-hover ? Theme.foreground : Theme.muted; }
+        if root.action == "create-channel" : IconMessageSquare { width: 18px; height: 18px; stroke: tap.has-hover ? Theme.foreground : Theme.muted; }
+        if root.action == "switch-account" : IconRefreshCw { width: 18px; height: 18px; stroke: tap.has-hover ? Theme.foreground : Theme.muted; }
 
         Text {
             text: root.label;
@@ -98,7 +106,7 @@ export component AppShell inherits Rectangle {
     callback language-selected(string);
 
     private property <bool> menu-open: false;
-    private property <length> menu-y: root.offline ? (root.width < 400px ? 96px : 88px) : 56px;
+    private property <length> menu-y: 65px + (root.offline ? (root.width < 400px ? 40px : 32px) : 0px);
 
     background: Theme.background;
 
@@ -106,29 +114,53 @@ export component AppShell inherits Rectangle {
         spacing: 0px;
 
         if root.offline : Rectangle {
-            height: root.width < 400px ? 40px : 32px;
-            background: Theme.danger;
+            height: root.width < 400px ? 40px : 36px;
+            background: Theme.surface;
 
-            Text {
-                text: root.language == "ru"
-                    ? "Соединение потеряно — сообщения отправятся позже."
-                    : "Connection lost — messages will be sent later.";
-                color: #ffffff;
-                font-size: 12px;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-                width: 100%;
-                height: 100%;
-                wrap: word-wrap;
+            Rectangle {
+                y: parent.height - 1px;
+                width: parent.width;
+                height: 1px;
+                background: Theme.border;
+            }
+
+            HorizontalLayout {
+                padding-left: 12px;
+                padding-right: 12px;
+                spacing: 8px;
+                cross-axis-alignment: center;
+
+                Text {
+                    text: "!";
+                    width: 16px;
+                    color: Theme.muted;
+                    font-size: 12px;
+                    font-weight: 600;
+                    horizontal-alignment: center;
+                    accessible-role: none;
+                }
+
+                Text {
+                    text: root.language == "ru"
+                        ? "Соединение потеряно — сообщения отправятся позже."
+                        : "Connection lost — messages will be sent later.";
+                    color: Theme.foreground;
+                    font-size: 12px;
+                    horizontal-stretch: 1;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
             }
         }
 
-        HorizontalLayout {
-            spacing: 0px;
+        Rectangle {
             vertical-stretch: 1;
 
             ConversationList {
-                width: root.width >= 768px ? 320px : root.width;
+                x: 0px;
+                y: 0px;
+                width: root.width >= 768px ? 320px : (root.show-content ? 0px : root.width);
+                height: parent.height;
                 visible: root.width >= 768px || !root.show-content;
 
                 username: root.username;
@@ -165,8 +197,19 @@ export component AppShell inherits Rectangle {
                 language-selected(code) => { root.language-selected(code); }
             }
 
+            if root.width >= 768px : Rectangle {
+                x: 319px;
+                y: 0px;
+                width: 1px;
+                height: parent.height;
+                background: Theme.border;
+            }
+
             Rectangle {
-                horizontal-stretch: 1;
+                x: root.width >= 768px ? 320px : 0px;
+                y: 0px;
+                width: root.width >= 768px ? root.width - 320px : (root.show-content ? root.width : 0px);
+                height: parent.height;
                 visible: root.width >= 768px || root.show-content;
                 background: Theme.background;
                 clip: true;
@@ -188,11 +231,14 @@ export component AppShell inherits Rectangle {
         x: 12px;
         y: root.menu-y;
         width: min(root.width - 24px, 268px);
-        height: menu-content.preferred-height + 16px;
+        height: menu-content.preferred-height;
         background: Theme.surface;
         border-width: 1px;
         border-color: Theme.border;
         border-radius: 12px;
+        drop-shadow-color: #66000000;
+        drop-shadow-blur: 24px;
+        drop-shadow-offset-y: 6px;
         clip: true;
 
         menu-content := VerticalLayout {
@@ -201,49 +247,42 @@ export component AppShell inherits Rectangle {
 
             AppMenuItem {
                 label: root.language == "ru" ? "Поиск знакомств" : "Discover people";
-                icon: "♡";
                 action: "dating";
                 selected(action) => { root.menu-open = false; root.navigation-requested(action); }
             }
 
             AppMenuItem {
                 label: root.language == "ru" ? "Звонки" : "Calls";
-                icon: "☎";
                 action: "calls";
                 selected(action) => { root.menu-open = false; root.navigation-requested(action); }
             }
 
             AppMenuItem {
                 label: root.language == "ru" ? "Настройки" : "Settings";
-                icon: "⚙";
                 action: "settings";
                 selected(action) => { root.menu-open = false; root.navigation-requested(action); }
             }
 
             AppMenuItem {
                 label: root.language == "ru" ? "Создать группу" : "Create group";
-                icon: "♧";
                 action: "create-group";
                 selected(action) => { root.menu-open = false; root.navigation-requested(action); }
             }
 
             AppMenuItem {
                 label: root.language == "ru" ? "Создать временную комнату" : "Create temporary room";
-                icon: "◷";
                 action: "temporary-room";
                 selected(action) => { root.menu-open = false; root.temporary-room-requested(); }
             }
 
             AppMenuItem {
                 label: root.language == "ru" ? "Создать канал" : "Create channel";
-                icon: "▤";
                 action: "create-channel";
                 selected(action) => { root.menu-open = false; root.navigation-requested(action); }
             }
 
             AppMenuItem {
                 label: root.language == "ru" ? "Сменить аккаунт" : "Switch account";
-                icon: "⇄";
                 action: "switch-account";
                 selected(action) => { root.menu-open = false; root.account-switch-requested(); }
             }

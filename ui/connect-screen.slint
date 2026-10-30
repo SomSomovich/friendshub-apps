@@ -1,35 +1,9 @@
 import { Theme } from "theme.slint";
-import { FHPrimaryButton } from "components.slint";
+import { FHSpinner, FHPrimaryButton } from "components.slint";
+import { IconCheck } from "icons.slint";
 import { ScrollView } from "std-widgets.slint";
 
-export enum ConnectStepState { pending, active, done }
-
-component ConnectSpinner inherits Path {
-    in property <color> tint: Theme.accent;
-    private property <angle> start-angle: 360deg * mod(animation-tick(), 1s) / 1s;
-
-    width: 14px;
-    height: 14px;
-    viewbox-width: 16;
-    viewbox-height: 16;
-    stroke: root.tint;
-    stroke-width: 1.5px;
-    fill: transparent;
-    accessible-role: none;
-
-    MoveTo {
-        x: 8 + 6 * cos(root.start-angle);
-        y: 8 + 6 * sin(root.start-angle);
-    }
-    ArcTo {
-        radius-x: 6;
-        radius-y: 6;
-        x: 8 + 6 * cos(root.start-angle + 270deg);
-        y: 8 + 6 * sin(root.start-angle + 270deg);
-        sweep: true;
-        large-arc: true;
-    }
-}
+export enum ConnectStepState { pending, active, done, failed }
 
 component ConnectStep inherits HorizontalLayout {
     in property <string> label;
@@ -44,21 +18,31 @@ component ConnectStep inherits HorizontalLayout {
         border-width: 1px;
         border-color: root.state == ConnectStepState.done
             ? root.done-color
+            : root.state == ConnectStepState.failed ? Theme.danger
             : root.state == ConnectStepState.active ? Theme.accent : Theme.border;
         border-radius: 12px;
         background: transparent;
 
-        if root.state == ConnectStepState.done : Text {
-            text: "✓";
-            color: root.done-color;
+        if root.state == ConnectStepState.done : IconCheck {
+            width: 14px;
+            height: 14px;
+            x: 4px;
+            y: 4px;
+            stroke: root.done-color;
+            stroke-width: 3px;
+        }
+        if root.state == ConnectStepState.failed : Text {
+            text: "!";
+            color: Theme.danger;
             font-size: 14px;
+            font-weight: 700;
             width: 100%;
             height: 100%;
             horizontal-alignment: center;
             vertical-alignment: center;
             accessible-role: none;
         }
-        if root.state == ConnectStepState.active : ConnectSpinner {
+        if root.state == ConnectStepState.active : FHSpinner {
             x: 5px;
             y: 5px;
         }
@@ -74,19 +58,22 @@ component ConnectStep inherits HorizontalLayout {
 
     Text {
         text: root.label;
-        color: root.state == ConnectStepState.pending ? Theme.muted : Theme.foreground;
+        color: root.state == ConnectStepState.failed ? Theme.danger
+            : root.state == ConnectStepState.pending ? Theme.muted : Theme.foreground;
         font-size: 14px;
         vertical-alignment: center;
         horizontal-stretch: 1;
         wrap: word-wrap;
         accessible-label: root.label + (root.state == ConnectStepState.done
             ? ": готово"
+            : root.state == ConnectStepState.failed ? ": ошибка"
             : root.state == ConnectStepState.active ? ": выполняется" : ": ожидает");
     }
 }
 
 component ConnectSecondaryButton inherits Rectangle {
     in property <bool> enabled: true;
+    in property <string> language: "ru";
     callback clicked();
 
     height: 40px;
@@ -97,7 +84,7 @@ component ConnectSecondaryButton inherits Rectangle {
     border-radius: 8px;
     opacity: root.enabled ? 1 : 0.5;
     accessible-role: button;
-    accessible-label: "Продолжить без сети";
+    accessible-label: root.language == "ru" ? "Продолжить без сети" : "Continue offline";
     accessible-enabled: root.enabled;
     accessible-action-default => { if root.enabled { root.clicked(); } }
     forward-focus: key-scope;
@@ -110,7 +97,7 @@ component ConnectSecondaryButton inherits Rectangle {
     ]
 
     Text {
-        text: "Продолжить без сети";
+        text: root.language == "ru" ? "Продолжить без сети" : "Continue offline";
         color: Theme.foreground;
         font-size: 14px;
         font-weight: 600;
@@ -146,6 +133,8 @@ export component ConnectScreen inherits Rectangle {
     in property <ConnectStepState> socket-state: pending;
     in property <string> error-text: "";
     in property <bool> busy: false;
+    in property <bool> offline-available: false;
+    in property <string> language: "ru";
 
     callback retry-requested();
     callback continue-offline-requested();
@@ -181,7 +170,7 @@ export component ConnectScreen inherits Rectangle {
                         spacing: 4px;
 
                         Text {
-                            text: "Подготовка устройства";
+                            text: root.language == "ru" ? "Подготовка устройства" : "Preparing this device";
                             color: Theme.foreground;
                             font-size: 18px;
                             font-weight: 600;
@@ -190,8 +179,8 @@ export component ConnectScreen inherits Rectangle {
                         }
                         Text {
                             text: root.username.is-empty
-                                ? "Аккаунт подключается к этому устройству."
-                                : "Аккаунт \{root.username} подключается к этому устройству.";
+                                ? (root.language == "ru" ? "Аккаунт подключается к этому устройству." : "The account is connecting to this device.")
+                                : (root.language == "ru" ? "Аккаунт \{root.username} подключается к этому устройству." : "Account \{root.username} is connecting to this device.");
                             color: Theme.muted;
                             font-size: 12px;
                             wrap: word-wrap;
@@ -201,15 +190,15 @@ export component ConnectScreen inherits Rectangle {
 
                     VerticalLayout {
                         spacing: 12px;
-                        ConnectStep { label: "Ключи устройства"; state: root.keys-state; }
-                        ConnectStep { label: "Соединение"; state: root.socket-state; }
+                        ConnectStep { label: root.language == "ru" ? "Ключи устройства" : "Device keys"; state: root.keys-state; }
+                        ConnectStep { label: root.language == "ru" ? "Соединение" : "Connection"; state: root.socket-state; }
                     }
 
                     if root.error-text.is-empty : HorizontalLayout {
                         spacing: 8px;
-                        ConnectSpinner { tint: Theme.muted; }
+                        FHSpinner { tint: Theme.muted; }
                         Text {
-                            text: "Это может занять до минуты при первом входе.";
+                            text: root.language == "ru" ? "Это может занять до минуты при первом входе." : "This can take up to a minute on first sign-in.";
                             color: Theme.muted;
                             font-size: 12px;
                             wrap: word-wrap;
@@ -221,7 +210,7 @@ export component ConnectScreen inherits Rectangle {
                         spacing: 12px;
 
                         Text {
-                            text: "Не удалось подготовить устройство.";
+                            text: root.language == "ru" ? "Не удалось подготовить устройство." : "This device could not be prepared.";
                             color: Theme.danger;
                             font-size: 12px;
                             width: 100%;
@@ -238,12 +227,14 @@ export component ConnectScreen inherits Rectangle {
                         if card.width >= 360px : HorizontalLayout {
                             spacing: 8px;
                             FHPrimaryButton {
-                                text: "Повторить";
+                    block: true;
+                                text: root.language == "ru" ? "Повторить" : "Retry";
                                 enabled: !root.busy;
                                 busy: root.busy;
                                 clicked => { root.retry-requested(); }
                             }
-                            ConnectSecondaryButton {
+                            if root.offline-available : ConnectSecondaryButton {
+                                language: root.language;
                                 min-width: 178px;
                                 enabled: !root.busy;
                                 clicked => { root.continue-offline-requested(); }
@@ -252,12 +243,14 @@ export component ConnectScreen inherits Rectangle {
                         if card.width < 360px : VerticalLayout {
                             spacing: 8px;
                             FHPrimaryButton {
-                                text: "Повторить";
+                    block: true;
+                                text: root.language == "ru" ? "Повторить" : "Retry";
                                 enabled: !root.busy;
                                 busy: root.busy;
                                 clicked => { root.retry-requested(); }
                             }
-                            ConnectSecondaryButton {
+                            if root.offline-available : ConnectSecondaryButton {
+                                language: root.language;
                                 enabled: !root.busy;
                                 clicked => { root.continue-offline-requested(); }
                             }

@@ -1,5 +1,6 @@
 import { Theme } from "../theme.slint";
-import { FHPrimaryButton, FHTextButton } from "../components.slint";
+import { FHEmptyState, FHIconButton, FHSecondaryButton, FHScreenHeader, FHSkeleton, FHPrimaryButton } from "../components.slint";
+import { IconPhone, IconTrash2 } from "../icons.slint";
 import { ScrollView } from "std-widgets.slint";
 
 export struct CallHistoryRow {
@@ -36,20 +37,10 @@ export component CallHistoryScreen inherits Rectangle {
     VerticalLayout {
         spacing: 0px;
 
-        HorizontalLayout {
-            height: 52px;
-            padding-left: 12px;
-            padding-right: 16px;
-            spacing: 8px;
-            alignment: center;
-            FHTextButton {
-                text: "‹";
-                enabled: true;
-                clicked => { root.back-requested(); }
-            }
-            Text { text: "Звонки"; color: Theme.foreground; font-size: 14px; font-weight: 600; vertical-alignment: center; }
+        FHScreenHeader {
+            title: "Звонки";
+            back-requested => { root.back-requested(); }
         }
-        Rectangle { height: 1px; background: Theme.border; }
 
         ScrollView {
             vertical-stretch: 1;
@@ -66,15 +57,20 @@ export component CallHistoryScreen inherits Rectangle {
 
                     HorizontalLayout {
                         spacing: 8px;
+                        alignment: end;
 
-                        FHTextButton {
-                            text: root.loading ? "Обновление…" : "Обновить";
+                        FHSecondaryButton {
+                            text: "Обновить";
+                            height: 32px;
                             enabled: !root.busy && !root.loading;
+                            busy: root.loading;
                             clicked => { root.refresh-requested(); }
                         }
                         Rectangle { horizontal-stretch: 1; background: transparent; }
-                        FHTextButton {
+                        FHSecondaryButton {
                             text: "Очистить историю";
+                            height: 32px;
+                            danger: true;
                             enabled: !root.busy && root.has-calls;
                             clicked => {
                                 root.confirm-clear-all = true;
@@ -100,7 +96,7 @@ export component CallHistoryScreen inherits Rectangle {
                             padding: 12px;
                             spacing: 8px;
                             Text { text: root.error-text; color: Theme.danger; font-size: 14px; wrap: word-wrap; }
-                            FHTextButton { text: "Повторить"; clicked => { root.retry-requested(); } }
+                            FHSecondaryButton { text: "Повторить"; height: 32px; clicked => { root.retry-requested(); } }
                         }
                     }
                     if root.error-text.is-empty && root.loading : VerticalLayout {
@@ -115,22 +111,21 @@ export component CallHistoryScreen inherits Rectangle {
                                 padding: 12px;
                                 spacing: 12px;
                                 alignment: center;
-                                Rectangle { width: 40px; height: 40px; border-radius: 20px; background: Theme.hover; }
+                                FHSkeleton { width: 40px; height: 40px; corner-radius: 20px; }
                                 VerticalLayout {
+                                    horizontal-stretch: 1;
                                     spacing: 8px;
-                                    Rectangle { width: 55%; height: 8px; border-radius: 4px; background: Theme.hover; }
-                                    Rectangle { width: 72%; height: 6px; border-radius: 3px; background: Theme.hover; }
+                                    FHSkeleton { width: 55%; height: 12px; }
+                                    FHSkeleton { width: 72%; height: 10px; }
                                 }
                             }
                         }
                     }
-                    if root.error-text.is-empty && !root.loading && root.calls.length == 0 : VerticalLayout {
-                        height: 180px;
-                        alignment: center;
-                        cross-axis-alignment: center;
-                        spacing: 8px;
-                        Text { text: "☎"; color: Theme.muted; font-size: 28px; horizontal-alignment: center; }
-                        Text { text: "Звонков пока нет."; color: Theme.foreground; font-size: 14px; horizontal-alignment: center; }
+                    if root.error-text.is-empty && !root.loading && root.calls.length == 0 : FHEmptyState {
+                        title: "Звонков пока нет";
+                        description: "Здесь появятся входящие и исходящие звонки.";
+
+                        IconPhone { width: 32px; height: 32px; stroke: Theme.muted; }
                     }
                     if root.error-text.is-empty && !root.loading && root.calls.length > 0 : VerticalLayout {
                         spacing: 8px;
@@ -144,55 +139,71 @@ export component CallHistoryScreen inherits Rectangle {
                             HorizontalLayout {
                                 padding: 12px;
                                 spacing: 8px;
-                                alignment: center;
+                                cross-axis-alignment: center;
 
-                                HorizontalLayout {
-                                    spacing: 12px;
+                                Rectangle {
                                     horizontal-stretch: 1;
-                                    Rectangle {
-                                        width: 40px;
-                                        height: 40px;
-                                        border-radius: 20px;
-                                        background: Theme.hover;
-                                        Text { text: call.peer-initial; color: Theme.foreground; font-size: 16px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; width: 100%; height: 100%; }
+                                    accessible-role: button;
+                                    accessible-label: "Открыть профиль \{call.peer-name}";
+                                    accessible-action-default => { root.profile-requested(call.peer-account-id); }
+                                    forward-focus: profile-keyboard;
+
+                                    HorizontalLayout {
+                                        spacing: 12px;
+                                        Rectangle {
+                                            width: 40px;
+                                            height: 40px;
+                                            border-radius: 20px;
+                                            background: Theme.hover;
+                                            Text { text: call.peer-initial; color: Theme.muted; font-size: 16px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; width: 100%; height: 100%; }
+                                        }
+                                        VerticalLayout {
+                                            spacing: 3px;
+                                            horizontal-stretch: 1;
+                                            Text { text: call.peer-name; color: Theme.foreground; font-size: 14px; overflow: elide; }
+                                            Text { text: call.direction-status; color: Theme.muted; font-size: 12px; overflow: elide; }
+                                            Text {
+                                                text: call.completed && !call.duration.is-empty ? "\{call.started-at} · \{call.duration}" : call.started-at;
+                                                color: Theme.muted;
+                                                font-size: 12px;
+                                                overflow: elide;
+                                            }
+                                        }
                                     }
-                                    VerticalLayout {
-                                        spacing: 3px;
-                                        horizontal-stretch: 1;
-                                        Text { text: call.peer-name; color: Theme.foreground; font-size: 14px; overflow: elide; }
-                                        Text { text: call.direction-status; color: Theme.muted; font-size: 12px; overflow: elide; }
-                                        Text {
-                                            text: call.completed && !call.duration.is-empty ? "\{call.started-at} · \{call.duration}" : call.started-at;
-                                            color: Theme.muted;
-                                            font-size: 12px;
-                                            overflow: elide;
+                                    TouchArea { mouse-cursor: pointer; clicked => { root.profile-requested(call.peer-account-id); } }
+                                    profile-keyboard := FocusScope {
+                                        x: 0px;
+                                        width: 0px;
+                                        key-pressed(event) => {
+                                            if event.text == Key.Space || event.text == Key.Return {
+                                                root.profile-requested(call.peer-account-id);
+                                                return accept;
+                                            }
+                                            return reject;
                                         }
                                     }
                                 }
 
-                                FHTextButton {
-                                    text: "☎";
+                                FHIconButton {
+                                    button-size: 36px;
+                                    label: "Позвонить \{call.peer-name}";
                                     enabled: !root.busy;
                                     clicked => { root.audio-call-requested(call.peer-account-id); }
+
+                                    IconPhone { width: 18px; height: 18px; x: 9px; y: 9px; stroke: Theme.muted; }
                                 }
-                                FHTextButton {
-                                    text: "Удалить";
+                                FHIconButton {
+                                    button-size: 36px;
+                                    label: "Удалить запись";
                                     enabled: !root.busy;
                                     clicked => {
                                         root.confirm-clear-all = false;
                                         root.confirm-call-id = call.id;
                                         root.confirmation-open = true;
                                     }
-                                }
-                            }
 
-                            TouchArea {
-                                x: 0px;
-                                y: 0px;
-                                width: parent.width - 144px;
-                                height: parent.height;
-                                mouse-cursor: pointer;
-                                clicked => { root.profile-requested(call.peer-account-id); }
+                                    IconTrash2 { width: 18px; height: 18px; x: 9px; y: 9px; stroke: Theme.danger; }
+                                }
                             }
                         }
                     }
@@ -207,6 +218,7 @@ export component CallHistoryScreen inherits Rectangle {
         width: parent.width;
         height: parent.height;
         background: #00000080;
+        TouchArea { width: 100%; height: 100%; }
 
         Rectangle {
             width: min(parent.width - 32px, 420px);
@@ -236,13 +248,15 @@ export component CallHistoryScreen inherits Rectangle {
                 HorizontalLayout {
                     alignment: end;
                     spacing: 8px;
-                    FHTextButton {
+                    FHSecondaryButton {
                         text: "Отмена";
+                        height: 36px;
                         enabled: !root.busy;
                         clicked => { root.confirmation-open = false; }
                     }
                     FHPrimaryButton {
-                        text: root.busy ? "Удаление…" : "Удалить";
+                        danger: true;
+                        text: "Удалить";
                         enabled: !root.busy;
                         busy: root.busy;
                         clicked => {

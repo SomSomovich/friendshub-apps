@@ -1,6 +1,5 @@
 import { Theme } from "../theme.slint";
-import { FHInput } from "../components.slint";
-import { TextEdit } from "std-widgets.slint";
+import { FHInput, FHTextArea } from "../components.slint";
 
 export component CreateInfoStep inherits Rectangle {
     in property <string> card-title;
@@ -17,7 +16,6 @@ export component CreateInfoStep inherits Rectangle {
     background: transparent;
 
     VerticalLayout {
-        padding: 12px;
         spacing: 12px;
 
         Rectangle {
@@ -34,7 +32,7 @@ export component CreateInfoStep inherits Rectangle {
                     text: root.card-title;
                     color: Theme.foreground;
                     font-size: 14px;
-                    font-weight: 600;
+                    font-weight: 500;
                 }
 
                 FHInput {
@@ -46,38 +44,12 @@ export component CreateInfoStep inherits Rectangle {
                     error: "";
                 }
 
-                VerticalLayout {
-                    spacing: 6px;
-                    Text {
-                        text: "Описание";
-                        color: Theme.foreground;
-                        font-size: 14px;
-                    }
-                    Text {
-                        text: root.description-hint;
-                        color: Theme.muted;
-                        font-size: 12px;
-                        wrap: word-wrap;
-                    }
-                    Rectangle {
-                        height: 96px;
-                        border-radius: 8px;
-                        border-width: 1px;
-                        border-color: description-input.has-focus ? Theme.accent : Theme.border;
-                        background: Theme.background;
-                        clip: true;
-
-                        description-input := TextEdit {
-                            x: 10px;
-                            y: 8px;
-                            width: parent.width - 20px;
-                            height: parent.height - 16px;
-                            text <=> root.description-value;
-                            placeholder-text: "";
-                            wrap: word-wrap;
-                            font-size: 14px;
-                        }
-                    }
+                FHTextArea {
+                    label: "Описание";
+                    placeholder: "";
+                    value <=> root.description-value;
+                    helper: root.description-hint;
+                    area-height: 96px;
                 }
 
                 FHInput {
@@ -93,8 +65,9 @@ export component CreateInfoStep inherits Rectangle {
                     spacing: 4px;
                     Text {
                         text: "Доступ";
-                        color: Theme.foreground;
-                        font-size: 14px;
+                        color: Theme.muted;
+                        font-size: 12px;
+                        font-weight: 500;
                     }
 
                     for visibility[index] in [false, true]: Rectangle {
@@ -108,28 +81,31 @@ export component CreateInfoStep inherits Rectangle {
 
                         HorizontalLayout {
                             padding-left: 8px;
+                            padding-right: 8px;
                             spacing: 10px;
-                            alignment: center;
+                            alignment: start;
+                            cross-axis-alignment: start;
 
                             Rectangle {
-                                width: 16px;
-                                height: 16px;
-                                border-radius: 8px;
+                                width: 18px;
+                                height: 18px;
+                                border-radius: 9px;
                                 border-width: 1px;
                                 border-color: root.is-public == visibility ? Theme.accent : Theme.border;
-                                background: transparent;
+                                background: root.is-public == visibility ? Theme.accent : transparent;
                                 Rectangle {
-                                    x: 4px;
-                                    y: 4px;
+                                    x: 5px;
+                                    y: 5px;
                                     width: 8px;
                                     height: 8px;
                                     border-radius: 4px;
-                                    background: root.is-public == visibility ? Theme.accent : transparent;
+                                    background: root.is-public == visibility ? Theme.accent-foreground : transparent;
                                 }
                             }
 
                             VerticalLayout {
                                 spacing: 2px;
+                                horizontal-stretch: 1;
                                 Text {
                                     text: visibility ? "Публичный" : "Приватный";
                                     color: Theme.foreground;

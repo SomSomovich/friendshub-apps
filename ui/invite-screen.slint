@@ -1,11 +1,13 @@
 import { Theme } from "theme.slint";
-import { FHPrimaryButton } from "components.slint";
+import { FHSecondaryButton, FHSpinner } from "components.slint";
+import { IconUserRoundPlus } from "icons.slint";
 
 export component InviteScreen inherits Rectangle {
     in property <string> invite-token;
     in property <bool> failed: false;
     in property <bool> sync-failed: false;
     in property <bool> busy: false;
+    in property <string> language: "ru";
 
     callback join-requested(string);
     callback retry-requested();
@@ -29,24 +31,17 @@ export component InviteScreen inherits Rectangle {
             alignment: center;
             spacing: 12px;
 
-            Rectangle {
-                width: 24px;
-                height: 24px;
-                border-width: 3px;
-                border-color: Theme.border;
-                border-radius: 12px;
-                Text { text: "…"; color: Theme.muted; font-size: 14px; horizontal-alignment: center; vertical-alignment: center; width: 100%; height: 100%; }
-            }
-            Text { text: "Присоединяемся…"; color: Theme.muted; font-size: 14px; horizontal-alignment: center; }
+            FHSpinner { size: 24px; tint: Theme.muted; }
+            Text { text: root.language == "ru" ? "Присоединяемся…" : "Joining…"; color: Theme.muted; font-size: 14px; horizontal-alignment: center; }
         }
 
         if root.failed || root.sync-failed : VerticalLayout {
             alignment: center;
             spacing: 8px;
 
-            Text { text: "♙"; color: Theme.muted; font-size: 32px; horizontal-alignment: center; }
+            IconUserRoundPlus { width: 32px; height: 32px; stroke: Theme.muted; }
             Text {
-                text: root.sync-failed ? "Вы вступили, но список чатов не обновился" : "Приглашение не сработало";
+                text: root.sync-failed ? (root.language == "ru" ? "Вы вступили, но список чатов не обновился" : "You joined, but the chat list did not refresh") : (root.language == "ru" ? "Приглашение не сработало" : "The invitation did not work");
                 color: Theme.foreground;
                 font-size: 14px;
                 font-weight: 500;
@@ -54,14 +49,15 @@ export component InviteScreen inherits Rectangle {
                 wrap: word-wrap;
             }
             Text {
-                text: root.sync-failed ? "Проверьте подключение и повторите загрузку чата перед открытием." : "Ссылка могла быть отозвана или уже использована.";
+                text: root.sync-failed ? (root.language == "ru" ? "Проверьте подключение и повторите загрузку чата перед открытием." : "Check your connection and retry loading the chat before opening it.") : (root.language == "ru" ? "Ссылка могла быть отозвана или уже использована." : "The link may have been revoked or already used.");
                 color: Theme.muted;
                 font-size: 12px;
                 horizontal-alignment: center;
                 wrap: word-wrap;
             }
-            FHPrimaryButton {
-                text: root.sync-failed ? "Повторить" : "К списку чатов";
+            FHSecondaryButton {
+                block: true;
+                text: root.sync-failed ? (root.language == "ru" ? "Повторить" : "Retry") : (root.language == "ru" ? "К списку чатов" : "Back to chats");
                 enabled: !root.busy;
                 busy: root.busy;
                 clicked => {

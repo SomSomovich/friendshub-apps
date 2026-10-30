@@ -90,28 +90,28 @@ pub fn permission_state() -> PermissionState {
 /// The result is asynchronous. Callers must keep showing a pending state until
 /// a later `permission_state` call confirms the grant or denial.
 pub fn request_permission() -> Result<RequestOutcome, NotificationError> {
-    #[cfg(target_os = "android")]
+    #[cfg(all(target_os = "android", feature = "native-clipboard"))]
     {
-        #[cfg(feature = "native-clipboard")]
-        {
-            return android::request_permission();
-        }
+        return android::request_permission();
     }
 
-    Err(NotificationError::Unsupported)
+    #[cfg(not(all(target_os = "android", feature = "native-clipboard")))]
+    {
+        Err(NotificationError::Unsupported)
+    }
 }
 
 /// Open this app's notification settings when the platform launcher supports it.
 pub fn open_system_settings() -> Result<(), NotificationError> {
-    #[cfg(target_os = "android")]
+    #[cfg(all(target_os = "android", feature = "native-clipboard"))]
     {
-        #[cfg(feature = "native-clipboard")]
-        {
-            return android::open_system_settings();
-        }
+        return android::open_system_settings();
     }
 
-    Err(NotificationError::Unsupported)
+    #[cfg(not(all(target_os = "android", feature = "native-clipboard")))]
+    {
+        Err(NotificationError::Unsupported)
+    }
 }
 
 /// Read Android's RECORD_AUDIO runtime permission without assuming a grant.
@@ -137,29 +137,29 @@ pub fn microphone_permission_state() -> MicrophonePermissionState {
 
 /// Request Android microphone access. Call from the Slint/Activity thread.
 pub fn request_microphone_permission() -> Result<MicrophoneRequestOutcome, NotificationError> {
-    #[cfg(target_os = "android")]
+    #[cfg(all(target_os = "android", feature = "native-clipboard"))]
     {
-        #[cfg(feature = "native-clipboard")]
-        {
-            return android::request_microphone_permission();
-        }
+        return android::request_microphone_permission();
     }
 
-    Err(NotificationError::Unsupported)
+    #[cfg(not(all(target_os = "android", feature = "native-clipboard")))]
+    {
+        Err(NotificationError::Unsupported)
+    }
 }
 
 /// Open Android app settings so the user can enable a previously denied
 /// microphone permission.
 pub fn open_microphone_settings() -> Result<(), NotificationError> {
-    #[cfg(target_os = "android")]
+    #[cfg(all(target_os = "android", feature = "native-clipboard"))]
     {
-        #[cfg(feature = "native-clipboard")]
-        {
-            return android::open_microphone_settings();
-        }
+        return android::open_microphone_settings();
     }
 
-    Err(NotificationError::Unsupported)
+    #[cfg(not(all(target_os = "android", feature = "native-clipboard")))]
+    {
+        Err(NotificationError::Unsupported)
+    }
 }
 
 /// Initialize the Android activity bridge after Slint has initialized its
@@ -191,7 +191,6 @@ mod android {
     use std::sync::{Mutex, OnceLock};
 
     use jni::JavaVM;
-    use jni::errors::Error as JniError;
     use jni::objects::{GlobalRef, JObject, JValue};
 
     use super::{

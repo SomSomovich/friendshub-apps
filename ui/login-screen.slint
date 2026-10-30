@@ -2,10 +2,12 @@ import { Theme } from "theme.slint";
 import { FHInput, FHPrimaryButton, FHTextButton } from "components.slint";
 
 export component LoginScreen inherits Rectangle {
+    in property <string> language: "ru";
     in-out property <string> fh-number;
     in-out property <string> password;
     in property <string> error-text: "";
     in property <bool> busy: false;
+    in property <bool> authenticated: false;
 
     callback login-requested(string, string);
     callback register-requested();
@@ -35,24 +37,28 @@ export component LoginScreen inherits Rectangle {
                 alignment: start;
 
                 Text {
-                    text: "Вход";
+                    text: root.language == "ru" ? "Вход" : "Sign in";
                     color: Theme.foreground;
                     font-size: 18px;
                     font-weight: 600;
                 }
 
                 FHInput {
-                    label: "FH-номер";
+                    language: root.language;
+                    label: root.language == "ru" ? "FH-номер" : "FH number";
                     placeholder: "FH1234567";
                     value <=> root.fh-number;
+                    enabled: !root.busy;
                     password: false;
                     password-visible: false;
                     error: "";
                 }
 
                 FHInput {
-                    label: "Пароль";
+                    language: root.language;
+                    label: root.language == "ru" ? "Пароль" : "Password";
                     value <=> root.password;
+                    enabled: !root.busy;
                     password: true;
                     password-visible <=> root.password-visible;
                     error: "";
@@ -66,7 +72,9 @@ export component LoginScreen inherits Rectangle {
                 }
 
                 FHPrimaryButton {
-                    text: root.busy ? "Вход…" : "Войти";
+                    block: true;
+                    busy: root.busy;
+                    text: root.language == "ru" ? "Войти" : "Sign in";
                     enabled: !root.busy;
                     clicked => {
                         root.login-requested(root.fh-number, root.password);
@@ -81,8 +89,8 @@ export component LoginScreen inherits Rectangle {
                         alignment: center;
 
                         FHTextButton {
-                            text: "Создать аккаунт";
-                            enabled: true;
+                            text: root.language == "ru" ? "Создать аккаунт" : "Create an account";
+                            enabled: !root.busy;
                             clicked => { root.register-requested(); }
                         }
                     }
@@ -90,18 +98,18 @@ export component LoginScreen inherits Rectangle {
                     HorizontalLayout {
                         alignment: center;
                         FHTextButton {
-                            text: "Локальные аккаунты";
+                            text: root.language == "ru" ? "Локальные аккаунты" : "Local accounts";
                             enabled: !root.busy;
                             clicked => { root.local-accounts-requested(); }
                         }
                     }
 
-                    HorizontalLayout {
+                    if root.authenticated : HorizontalLayout {
                         alignment: center;
 
                         FHTextButton {
-                            text: "Назад";
-                            enabled: true;
+                            text: root.language == "ru" ? "Назад" : "Back";
+                            enabled: !root.busy;
                             clicked => { root.back-requested(); }
                         }
                     }

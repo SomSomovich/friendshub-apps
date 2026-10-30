@@ -1,7 +1,10 @@
 import { Theme } from "theme.slint";
 import { FHPrimaryButton } from "components.slint";
+import { IconCompass } from "icons.slint";
 
 export component NotFoundScreen inherits Rectangle {
+    in property <string> language: "ru";
+
     callback home-requested();
 
     background: Theme.background;
@@ -10,11 +13,11 @@ export component NotFoundScreen inherits Rectangle {
         padding: 24px;
         alignment: center;
         cross-axis-alignment: center;
-        spacing: 12px;
+        spacing: 16px;
 
-        Text { text: "◉"; color: Theme.accent; font-size: 40px; horizontal-alignment: center; }
-        Text { text: "Страница не найдена"; color: Theme.foreground; font-size: 18px; font-weight: 600; horizontal-alignment: center; }
-        Text { text: "Такого адреса не существует."; color: Theme.muted; font-size: 14px; horizontal-alignment: center; wrap: word-wrap; }
-        FHPrimaryButton { text: "На главную"; clicked => { root.home-requested(); } }
+        IconCompass { width: 40px; height: 40px; stroke: Theme.accent; stroke-width: 1.5px; }
+        Text { text: root.language == "ru" ? "Страница не найдена" : "Page not found"; color: Theme.foreground; font-size: 18px; font-weight: 600; horizontal-alignment: center; }
+        Text { text: root.language == "ru" ? "Такого адреса не существует." : "This address does not exist."; color: Theme.muted; font-size: 14px; horizontal-alignment: center; wrap: word-wrap; }
+        FHPrimaryButton { height: 44px; border-radius: 12px; text: root.language == "ru" ? "На главную" : "Go home"; clicked => { root.home-requested(); } }
     }
 }

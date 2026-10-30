@@ -1,10 +1,11 @@
 import { Theme } from "../theme.slint";
-import { FHPrimaryButton, FHTextButton } from "../components.slint";
+import { FHSecondaryButton, FHPrimaryButton } from "../components.slint";
 import { SettingsCard, SettingsDivider, SettingsFrame } from "common.slint";
 
 export component AboutSettingsScreen inherits Rectangle {
+    in property <string> language: "ru";
     in property <string> app-version: "";
-    in property <string> repository-url: "https://github.com/SomSomovich/friendshubWEB";
+    in property <string> repository-url: "https://github.com/SomSomovich/friendshub-apps";
     in property <string> native-releases-url: "https://github.com/SomSomovich/friendshub-apps/releases";
     in property <string> core-repository-url: "https://github.com/SomSomovich/friendshub-core";
     in property <bool> updater-supported: false;
@@ -26,17 +27,18 @@ export component AboutSettingsScreen inherits Rectangle {
     background: Theme.background;
 
     SettingsFrame {
-        title: "О приложении";
+        language: root.language;
+        title: (root.language == "ru" ? "О приложении" : "About");
         back-requested => { root.back-requested(); }
 
         SettingsCard {
-            title: "Приложение";
+            title: (root.language == "ru" ? "Приложение" : "Application");
 
             HorizontalLayout {
                 spacing: 8px;
                 alignment: center;
                 Text {
-                    text: "Версия";
+                    text: (root.language == "ru" ? "Версия" : "Version");
                     color: Theme.foreground;
                     font-size: 13px;
                     horizontal-stretch: 1;
@@ -44,6 +46,7 @@ export component AboutSettingsScreen inherits Rectangle {
                 Text {
                     text: root.app-version;
                     color: Theme.muted;
+                    font-family: "monospace";
                     font-size: 13px;
                 }
             }
@@ -51,7 +54,7 @@ export component AboutSettingsScreen inherits Rectangle {
             SettingsDivider {}
 
             Text {
-                text: "Обновление нативного клиента";
+                text: (root.language == "ru" ? "Обновление нативного клиента" : "Native client updates");
                 color: Theme.foreground;
                 font-size: 13px;
                 font-weight: 500;
@@ -59,16 +62,16 @@ export component AboutSettingsScreen inherits Rectangle {
 
             Text {
                 text: root.updater-supported
-                    ? "Проверить наличие новой версии. Загрузка и установка выполняются вручную со страницы релизов."
-                    : "Проверка версии недоступна. Релизы доступны по ссылке ниже.";
+                    ? (root.language == "ru" ? "Проверить наличие новой версии. Загрузка и установка выполняются вручную со страницы релизов." : "Check for a new version. Download and install it manually from the releases page.")
+                    : (root.language == "ru" ? "Проверка версии недоступна. Релизы доступны по ссылке ниже." : "Update checks are unavailable. Releases are available at the link below.");
                 color: Theme.muted;
                 font-size: 12px;
                 wrap: word-wrap;
                 width: 100%;
             }
 
-            if root.updater-supported : FHPrimaryButton {
-                text: "Проверить обновления";
+            if root.updater-supported : FHSecondaryButton {
+                text: (root.language == "ru" ? "Проверить обновления" : "Check for updates");
                 enabled: !root.busy && !root.update-busy;
                 busy: root.update-busy;
                 clicked => { root.check-updates-requested(); }
@@ -85,82 +88,82 @@ export component AboutSettingsScreen inherits Rectangle {
             SettingsDivider {}
 
             Text {
-                text: "Исходный код";
+                text: (root.language == "ru" ? "Исходный код" : "Source code");
                 color: Theme.foreground;
                 font-size: 13px;
                 font-weight: 500;
             }
             Text {
-                text: "Клиент распространяется под AGPL-3.0.";
+                text: (root.language == "ru" ? "Клиент распространяется под AGPL-3.0." : "The client is distributed under AGPL-3.0.");
                 color: Theme.muted;
                 font-size: 12px;
                 wrap: word-wrap;
                 width: 100%;
             }
-            FHTextButton {
-                text: "Открыть репозиторий FriendsHub WEB";
-                clicked => { root.open-url-requested(root.repository-url); }
+            FHSecondaryButton {
+                height: 32px;
+                text: (root.language == "ru" ? "Открыть репозиторий нативного клиента" : "Open the native client repository");
+                clicked => { root.open-url-requested(root.repository-url); }}
+
+            SettingsDivider {}
+
+            Text {
+                text: (root.language == "ru" ? "Нативный клиент" : "Native client");
+                color: Theme.foreground;
+                font-size: 13px;
+                font-weight: 500;
+            }
+            Text {
+                text: (root.language == "ru" ? "Загрузка и установка выполняются вручную." : "Download and installation are manual.");
+                color: Theme.muted;
+                font-size: 12px;
+                wrap: word-wrap;
+                width: 100%;
+            }
+            FHSecondaryButton {
+                height: 32px;
+                text: (root.language == "ru" ? "Релизы нативного клиента" : "Native client releases");
+                clicked => { root.open-url-requested(root.native-releases-url); }}
+
+            SettingsDivider {}
+
+            Text {
+                text: (root.language == "ru" ? "Лицензия" : "Licence");
+                color: Theme.foreground;
+                font-size: 13px;
+                font-weight: 500;
+            }
+            Text {
+                text: (root.language == "ru" ? "AGPL-3.0 — свободная лицензия с обязательством открывать производные работы." : "AGPL-3.0 is a free licence requiring disclosure of derivative works.");
+                color: Theme.muted;
+                font-size: 12px;
+                wrap: word-wrap;
+                width: 100%;
             }
 
             SettingsDivider {}
 
             Text {
-                text: "Нативный клиент";
+                text: (root.language == "ru" ? "Криптомодуль" : "Cryptography module");
                 color: Theme.foreground;
                 font-size: 13px;
                 font-weight: 500;
             }
             Text {
-                text: "Загрузка и установка выполняются вручную.";
+                text: (root.language == "ru" ? "Общий Rust-модуль приложения и браузерной версии." : "A shared Rust module for the app and browser version.");
                 color: Theme.muted;
                 font-size: 12px;
                 wrap: word-wrap;
                 width: 100%;
             }
-            FHTextButton {
-                text: "Релизы нативного клиента";
-                clicked => { root.open-url-requested(root.native-releases-url); }
-            }
-
-            SettingsDivider {}
-
-            Text {
-                text: "Лицензия";
-                color: Theme.foreground;
-                font-size: 13px;
-                font-weight: 500;
-            }
-            Text {
-                text: "AGPL-3.0 — свободная лицензия с обязательством открывать производные работы.";
-                color: Theme.muted;
-                font-size: 12px;
-                wrap: word-wrap;
-                width: 100%;
-            }
-
-            SettingsDivider {}
-
-            Text {
-                text: "Криптомодуль";
-                color: Theme.foreground;
-                font-size: 13px;
-                font-weight: 500;
-            }
-            Text {
-                text: "Общий Rust-модуль приложения и браузерной версии.";
-                color: Theme.muted;
-                font-size: 12px;
-                wrap: word-wrap;
-                width: 100%;
-            }
-            FHTextButton {
-                text: "Копировать ссылку на core";
-                clicked => { root.copy-text-requested(root.core-repository-url); }
-            }
+            FHSecondaryButton {
+                height: 32px;
+                text: (root.language == "ru" ? "Копировать ссылку на core" : "Copy core repository link");
+                clicked => { root.copy-text-requested(root.core-repository-url); }}
         }
 
         SettingsCard {
-            title: "Сессия";
+            title: (root.language == "ru" ? "Сессия" : "Session");
 
             if !root.logout-error.is-empty : Text {
                 text: root.logout-error;
@@ -171,7 +174,8 @@ export component AboutSettingsScreen inherits Rectangle {
             }
 
             if !root.confirm-logout-open : FHPrimaryButton {
-                text: "Выйти";
+                danger: true;
+                text: (root.language == "ru" ? "Выйти" : "Sign out");
                 enabled: !root.busy;
                 clicked => { root.confirm-logout-open = true; }
             }
@@ -186,7 +190,7 @@ export component AboutSettingsScreen inherits Rectangle {
                     spacing: 8px;
 
                     Text {
-                        text: "Сессия будет отозвана, а сообщения и ключи этого аккаунта будут удалены с устройства.";
+                        text: (root.language == "ru" ? "Сессия будет отозвана, а сообщения и ключи этого аккаунта будут удалены с устройства." : "The session will be revoked, and this account’s messages and keys will be deleted from this device.");
                         color: Theme.foreground;
                         font-size: 12px;
                         wrap: word-wrap;
@@ -196,18 +200,19 @@ export component AboutSettingsScreen inherits Rectangle {
                     HorizontalLayout {
                         spacing: 8px;
                         FHPrimaryButton {
-                            text: "Выйти";
+                            danger: true;
+                            text: (root.language == "ru" ? "Выйти" : "Sign out");
                             enabled: !root.busy;
                             busy: root.busy;
                             clicked => {
                                 root.logout-requested();
                             }
                         }
-                        FHTextButton {
-                            text: "Отмена";
+                        FHSecondaryButton {
+                height: 32px;
+                            text: (root.language == "ru" ? "Отмена" : "Cancel");
                             enabled: !root.busy;
-                            clicked => { root.confirm-logout-open = false; }
-                        }
+                            clicked => { root.confirm-logout-open = false; }}
                     }
                 }
             }

@@ -1,5 +1,6 @@
 import { Theme } from "../theme.slint";
-import { FHInput, FHTextButton, FHPrimaryButton } from "../components.slint";
+import { FHEmptyState, FHInput, FHSecondaryButton, FHScreenHeader, FHSkeleton, FHTextButton } from "../components.slint";
+import { IconCompass } from "../icons.slint";
 import { ScrollView } from "std-widgets.slint";
 
 export struct DiscoverEntry {
@@ -10,6 +11,82 @@ export struct DiscoverEntry {
     initials: string,
     has-avatar: bool,
     avatar-image: image,
+}
+
+component DiscoverKindRow inherits Rectangle {
+    in property <string> label;
+    in property <bool> selected;
+    callback picked();
+
+    width: 100%;
+    height: 36px;
+    background: row-area.has-hover ? Theme.hover : transparent;
+    border-radius: 8px;
+    accessible-role: radio-button;
+    accessible-label: root.label;
+    accessible-checkable: true;
+    accessible-checked: root.selected;
+    accessible-action-default => { root.picked(); }
+    forward-focus: keyboard-scope;
+
+    states [
+        focus when keyboard-scope.has-focus : {
+            root.border-width: 2px;
+            root.border-color: Theme.accent;
+        }
+    ]
+
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        spacing: 10px;
+        alignment: start;
+        cross-axis-alignment: center;
+
+        Rectangle {
+            width: 18px;
+            height: 18px;
+            border-radius: 9px;
+            border-width: 1px;
+            border-color: root.selected ? Theme.accent : Theme.border;
+            background: root.selected ? Theme.accent : transparent;
+
+            if root.selected : Rectangle {
+                x: 5px;
+                y: 5px;
+                width: 8px;
+                height: 8px;
+                border-radius: 4px;
+                background: Theme.accent-foreground;
+            }
+        }
+
+        Text {
+            text: root.label;
+            color: Theme.foreground;
+            font-size: 14px;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            accessible-role: none;
+        }
+    }
+
+    row-area := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.picked(); }
+    }
+
+    keyboard-scope := FocusScope {
+        x: 0;
+        width: 0;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.picked();
+                return accept;
+            }
+            return reject;
+        }
+    }
 }
 
 export component DiscoverScreen inherits Rectangle {
@@ -33,14 +110,9 @@ export component DiscoverScreen inherits Rectangle {
     VerticalLayout {
         spacing: 0px;
 
-        HorizontalLayout {
-            height: 48px;
-            padding-left: 16px;
-            padding-right: 16px;
-            spacing: 12px;
-
-            FHTextButton { text: "‹  Назад"; clicked => { root.back-requested(); } }
-            Text { text: "Публичные чаты"; color: Theme.foreground; font-size: 14px; font-weight: 600; vertical-alignment: center; }
+        FHScreenHeader {
+            title: "Публичные чаты";
+            back-requested => { root.back-requested(); }
         }
 
         ScrollView {
@@ -62,17 +134,31 @@ export component DiscoverScreen inherits Rectangle {
 
                         kind-content := VerticalLayout {
                             padding: 12px;
-                            spacing: 8px;
+                            spacing: 6px;
 
-                            Text { text: "Что искать"; color: Theme.muted; font-size: 12px; font-weight: 600; }
+                            Text {
+                                text: "Что искать";
+                                color: Theme.muted;
+                                font-size: 12px;
+                                font-weight: 500;
+                            }
 
-                            HorizontalLayout {
-                                spacing: 8px;
+                            DiscoverKindRow {
+                                label: "Группы";
+                                selected: !root.channel-mode;
+                                picked => {
+                                    root.handle-query = "";
+                                    root.channel-mode-changed(false);
+                                }
+                            }
 
-                                if root.channel-mode : FHTextButton { text: "Группы"; enabled: !root.busy && !root.loading; clicked => { root.channel-mode-changed(false); } }
-                                if !root.channel-mode : FHPrimaryButton { text: "Группы"; enabled: !root.busy && !root.loading; clicked => { root.channel-mode-changed(false); } }
-                                if root.channel-mode : FHPrimaryButton { text: "Каналы"; enabled: !root.busy && !root.loading; clicked => { root.channel-mode-changed(true); } }
-                                if !root.channel-mode : FHTextButton { text: "Каналы"; enabled: !root.busy && !root.loading; clicked => { root.channel-mode-changed(true); } }
+                            DiscoverKindRow {
+                                label: "Каналы";
+                                selected: root.channel-mode;
+                                picked => {
+                                    root.handle-query = "";
+                                    root.channel-mode-changed(true);
+                                }
                             }
                         }
                     }
@@ -97,13 +183,16 @@ export component DiscoverScreen inherits Rectangle {
                                 label: "Найти по адресу";
                                 placeholder: "@example";
                                 value <=> root.handle-query;
+                                enabled: !root.busy;
                             }
 
                             HorizontalLayout {
                                 spacing: 8px;
+                                alignment: start;
 
-                                FHPrimaryButton {
-                                    text: root.busy ? "Ищем…" : "Найти";
+                                FHSecondaryButton {
+                                    text: "Найти";
+                                    height: 32px;
                                     enabled: !root.busy && !root.handle-query.is-empty;
                                     busy: root.busy;
                                     clicked => { root.lookup-requested(root.handle-query); }
@@ -121,6 +210,7 @@ export component DiscoverScreen inherits Rectangle {
 
                 if root.has-error : HorizontalLayout {
                     alignment: center;
+
                     Text {
                         width: min(parent.width, 576px);
                         text: root.error-text;
@@ -130,71 +220,122 @@ export component DiscoverScreen inherits Rectangle {
                     }
                 }
 
-                if root.loading : HorizontalLayout {
-                    alignment: center;
-                    Text { text: "Загружаем публичные чаты…"; color: Theme.muted; font-size: 13px; }
-                }
+                if root.loading : VerticalLayout {
+                    width: 100%;
+                    spacing: 8px;
 
-                if !root.loading && !root.has-error && root.entries.length == 0 : HorizontalLayout {
-                    alignment: center;
-                    Rectangle {
-                        width: min(parent.width, 576px);
-                        height: empty-content.preferred-height;
-                        background: transparent;
+                    for index in 3 : HorizontalLayout {
+                        alignment: center;
 
-                        empty-content := VerticalLayout {
-                            padding-top: 32px;
-                            padding-bottom: 32px;
-                            spacing: 8px;
-                            alignment: center;
+                        Rectangle {
+                            width: min(parent.width, 576px);
+                            height: 72px;
+                            background: Theme.surface;
+                            border-width: 1px;
+                            border-color: Theme.border;
+                            border-radius: 12px;
 
-                            Text { text: "◉"; color: Theme.muted; font-size: 28px; horizontal-alignment: center; }
-                            Text { text: "Публичных чатов пока нет."; color: Theme.foreground; font-size: 14px; font-weight: 500; horizontal-alignment: center; }
+                            HorizontalLayout {
+                                padding: 12px;
+                                spacing: 12px;
+                                cross-axis-alignment: center;
+
+                                FHSkeleton { width: 40px; height: 40px; corner-radius: 20px; }
+                                VerticalLayout {
+                                    horizontal-stretch: 1;
+                                    spacing: 7px;
+                                    FHSkeleton { width: 45%; height: 14px; }
+                                    FHSkeleton { width: 70%; height: 12px; }
+                                }
+                                FHSkeleton { width: 88px; height: 32px; }
+                            }
                         }
                     }
                 }
 
-                for entry in root.entries : HorizontalLayout {
+                if !root.loading && !root.has-error && root.entries.length == 0 : HorizontalLayout {
                     alignment: center;
 
                     Rectangle {
                         width: min(parent.width, 576px);
-                        height: row-content.preferred-height;
-                        background: Theme.surface;
-                        border-width: 1px;
-                        border-color: Theme.border;
-                        border-radius: 12px;
+                        background: transparent;
 
-                        row-content := HorizontalLayout {
-                            padding: 12px;
-                            spacing: 12px;
+                        FHEmptyState {
+                            title: "Публичных чатов пока нет";
+                            description: "Попробуйте изменить запрос или откройте каталог.";
 
-                            Rectangle {
-                                width: 44px;
-                                height: 44px;
-                                background: Theme.hover;
-                                border-radius: 22px;
-                                clip: true;
-
-                                if entry.has-avatar : Image { width: 100%; height: 100%; source: entry.avatar-image; image-fit: cover; }
-
-                                if !entry.has-avatar : Text { text: entry.initials; color: Theme.foreground; font-size: 14px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; width: 100%; height: 100%; }
+                            IconCompass {
+                                width: 32px;
+                                height: 32px;
+                                stroke: Theme.muted;
                             }
+                        }
+                    }
+                }
 
-                            VerticalLayout {
-                                spacing: 4px;
-                                horizontal-stretch: 1;
+                if !root.loading : VerticalLayout {
+                    spacing: 8px;
 
-                                Text { text: entry.title; color: Theme.foreground; font-size: 14px; font-weight: 500; overflow: elide; }
-                                if !entry.description.is-empty : Text { text: entry.description; color: Theme.muted; font-size: 12px; wrap: word-wrap; max-height: 36px; }
-                                Text { text: entry.count-label; color: Theme.muted; font-size: 12px; }
-                            }
+                    for entry in root.entries : HorizontalLayout {
+                        alignment: center;
 
-                            FHPrimaryButton {
-                                text: "Открыть / вступить";
-                                enabled: !root.busy;
-                                busy: root.busy;
-                                clicked => { root.open-requested(entry.conversation-id); }
+                        Rectangle {
+                            width: min(parent.width, 576px);
+                            height: row-content.preferred-height;
+                            background: Theme.surface;
+                            border-width: 1px;
+                            border-color: Theme.border;
+                            border-radius: 12px;
+
+                            row-content := HorizontalLayout {
+                                padding: 12px;
+                                spacing: 12px;
+                                cross-axis-alignment: center;
+
+                                Rectangle {
+                                    width: 40px;
+                                    height: 40px;
+                                    background: Theme.hover;
+                                    border-radius: 20px;
+                                    clip: true;
+
+                                    if entry.has-avatar : Image {
+                                        width: 100%;
+                                        height: 100%;
+                                        source: entry.avatar-image;
+                                        image-fit: cover;
+                                        accessible-role: none;
+                                    }
+
+                                    if !entry.has-avatar : Text {
+                                        text: entry.initials;
+                                        color: Theme.muted;
+                                        font-size: 14px;
+                                        font-weight: 600;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                        width: 100%;
+                                        height: 100%;
+                                        accessible-role: none;
+                                    }
+                                }
+
+                                VerticalLayout {
+                                    spacing: 3px;
+                                    horizontal-stretch: 1;
+                                    min-width: 0px;
+
+                                    Text { text: entry.title; color: Theme.foreground; font-size: 14px; font-weight: 500; overflow: elide; }
+                                    if !entry.description.is-empty : Text { text: entry.description; color: Theme.muted; font-size: 12px; wrap: word-wrap; max-height: 36px; }
+                                    Text { text: entry.count-label; color: Theme.muted; font-size: 12px; }
+                                }
+
+                                FHSecondaryButton {
+                                    text: "Открыть";
+                                    height: 32px;
+                                    enabled: !root.busy;
+                                    clicked => { root.open-requested(entry.conversation-id); }
+                                }
                             }
                         }
                     }

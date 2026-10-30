@@ -1,4 +1,5 @@
 import { Theme } from "../theme.slint";
+import { FHTextButton } from "../components.slint";
 
 export struct CreateSummaryRow {
     label: string,
@@ -9,6 +10,10 @@ export component CreateSummary inherits Rectangle {
     in property <string> title;
     in property <[CreateSummaryRow]> rows: [];
     in property <string> note: "";
+    in property <string> error-message: "";
+    in property <string> error-action-label: "";
+    in property <bool> busy: false;
+    callback error-edit-requested();
 
     background: transparent;
 
@@ -29,11 +34,30 @@ export component CreateSummary inherits Rectangle {
                 font-weight: 600;
             }
 
+            if !root.error-message.is-empty : VerticalLayout {
+                spacing: 4px;
+                Text {
+                    text: root.error-message;
+                    color: Theme.danger;
+                    font-size: 12px;
+                    wrap: char-wrap;
+                    width: 100%;
+                }
+                HorizontalLayout {
+                    alignment: start;
+                    FHTextButton {
+                        text: root.error-action-label;
+                        enabled: !root.busy;
+                        clicked => { root.error-edit-requested(); }
+                    }
+                }
+            }
+
             for row[index] in root.rows : VerticalLayout {
                 spacing: 5px;
                 Rectangle { height: 1px; background: Theme.border; }
                 Text { text: row.label; color: Theme.foreground; font-size: 14px; }
-                Text { text: row.value; color: Theme.muted; font-size: 14px; wrap: word-wrap; width: parent.width; }
+                Text { text: row.value; color: Theme.muted; font-size: 14px; wrap: char-wrap; width: parent.width; }
             }
 
             if !root.note.is-empty : Text {

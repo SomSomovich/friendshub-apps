@@ -1,5 +1,7 @@
 import { Theme } from "../theme.slint";
-import { ChatAction, ChatAttachmentView, ChatReaction } from "chat-controls.slint";
+import { FHIconButton, FHSecondaryButton, FHSkeleton, FHEmptyState } from "../components.slint";
+import { IconCheck, IconFileText, IconMessageSquare, IconMoreHorizontal, IconTriangleAlert } from "../icons.slint";
+import { ChatAttachmentView, ChatReaction } from "chat-controls.slint";
 import { PollCard, PollViewModel } from "poll-card.slint";
 import { ScrollView } from "std-widgets.slint";
 
@@ -29,6 +31,8 @@ export component MessageList inherits Rectangle {
     in property <string> polls-error-text: "";
     in property <bool> has-older: false;
     in property <string> error-text: "";
+    in property <bool> show-authors: false;
+    in property <string> language: "ru";
     callback load-older-requested();
     callback message-menu-requested(int);
     callback attachment-open-requested(int, string);
@@ -60,17 +64,27 @@ export component MessageList inherits Rectangle {
 
         VerticalLayout {
             width: 100%;
-            padding-left: 12px;
-            padding-right: 12px;
+            padding-left: 16px;
+            padding-right: 16px;
             padding-top: 8px;
             padding-bottom: 8px;
             spacing: 6px;
 
+            if root.messages.length > 0 || root.polls.length > 0 : Rectangle {
+                vertical-stretch: 1;
+                background: transparent;
+            }
+
             if root.has-older : HorizontalLayout {
                 alignment: center;
-                ChatAction {
-                    label: root.loading ? "Загружаем…" : "Загрузить более ранние сообщения";
+
+                FHSecondaryButton {
+                    text: root.loading
+                        ? (root.language == "ru" ? "Загрузка" : "Loading")
+                        : (root.language == "ru" ? "Загрузить более ранние" : "Load earlier messages");
+                    height: 32px;
                     enabled: !root.loading;
+                    busy: root.loading;
                     clicked => { root.load-older-requested(); }
                 }
             }
@@ -83,33 +97,39 @@ export component MessageList inherits Rectangle {
                 horizontal-stretch: 1;
             }
 
-            if root.messages.length == 0 && root.polls.length == 0 && !root.loading && root.error-text.is-empty : VerticalLayout {
-                alignment: center;
+            if root.messages.length == 0 && root.polls.length == 0 && !root.loading && root.error-text.is-empty : Rectangle {
                 vertical-stretch: 1;
-                spacing: 8px;
-                Text {
-                    text: "Сообщений пока нет";
-                    color: Theme.foreground;
-                    font-size: 14px;
-                    horizontal-alignment: center;
-                }
-                Text {
-                    text: "Скажите привет!";
-                    color: Theme.muted;
-                    font-size: 12px;
-                    horizontal-alignment: center;
+                background: transparent;
+
+                FHEmptyState {
+                    title: root.language == "ru" ? "Сообщений пока нет" : "No messages yet";
+                    description: root.language == "ru" ? "Скажите привет!" : "Say hello!";
+
+                    IconMessageSquare {
+                        width: 32px;
+                        height: 32px;
+                        stroke: Theme.muted;
+                    }
                 }
             }
 
-            if root.loading && root.messages.length == 0 : Text {
-                text: "Загружаем сообщения…";
-                color: Theme.muted;
-                font-size: 12px;
-                horizontal-alignment: center;
+            if root.loading && root.messages.length == 0 : VerticalLayout {
                 vertical-stretch: 1;
+                spacing: 10px;
+                alignment: end;
+
+                for row in 6 : HorizontalLayout {
+                    alignment: Math.mod(row, 3) == 1 ? end : start;
+
+                    FHSkeleton {
+                        height: Math.mod(row, 2) == 0 ? 44px : 62px;
+                        width: Math.mod(row, 4) == 0 ? 38% : Math.mod(row, 4) == 1 ? 52% : Math.mod(row, 4) == 2 ? 46% : 61%;
+                        corner-radius: 16px;
+                    }
+                }
             }
 
-            for message[index] in root.messages : message-row := VerticalLayout {
+            for message[message-index] in root.messages : message-row := VerticalLayout {
                 property <bool> is-scroll-target: root.scroll-to-message-id == message.id;
                 property <bool> is-highlighted: root.highlighted-message-id == message.id;
                 changed is-scroll-target => {
@@ -147,6 +167,7 @@ export component MessageList inherits Rectangle {
                             text: message.day-label;
                             color: Theme.muted;
                             font-size: 11px;
+                            font-weight: 500;
                             horizontal-alignment: center;
                             vertical-alignment: center;
                         }
@@ -160,33 +181,59 @@ export component MessageList inherits Rectangle {
                     if message.own : Rectangle { horizontal-stretch: 1; background: transparent; }
 
                     Rectangle {
-                        width: min(max(parent.width * 0.45, min(parent.width, 180px)), min(parent.width * 0.78, 560px));
+                        width: min(
+                            max(
+                                max(message-body-measure.preferred-width + 24px, message-author-measure.preferred-width + 24px),
+                                max(message-meta-measure.preferred-width + 72px, message.attachments.length > 0 ? 260px : 0px)
+                            ),
+                            min(parent.width * (root.width >= 640px ? 0.70 : 0.85), 560px)
+                        );
                         height: bubble-content.preferred-height + 16px;
                         background: message.own ? Theme.message-bubble : Theme.surface;
-                        border-width: message-row.is-highlighted ? 2px : 1px;
-                        border-color: message-row.is-highlighted ? Theme.accent : Theme.border;
-                        border-radius: 12px;
+                        border-width: message-row.is-highlighted ? 2px : (message.own ? 1px : 0px);
+                        border-color: message-row.is-highlighted ? Theme.accent : Theme.accent.with-alpha(0.30);
+                        border-radius: 16px;
+
+                        message-body-measure := Text { text: message.body; font-size: 14px; visible: false; }
+                        message-author-measure := Text { text: message.author + " " + message.author-tag; font-size: 11px; font-weight: 600; visible: false; }
+                        message-meta-measure := Text { text: (message.edited ? "изменено " : "") + message.time-label + " " + message.delivery-label; font-size: 11px; visible: false; }
 
                         bubble-content := VerticalLayout {
-                            x: 10px;
+                            x: 12px;
                             y: 8px;
-                            width: parent.width - 20px;
+                            width: parent.width - 24px;
+                            height: self.preferred-height;
                             spacing: 4px;
 
-                            if !message.author.is-empty || !message.author-tag.is-empty : HorizontalLayout {
-                                spacing: 5px;
+                            if root.show-authors && (!message.author.is-empty || !message.author-tag.is-empty) : HorizontalLayout {
+                                spacing: 6px;
+                                cross-axis-alignment: center;
+
                                 if !message.author.is-empty : Text {
                                     text: message.author;
                                     color: Theme.accent;
-                                    font-size: 11px;
-                                    font-weight: 600;
+                                    font-size: 12px;
+                                    font-weight: 500;
                                     wrap: word-wrap;
                                 }
-                                if !message.author-tag.is-empty : Text {
-                                    text: message.author-tag;
-                                    color: Theme.accent;
-                                    font-size: 10px;
-                                    wrap: word-wrap;
+
+                                if !message.author-tag.is-empty : Rectangle {
+                                    height: 16px;
+                                    border-radius: 8px;
+                                    background: Theme.accent.with-alpha(0.15);
+                                    border-width: 1px;
+                                    border-color: Theme.accent.with-alpha(0.30);
+
+                                    Text {
+                                        x: 6px;
+                                        width: parent.width - 12px;
+                                        height: 100%;
+                                        text: message.author-tag;
+                                        color: Theme.accent;
+                                        font-size: 10px;
+                                        font-weight: 500;
+                                        vertical-alignment: center;
+                                    }
                                 }
                             }
 
@@ -198,64 +245,120 @@ export component MessageList inherits Rectangle {
                                 horizontal-stretch: 1;
                             }
 
-                            for attachment[attachment-index] in message.attachments : Rectangle {
-                                width: 100%;
-                                height: attachment.has-preview ? min(parent.width * 0.72, 280px) : 44px;
-                                background: Theme.background;
-                                border-width: attachment.unavailable ? 1px : 0px;
-                                border-color: Theme.border;
-                                border-radius: 8px;
-                                clip: true;
-                                if attachment.has-preview && !attachment.unavailable : Image {
-                                    width: 100%;
-                                    height: 100%;
-                                    source: attachment.preview-image;
-                                    image-fit: cover;
-                                }
-                                if !attachment.has-preview || attachment.unavailable : HorizontalLayout {
-                                    padding: 8px;
-                                    spacing: 6px;
-                                    Text {
-                                        text: attachment.unavailable ? (attachment.state-label.is-empty ? "Вложение недоступно" : attachment.state-label) : "▤";
-                                        color: attachment.unavailable ? Theme.muted : Theme.accent;
-                                        font-size: 11px;
-                                        horizontal-stretch: 1;
-                                        vertical-alignment: center;
+                            if message.attachments.length > 0 : FlexboxLayout {
+                                spacing: 4px;
+
+                                for attachment[attachment-index] in message.attachments : Rectangle {
+                                    width: message.attachments.length == 1 ? parent.width : (parent.width - 4px) / 2;
+                                    height: attachment.has-preview ? (message.attachments.length == 1 ? 180px : 110px) : 48px;
+                                    background: Theme.background;
+                                    border-width: attachment.unavailable ? 1px : 0px;
+                                    border-color: Theme.border;
+                                    border-radius: 8px;
+                                    clip: true;
+
+                                    if attachment.has-preview && !attachment.unavailable : Image {
+                                        width: 100%;
+                                        height: 100%;
+                                        source: attachment.preview-image;
+                                        image-fit: cover;
+                                        accessible-role: none;
                                     }
-                                    Text { text: attachment.size-label; color: Theme.muted; font-size: 10px; vertical-alignment: center; }
-                                }
-                                TouchArea {
-                                    enabled: !attachment.unavailable;
-                                    accessible-role: button;
-                                    accessible-label: attachment.label;
-                                    clicked => { root.attachment-open-requested(index, attachment.id); }
+
+                                    if !attachment.has-preview || attachment.unavailable : HorizontalLayout {
+                                        padding-left: 10px;
+                                        padding-right: 10px;
+                                        spacing: 8px;
+                                        cross-axis-alignment: center;
+
+                                        IconFileText {
+                                            width: 18px;
+                                            height: 18px;
+                                            stroke: attachment.unavailable ? Theme.muted : Theme.accent;
+                                        }
+
+                                        VerticalLayout {
+                                            spacing: 1px;
+                                            horizontal-stretch: 1;
+                                            min-width: 0px;
+
+                                            Text {
+                                                text: attachment.unavailable
+                                                    ? (attachment.state-label.is-empty
+                                                        ? (root.language == "ru" ? "Вложение недоступно" : "Attachment unavailable")
+                                                        : attachment.state-label)
+                                                    : attachment.label;
+                                                color: attachment.unavailable ? Theme.muted : Theme.foreground;
+                                                font-size: 12px;
+                                                overflow: elide;
+                                            }
+
+                                            if !attachment.size-label.is-empty : Text {
+                                                text: attachment.size-label;
+                                                color: Theme.muted;
+                                                font-size: 11px;
+                                            }
+                                        }
+                                    }
+
+                                    TouchArea {
+                                        enabled: !attachment.unavailable;
+                                        mouse-cursor: pointer;
+                                        accessible-role: button;
+                                        accessible-label: attachment.label;
+                                        clicked => { root.attachment-open-requested(message-index, attachment.id); }
+                                    }
                                 }
                             }
 
                             HorizontalLayout {
-                                spacing: 6px;
+                                spacing: 5px;
                                 alignment: end;
+
                                 if message.edited : Text {
-                                    text: "изменено";
+                                    text: root.language == "ru" ? "изменено" : "edited";
                                     color: Theme.muted;
-                                    font-size: 10px;
+                                    font-size: 11px;
+                                    vertical-alignment: center;
                                 }
+
                                 Text {
                                     text: message.time-label;
                                     color: Theme.muted;
-                                    font-size: 10px;
+                                    font-size: 11px;
+                                    vertical-alignment: center;
                                 }
-                                if message.own && !message.delivery-label.is-empty : Text {
-                                    text: message.delivery-label;
-                                    color: Theme.muted;
-                                    font-size: 10px;
+
+                                if message.own && !message.delivery-label.is-empty : Rectangle {
+                                    width: 14px;
+                                    height: 14px;
+                                    background: transparent;
+                                    accessible-role: none;
+
+                                    if message.delivery-label == "Отправлено частично" || message.delivery-label == "Partially sent" : IconTriangleAlert {
+                                        width: 14px;
+                                        height: 14px;
+                                        stroke: Theme.danger;
+                                    }
+                                    if message.delivery-label != "Отправлено частично" && message.delivery-label != "Partially sent" : IconCheck {
+                                        width: 14px;
+                                        height: 14px;
+                                        stroke: Theme.muted;
+                                    }
                                 }
-                                ChatAction {
-                                    label: "Ещё";
-                                    accessible-name: "Дополнительные действия сообщения";
-                                    width: 40px;
-                                    height: 24px;
-                                    clicked => { root.message-menu-requested(index); }
+
+                                FHIconButton {
+                                    button-size: 24px;
+                                    label: root.language == "ru" ? "Действия с сообщением" : "Message actions";
+                                    clicked => { root.message-menu-requested(message-index); }
+
+                                    IconMoreHorizontal {
+                                        width: 16px;
+                                        height: 16px;
+                                        x: 4px;
+                                        y: 4px;
+                                        stroke: Theme.muted;
+                                    }
                                 }
                             }
                         }
@@ -264,43 +367,80 @@ export component MessageList inherits Rectangle {
                     if !message.own : Rectangle { horizontal-stretch: 1; background: transparent; }
                 }
 
-                if message.reactions.length > 0 : HorizontalLayout {
+                if message.reactions.length > 0 : FlexboxLayout {
                     alignment: message.own ? end : start;
-                    for reaction[index] in message.reactions : ChatAction {
-                        label: reaction.emoji + " " + reaction.count-label;
-                        active: reaction.mine;
+                    spacing: 4px;
+
+                    for reaction[reaction-index] in message.reactions : Rectangle {
+                        width: max(34px, reaction-label.preferred-width + 14px);
                         height: 24px;
-                        accessible-name: reaction.emoji + " " + reaction.count-label;
-                        clicked => { root.reaction-requested(index, reaction.emoji); }
+                        background: reaction.mine ? Theme.accent.with-alpha(0.15) : Theme.surface;
+                        border-width: 1px;
+                        border-color: reaction.mine ? Theme.accent.with-alpha(0.5) : Theme.border;
+                        border-radius: 12px;
+                        accessible-role: button;
+                        accessible-label: reaction.emoji + " " + reaction.count-label;
+                        accessible-action-default => { root.reaction-requested(message-index, reaction.emoji); }
+
+                        Text {
+                            text: reaction.emoji + " " + reaction.count-label;
+                            color: reaction.mine ? Theme.accent : Theme.foreground;
+                            font-size: 12px;
+                            font-weight: 500;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                            width: 100%;
+                            height: 100%;
+                            accessible-role: none;
+                        }
+
+                        reaction-label := Text {
+                            text: reaction.emoji + " " + reaction.count-label;
+                            font-size: 12px;
+                            font-weight: 500;
+                            visible: false;
+                        }
+
+                        TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.reaction-requested(message-index, reaction.emoji); }
+                        }
                     }
                 }
             }
 
             if !root.polls-error-text.is-empty : HorizontalLayout {
                 Text { text: root.polls-error-text; color: Theme.danger; font-size: 11px; wrap: word-wrap; horizontal-stretch: 1; }
-                ChatAction { label: "Повторить"; clicked => { root.polls-retry-requested(); } }
+                FHSecondaryButton { text: root.language == "ru" ? "Повторить" : "Retry"; height: 28px; clicked => { root.polls-retry-requested(); } }
             }
-            if root.polls-loading && root.polls.length == 0 : Text {
-                text: "Загружаем опросы…";
-                color: Theme.muted;
-                font-size: 11px;
-                horizontal-alignment: center;
+
+            if root.polls-loading && root.polls.length == 0 : VerticalLayout {
+                spacing: 6px;
+                FHSkeleton { height: 20px; width: 40%; }
+                FHSkeleton { height: 96px; width: 100%; corner-radius: 12px; }
             }
+
             for poll[index] in root.polls : PollCard {
                 poll: poll;
                 option-selection-requested(option-id) => { root.poll-option-selection-requested(poll.id, option-id); }
                 vote-requested(poll-id) => { root.poll-vote-requested(poll-id); }
                 proposal-changed(text) => { root.poll-proposal-changed(poll.id, text); }
-                propose-option-requested(poll-id, text) => { root.poll-propose-option-requested(poll-id, text); }
-                remove-option-requested(poll-id, option-id) => { root.poll-option-remove-requested(poll-id, option-id); }
+                propose-option-requested(poll-id, text) => { root.poll-propose-option-requested(poll.id, text); }
+                remove-option-requested(poll-id, option-id) => { root.poll-option-remove-requested(poll.id, option-id); }
                 stop-requested(poll-id) => { root.poll-stop-requested(poll-id); }
                 remove-requested(poll-id) => { root.poll-remove-requested(poll-id); }
             }
+
             if root.polls-has-older : HorizontalLayout {
                 alignment: center;
-                ChatAction {
-                    label: root.polls-loading-older ? "Загружаем…" : "Более ранние опросы";
+
+                FHSecondaryButton {
+                    text: root.polls-loading-older
+                        ? (root.language == "ru" ? "Загрузка" : "Loading")
+                        : (root.language == "ru" ? "Более ранние опросы" : "Earlier polls");
+                    height: 32px;
                     enabled: !root.polls-loading-older;
+                    busy: root.polls-loading-older;
                     clicked => { root.polls-load-older-requested(); }
                 }
             }

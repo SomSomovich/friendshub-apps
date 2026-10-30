@@ -2,7 +2,6 @@ import { Theme } from "theme.slint";
 export { Theme } from "theme.slint";
 import { AppShell } from "app-shell.slint";
 import { ConversationRow, FilterTab, FolderTab, FolderConversationOption } from "conversation-list.slint";
-import { LandingScreen } from "landing-screen.slint";
 import { LoginScreen } from "login-screen.slint";
 import { RegisterScreen } from "register-screen.slint";
 import { TwoFactorScreen } from "two-factor-screen.slint";
@@ -47,13 +46,15 @@ import { AboutSettingsScreen } from "settings/about-screen.slint";
 
 export component MainWindow inherits Window {
     title: "FriendsHub";
+    in property <string> ui-font-family: "Noto Sans";
+    default-font-family: root.ui-font-family;
     preferred-width: 1120px;
     preferred-height: 760px;
     min-width: 320px;
     min-height: 480px;
     background: Theme.background;
-    in property <string> route: "/";
-    in property <string> screen: "landing";
+    in property <string> route: "/connect";
+    in property <string> screen: "connect";
     changed screen => {
         if root.screen != "settings_twofactor" {
             root.ui-action("twofactor-setup", "dismiss-codes", "", "", "");
@@ -81,6 +82,7 @@ export component MainWindow inherits Window {
     in property <ConnectStepState> connect-socket-state: ConnectStepState.pending;
     in property <string> connect-error: "";
     in property <bool> connect-busy: false;
+    in property <bool> connect-offline-available: false;
 
     in-out property <string> account-username: "";
     in property <string> account-fh-number: "";
@@ -116,6 +118,7 @@ export component MainWindow inherits Window {
 
     in property <string> conversation-title: "";
     in property <string> conversation-subtitle: "";
+    in property <string> conversation-avatar-label: "";
     in property <string> conversation-kind: "direct";
     in property <string> chat-banner-text: "";
     in property <string> chat-navigation-notice-text: "";
@@ -185,6 +188,9 @@ export component MainWindow inherits Window {
     in property <bool> chat-attachment-composer-send-enabled: false;
     in property <string> chat-attachment-composer-error-text: "";
     in property <[PendingAttachmentView]> chat-pending-attachments: [];
+    in property <bool> chat-voice-recording: false;
+    in property <bool> chat-voice-recording-busy: false;
+    in property <int> chat-voice-recording-seconds: 0;
     in-out property <string> chat-attachment-caption: "";
     in property <bool> scheduled-dialog-open: false;
     in property <bool> scheduled-dialog-loading: false;
@@ -418,6 +424,9 @@ export component MainWindow inherits Window {
     in property <string> settings-account-status-duration-minutes: "0";
     in property <bool> settings-account-status-duration-valid: true;
     in property <[SettingsProfileField]> settings-account-profile-fields: [];
+    in property <bool> settings-account-profile-fields-loading: false;
+    in property <bool> settings-account-profile-fields-loaded: false;
+    in property <string> settings-account-profile-fields-error: "";
     in property <bool> settings-account-username-valid: true;
     in property <string> settings-account-username-error: "";
     in property <string> settings-account-error-text: "";
@@ -496,10 +505,10 @@ export component MainWindow inherits Window {
     in property <bool> notifications-sound-enabled: true;
     in property <string> notifications-sound-value: "chime";
     in property <[SettingsOption]> notifications-sound-options: [
-        { value: "chime", label: "Перезвон" },
-        { value: "ping", label: "Сигнал" },
-        { value: "pop", label: "Щелчок" },
-        { value: "none", label: "Без звука" },
+        { value: "chime", label: root.language == "ru" ? "Перезвон" : "Chime" },
+        { value: "ping", label: root.language == "ru" ? "Сигнал" : "Ping" },
+        { value: "pop", label: root.language == "ru" ? "Щелчок" : "Pop" },
+        { value: "none", label: root.language == "ru" ? "Без звука" : "Silent" },
     ];
     in property <string> notifications-os-permission: "prompt";
     in property <string> notifications-push-status: "";
@@ -521,7 +530,7 @@ export component MainWindow inherits Window {
     in-out property <bool> settings-bots-token-revealed: false;
 
     in property <string> about-app-version: "";
-    in property <string> about-repository-url: "https://github.com/SomSomovich/friendshubWEB";
+    in property <string> about-repository-url: "https://github.com/SomSomovich/friendshub-apps";
     in property <string> about-native-releases-url: "https://github.com/SomSomovich/friendshub-apps/releases";
     in property <string> about-core-repository-url: "https://github.com/SomSomovich/friendshub-core";
     in property <bool> about-updater-supported: false;
@@ -541,21 +550,13 @@ export component MainWindow inherits Window {
     callback create-group-requested(string, string, string, bool, [GroupMemberRow]);
     callback create-channel-requested(string, string, string, bool, string, string, string, string);
 
-    if root.screen == "landing" : LandingScreen {
-        authenticated: root.authenticated;
-        login-requested => { root.navigate-requested("/login"); }
-        register-requested => { root.navigate-requested("/register"); }
-        open-app-requested => { root.navigate-requested("/app"); }
-        theme-toggle-requested => { root.ui-action("landing", "theme-toggle", "", "", ""); }
-        language-toggle-requested => { root.ui-action("landing", "language-toggle", "", "", ""); }
-        repository-requested => { root.ui-action("about", "open-url", root.about-repository-url, Platform.open-url(root.about-repository-url) ? "true" : "false", ""); }
-    }
-
     if root.screen == "login" : LoginScreen {
+        language: root.language;
         fh-number <=> root.login-fh-number;
         password <=> root.login-password;
         error-text: root.login-error;
         busy: root.login-busy;
+        authenticated: root.authenticated;
         login-requested(number, password) => { root.login-requested(number, password); }
         register-requested => { root.navigate-requested("/register"); }
         local-accounts-requested => { root.navigate-requested("/app/settings/accounts"); }
@@ -563,15 +564,16 @@ export component MainWindow inherits Window {
     }
 
     if root.screen == "register" : RegisterScreen {
+        language: root.language;
         password <=> root.register-password;
         error-text: root.register-error;
         busy: root.register-busy;
         register-requested(password) => { root.register-requested(password); }
         login-requested => { root.navigate-requested("/login"); }
-        back-requested => { root.navigate-requested("/"); }
     }
 
     if root.screen == "two_factor" : TwoFactorScreen {
+        language: root.language;
         code <=> root.twofactor-code;
         backup-mode <=> root.twofactor-backup-mode;
         device-setup: root.twofactor-device-setup;
@@ -584,16 +586,19 @@ export component MainWindow inherits Window {
     }
 
     if root.screen == "connect" : ConnectScreen {
+        language: root.language;
         username: root.connect-username;
         keys-state: root.connect-keys-state;
         socket-state: root.connect-socket-state;
         error-text: root.connect-error;
         busy: root.connect-busy;
+        offline-available: root.connect-offline-available;
         retry-requested => { root.ui-action("connect", "retry", "", "", ""); }
         continue-offline-requested => { root.ui-action("connect", "continue-offline", "", "", ""); }
     }
 
     if root.screen == "invite" : InviteScreen {
+        language: root.language;
         invite-token: root.invite-token;
         failed: root.invite-failed;
         sync-failed: root.invite-sync-failed;
@@ -604,11 +609,13 @@ export component MainWindow inherits Window {
     }
 
     if root.screen == "not_found" && !root.authenticated : NotFoundScreen {
+        language: root.language;
         home-requested => { root.navigate-requested("/"); }
     }
 
     // Local cleanup remains available after retiring the active account.
     if !root.authenticated && root.screen == "settings_accounts" : AccountsSettingsScreen {
+        language: root.language;
         accounts: root.settings-accounts;
         active-account-id: root.settings-active-account-id;
         busy-account-id: root.settings-busy-account-id;
@@ -621,7 +628,7 @@ export component MainWindow inherits Window {
         retry-requested => { root.ui-action("accounts", "retry", "", "", ""); }
     }
 
-    if root.authenticated && root.screen != "landing" && root.screen != "login" && root.screen != "register" && root.screen != "two_factor" && root.screen != "connect" && root.screen != "invite" : AppShell {
+    if root.authenticated && root.screen != "login" && root.screen != "register" && root.screen != "two_factor" && root.screen != "connect" && root.screen != "invite" : AppShell {
         username: root.account-username;
         fh-number: root.account-fh-number;
         account-avatar: root.account-avatar;
@@ -663,13 +670,50 @@ export component MainWindow inherits Window {
             background: Theme.background;
             VerticalLayout {
                 alignment: center;
-                Text { text: "Выберите чат"; color: Theme.foreground; font-size: 14px; horizontal-alignment: center; }
-                Text { text: "История переписки будет показана здесь."; color: Theme.muted; font-size: 12px; horizontal-alignment: center; }
+                cross-axis-alignment: center;
+                spacing: 8px;
+
+                Path {
+                    width: 32px;
+                    height: 32px;
+                    viewbox-width: 24;
+                    viewbox-height: 24;
+                    stroke: Theme.muted;
+                    stroke-width: 1.5px;
+                    fill: transparent;
+                    accessible-role: none;
+                    MoveTo { x: 5; y: 4; }
+                    LineTo { x: 19; y: 4; }
+                    LineTo { x: 21; y: 6; }
+                    LineTo { x: 21; y: 17; }
+                    LineTo { x: 19; y: 19; }
+                    LineTo { x: 8; y: 19; }
+                    LineTo { x: 3; y: 22; }
+                    LineTo { x: 3; y: 6; }
+                    LineTo { x: 5; y: 4; }
+                }
+                Text {
+                    text: root.language == "ru" ? "Выберите чат, чтобы начать переписку" : "Pick a chat to start messaging";
+                    color: Theme.foreground;
+                    font-size: 14px;
+                    font-weight: 500;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                }
+                Text {
+                    text: root.language == "ru" ? "Либо начните новую переписку из меню слева." : "Or start a new conversation from the menu on the left.";
+                    color: Theme.muted;
+                    font-size: 12px;
+                    max-width: 320px;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                }
             }
         }
 
         if root.screen == "chat" : ChatScreen {
             title: root.conversation-title;
+            avatar-label: root.conversation-avatar-label;
             subtitle: root.conversation-subtitle;
             conversation-kind: root.conversation-kind;
             banner-text: root.chat-banner-text;
@@ -741,6 +785,9 @@ export component MainWindow inherits Window {
             attachment-composer-send-enabled: root.chat-attachment-composer-send-enabled;
             attachment-composer-error-text: root.chat-attachment-composer-error-text;
             pending-attachments: root.chat-pending-attachments;
+            voice-recording: root.chat-voice-recording;
+            voice-recording-busy: root.chat-voice-recording-busy;
+            voice-recording-seconds: root.chat-voice-recording-seconds;
             attachment-caption <=> root.chat-attachment-caption;
             back-requested => { root.navigate-requested("/app"); }
             profile-requested => { root.ui-action("profile", "open-conversation", root.selected-conversation-id, "", ""); }
@@ -765,6 +812,7 @@ export component MainWindow inherits Window {
             delete-confirm-requested => { root.ui-action("chat", "delete-confirm", "", "", ""); }
             delete-cancel-requested => { root.ui-action("chat", "delete-cancel", "", "", ""); }
             attachment-open-requested(index, id) => { root.ui-action("attachments", "open-message", "\{index}", id, ""); }
+            attachment-voice-preview-requested(id) => { root.ui-action("attachments", "preview-voice", id, "", ""); }
             reaction-requested(index, emoji) => { root.ui-action("chat", "reaction", "\{index}", emoji, ""); }
             polls-retry-requested => { root.ui-action("polls", "retry", "", "", ""); }
             polls-load-older-requested => { root.ui-action("polls", "load-older", "", "", ""); }
@@ -1094,7 +1142,7 @@ export component MainWindow inherits Window {
             close-requested => { root.ui-action("profile", "close-modal", "", "", ""); }
             avatar-open-requested => { root.ui-action("profile", "avatar-open", "", "", ""); }
             write-requested => { root.ui-action("profile", "message", "", "", ""); }
-            call-requested(video) => { root.ui-action("calls", "profile-call", video ? "true" : "false", "", ""); }
+            call-requested(video) => { root.ui-action("profile", "call", video ? "true" : "false", "", ""); }
             contact-toggle-requested => { root.ui-action("profile", "contact-toggle", "", "", ""); }
             block-toggle-requested => { root.ui-action("profile", "block-toggle", "", "", ""); }
             alias-editor-requested => { root.ui-action("profile", "alias-editor", "", "", ""); }
@@ -1184,10 +1232,12 @@ export component MainWindow inherits Window {
         }
 
         if root.screen == "settings_index" : SettingsIndexScreen {
+            language: root.language;
             back-requested => { root.navigate-requested("/app"); }
             open-section(section) => { root.navigate-requested("/app/settings/" + section); }
         }
         if root.screen == "settings_account" : AccountSettingsScreen {
+            language: root.language;
             username <=> root.account-username;
             fh-number: root.account-fh-number;
             avatar-url: root.settings-account-avatar-url;
@@ -1197,6 +1247,9 @@ export component MainWindow inherits Window {
             status-emoji <=> root.settings-account-status-emoji;
             status-ttl-seconds: root.settings-account-status-ttl-seconds;
             profile-fields: root.settings-account-profile-fields;
+            profile-fields-loading: root.settings-account-profile-fields-loading;
+            profile-fields-loaded: root.settings-account-profile-fields-loaded;
+            profile-fields-error: root.settings-account-profile-fields-error;
             username-valid: root.settings-account-username-valid;
             username-error: root.settings-account-username-error;
             account-error-text: root.settings-account-error-text;
@@ -1215,6 +1268,7 @@ export component MainWindow inherits Window {
             add-profile-field-requested => { root.ui-action("account-settings", "field-add", "", "", ""); }
             remove-profile-field-requested(index) => { root.ui-action("account-settings", "field-remove", "\{index}", "", ""); }
             save-profile-fields-requested => { root.ui-action("account-settings", "save-profile-fields", "", "", ""); }
+            retry-profile-fields-requested => { root.ui-action("account-settings", "retry-profile-fields", "", "", ""); }
         }
         if root.screen == "settings_appearance" : AppearanceSettingsScreen {
             theme-value: root.light-mode ? "light" : "dark";
@@ -1246,6 +1300,7 @@ export component MainWindow inherits Window {
             reset-colors-requested => { root.ui-action("appearance", "reset-colors", "", "", ""); }
         }
         if root.screen == "settings_privacy" : PrivacySettingsScreen {
+            language: root.language;
             dm-policy: root.privacy-dm-policy;
             group-add-policy: root.privacy-group-add-policy;
             invisible: root.privacy-invisible;
@@ -1280,6 +1335,7 @@ export component MainWindow inherits Window {
             account-unblocked(id) => { root.ui-action("privacy", "unblock-contact", id, "", ""); }
         }
         if root.screen == "settings_security" : SecuritySettingsScreen {
+            language: root.language;
             totp-enabled: root.security-totp-enabled;
             sessions: root.security-sessions;
             devices: root.security-devices;
@@ -1311,6 +1367,7 @@ export component MainWindow inherits Window {
             select-history-conversation(id) => { root.ui-action("security", "select-history-conversation", id, "", ""); }
         }
         if root.screen == "settings_twofactor" : TwoFactorSetupScreen {
+            language: root.language;
             enabled: root.twofactor-setup-enabled;
             enrollment-started: root.twofactor-setup-enrollment-started;
             has-qr-image: root.twofactor-setup-has-qr-image;
@@ -1333,6 +1390,7 @@ export component MainWindow inherits Window {
             disable-requested(password, code) => { root.ui-action("twofactor-setup", "disable", password, code, ""); }
         }
         if root.screen == "settings_notifications" : NotificationsSettingsScreen {
+            language: root.language;
             sound-enabled: root.notifications-sound-enabled;
             sound-value: root.notifications-sound-value;
             sound-options: root.notifications-sound-options;
@@ -1348,6 +1406,7 @@ export component MainWindow inherits Window {
             open-system-notification-settings => { root.ui-action("notifications", "open-system-settings", "", "", ""); }
         }
         if root.screen == "settings_accounts" : AccountsSettingsScreen {
+            language: root.language;
             accounts: root.settings-accounts;
             active-account-id: root.settings-active-account-id;
             busy-account-id: root.settings-busy-account-id;
@@ -1360,6 +1419,7 @@ export component MainWindow inherits Window {
             retry-requested => { root.ui-action("accounts", "retry", "", "", ""); }
         }
         if root.screen == "settings_bots" : BotsSettingsScreen {
+            language: root.language;
             bots: root.settings-bots;
             loading: root.settings-bots-loading;
             can-create: root.settings-bots-can-create;
@@ -1377,6 +1437,7 @@ export component MainWindow inherits Window {
             retry-requested => { root.ui-action("bots", "retry", "", "", ""); }
         }
         if root.screen == "settings_about" : AboutSettingsScreen {
+            language: root.language;
             app-version: root.about-app-version;
             repository-url: root.about-repository-url;
             native-releases-url: root.about-native-releases-url;
@@ -1399,6 +1460,7 @@ export component MainWindow inherits Window {
             logout-requested => { root.ui-action("auth", "logout", "", "", ""); }
         }
         if root.screen == "not_found" : NotFoundScreen {
+            language: root.language;
             home-requested => { root.navigate-requested("/app"); }
         }
     }

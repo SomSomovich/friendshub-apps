@@ -81,6 +81,10 @@ export component CreateChannelScreen inherits Rectangle {
     callback create-requested();
 
     private property <int> current-step: 0;
+    private property <string> checked-handle: "";
+    private property <string> checked-discussion-handle: "";
+    private property <bool> show-handle-error: root.handle-feedback-error && root.handle == root.checked-handle;
+    private property <bool> show-discussion-handle-error: root.discussion-kind == "new" && root.discussion-handle-feedback-error && root.discussion-handle == root.checked-discussion-handle && root.handle == root.checked-handle;
     private property <bool> channel-title-ready: !root.channel-title.replace-all(" ", "").replace-all("\u{9}", "").replace-all("\u{d}", "").replace-all("\n", "").is-empty;
     private property <bool> discussion-title-ready: !root.discussion-title.replace-all(" ", "").replace-all("\u{9}", "").replace-all("\u{d}", "").replace-all("\n", "").is-empty;
     private property <bool> discussion-is-ready: root.discussion-kind == "none" || (root.discussion-kind == "existing" ? (!root.groups-loading && root.discussion-ready) : root.discussion-title-ready);
@@ -106,6 +110,8 @@ export component CreateChannelScreen inherits Rectangle {
             if root.current-step < 2 {
                 root.current-step += 1;
             } else {
+                root.checked-handle = root.handle;
+                root.checked-discussion-handle = root.discussion-handle;
                 root.create-requested();
             }
         }
@@ -117,8 +123,8 @@ export component CreateChannelScreen inherits Rectangle {
             description-value <=> root.description;
             handle-value <=> root.handle;
             is-public <=> root.is-public;
-            handle-feedback: root.handle-feedback;
-            handle-feedback-error: root.handle-feedback-error;
+            handle-feedback: root.handle-feedback-error && !root.show-handle-error ? "" : root.handle-feedback;
+            handle-feedback-error: root.show-handle-error;
         }
         if root.current-step == 1 : Rectangle {
             border-radius: 12px;
@@ -181,7 +187,7 @@ export component CreateChannelScreen inherits Rectangle {
                         value <=> root.discussion-handle;
                         password: false;
                         helper: root.discussion-handle-feedback-error ? "" : root.discussion-handle-feedback;
-                        error: root.discussion-handle-feedback-error ? root.discussion-handle-feedback : "";
+                        error: root.show-discussion-handle-error ? root.discussion-handle-feedback : "";
                     }
                 }
 
@@ -250,6 +256,10 @@ export component CreateChannelScreen inherits Rectangle {
                 { label: "Группа для обсуждений", value: root.discussion-kind == "none" ? "Нет" : (root.discussion-kind == "new" ? (root.discussion-title-ready ? root.discussion-title : "Введите название группы обсуждения") : root.discussion-summary) }
             ];
             note: "";
+            error-message: root.show-handle-error ? root.handle-feedback : (root.show-discussion-handle-error ? root.discussion-handle-feedback : "");
+            error-action-label: root.show-handle-error ? "Изменить адрес канала" : "Изменить адрес обсуждения";
+            busy: root.busy;
+            error-edit-requested => { root.current-step = root.show-handle-error ? 0 : 1; }
         }
     }
 }

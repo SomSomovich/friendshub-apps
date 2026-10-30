@@ -1,15 +1,16 @@
 import { Theme } from "../theme.slint";
-import { FHPrimaryButton } from "../components.slint";
+import { FHSecondaryButton } from "../components.slint";
 import { SettingsCard, SettingsChoice, SettingsFrame, SettingsOption, SettingsToggle } from "common.slint";
 
 export component NotificationsSettingsScreen inherits Rectangle {
+    in property <string> language: "ru";
     in property <bool> sound-enabled: true;
     in property <string> sound-value: "chime";
     in property <[SettingsOption]> sound-options: [
-        { value: "chime", label: "Перезвон" },
-        { value: "ping", label: "Сигнал" },
-        { value: "pop", label: "Щелчок" },
-        { value: "none", label: "Без звука" },
+        { value: "chime", label: root.language == "ru" ? "Перезвон" : "Chime" },
+        { value: "ping", label: root.language == "ru" ? "Сигнал" : "Ping" },
+        { value: "pop", label: root.language == "ru" ? "Щелчок" : "Pop" },
+        { value: "none", label: root.language == "ru" ? "Без звука" : "Silent" },
     ];
     in property <string> os-permission: "prompt";
     in property <string> push-status: "";
@@ -28,15 +29,16 @@ export component NotificationsSettingsScreen inherits Rectangle {
     background: Theme.background;
 
     SettingsFrame {
-        title: "Уведомления";
+        language: root.language;
+        title: root.language == "ru" ? "Уведомления" : "Notifications";
         back-requested => { root.back-requested(); }
 
         SettingsCard {
-            title: "Звук сообщений";
-            description: "Короткий сигнал при новом сообщении.";
+            title: root.language == "ru" ? "Звук сообщений" : "Message sound";
+            description: root.language == "ru" ? "Короткий сигнал при новом сообщении." : "A short tone when a message arrives.";
 
             SettingsToggle {
-                label: "Включён";
+                label: root.language == "ru" ? "Включён" : "Enabled";
                 checked: root.sound-enabled;
                 enabled: !root.busy;
                 changed(value) => {
@@ -46,7 +48,8 @@ export component NotificationsSettingsScreen inherits Rectangle {
             }
 
             SettingsChoice {
-                label: "Звук сообщений";
+                label: root.language == "ru" ? "Звук сообщений" : "Message sound";
+                show-label: false;
                 value: root.sound-value;
                 options: root.sound-options;
                 enabled: root.sound-enabled && !root.busy;
@@ -59,15 +62,15 @@ export component NotificationsSettingsScreen inherits Rectangle {
         }
 
         SettingsCard {
-            title: "Системные уведомления";
-            description: "Разрешение ОС показывать уведомления вне приложения.";
+            title: root.language == "ru" ? "Системные уведомления" : "System notifications";
+            description: root.language == "ru" ? "Разрешение ОС показывать уведомления вне приложения." : "The operating system's permission to show notifications outside the app.";
 
             Text {
-                text: root.os-permission == "granted" ? "Разрешено" :
-                    root.os-permission == "denied" ? "Запрещено — измените разрешение в настройках системы" :
-                    root.os-permission == "unsupported" ? "Системные уведомления недоступны на этой платформе" :
-                    root.os-permission == "pending" ? "Запрос отправлен — после ответа системы откройте раздел снова" :
-                    "Разрешение ещё не запрошено";
+                text: root.os-permission == "granted" ? (root.language == "ru" ? "Разрешено" : "Granted") :
+                    root.os-permission == "denied" ? (root.language == "ru" ? "Запрещено — измените разрешение в настройках системы" : "Denied — change permission in system settings") :
+                    root.os-permission == "unsupported" ? (root.language == "ru" ? "Системные уведомления недоступны на этой платформе" : "System notifications are unavailable on this platform") :
+                    root.os-permission == "pending" ? (root.language == "ru" ? "Запрос отправлен — после ответа системы откройте раздел снова" : "Request sent — reopen this section after responding to the system prompt") :
+                    (root.language == "ru" ? "Разрешение ещё не запрошено" : "Permission not requested yet");
                 color: root.os-permission == "denied" ? Theme.danger : Theme.muted;
                 font-size: 12px;
                 wrap: word-wrap;
@@ -82,14 +85,14 @@ export component NotificationsSettingsScreen inherits Rectangle {
                 width: 100%;
             }
 
-            if root.os-permission == "prompt" : FHPrimaryButton {
-                text: "Запросить разрешение";
+            if root.os-permission == "prompt" : FHSecondaryButton {
+                text: root.language == "ru" ? "Запросить разрешение" : "Request permission";
                 enabled: root.permission-request-supported && !root.busy;
                 busy: root.busy;
                 clicked => { root.request-system-notification-permission(); }
             }
-            if root.os-permission == "denied" : FHPrimaryButton {
-                text: "Открыть настройки уведомлений";
+            if root.os-permission == "denied" : FHSecondaryButton {
+                text: root.language == "ru" ? "Открыть настройки уведомлений" : "Open notification settings";
                 enabled: !root.busy;
                 clicked => { root.open-system-notification-settings(); }
             }

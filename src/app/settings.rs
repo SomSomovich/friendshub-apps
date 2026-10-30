@@ -10,7 +10,7 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -48,11 +48,15 @@ const MAX_PROFILE_AVATAR_BASE64_BYTES: usize = MAX_PROFILE_AVATAR_BYTES.div_ceil
 const MAX_OTPAUTH_URI_BYTES: usize = 2048;
 const QR_QUIET_ZONE_MODULES: usize = 4;
 const QR_MODULE_SCALE: usize = 4;
-const WEB_REPOSITORY_URL: &str = "https://github.com/SomSomovich/friendshubWEB";
+const NATIVE_REPOSITORY_URL: &str = "https://github.com/SomSomovich/friendshub-apps";
 const CORE_REPOSITORY_URL: &str = "https://github.com/SomSomovich/friendshub-core";
 const NATIVE_RELEASES_URL: &str = "https://github.com/SomSomovich/friendshub-apps/releases";
 static PREFERENCES_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static USER_PROFILE_ID: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+static OWN_PROFILE_FIELDS_SESSION: OnceLock<Mutex<Option<ActiveSession>>> = OnceLock::new();
+static OWN_PROFILE_LOAD_GENERATION: AtomicU64 = AtomicU64::new(0);
+static OWN_PROFILE_FIELDS_GENERATION: AtomicU64 = AtomicU64::new(0);
+static OWN_PROFILE_FIELDS_DIRTY: AtomicBool = AtomicBool::new(false);
 static USER_PROFILE_ALIAS_GENERATION: AtomicU64 = AtomicU64::new(0);
 static USER_PROFILE_LOAD_GENERATION: AtomicU64 = AtomicU64::new(0);
 static USER_PROFILE_ALIAS_WRITE_GENERATION: AtomicU64 = AtomicU64::new(0);
@@ -346,8 +350,10 @@ fn load_profile_avatar_bytes(client: &Client, account_id: &str) -> Option<Vec<u8
 }
 
 fn load_own_profile(ctx: &AppContext) {
+    let generation = OWN_PROFILE_LOAD_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
     if let Some(window) = ctx.ui.upgrade() {
         window.set_profile_copy_status_text(SharedString::default());
+        window.set_settings_account_error_text(SharedString::default());
     }
     let Some(session) = ctx.active_session() else {
         return;
@@ -365,17 +371,18 @@ fn load_own_profile(ctx: &AppContext) {
         "friendshub-settings-profile-load",
         move |client| {
             let current = profile::get_own_profile(client)?;
-            let fields = profile::get_profile_fields(client)?;
             let avatar_bytes = current
                 .avatar_url
                 .as_deref()
                 .filter(|url| !url.trim().is_empty())
                 .and_then(|_| load_profile_avatar_bytes(client, &current.id));
-            Ok((current, fields, avatar_bytes))
+            Ok((current, avatar_bytes))
         },
         move |window, result| match result {
-            Ok((current, fields, avatar_bytes)) => {
-                if !same_settings_session(&context, &expected_session) {
+            Ok((current, avatar_bytes)) => {
+                if !same_settings_session(&context, &expected_session)
+                    || OWN_PROFILE_LOAD_GENERATION.load(Ordering::SeqCst) != generation
+                {
                     return;
                 }
                 if let Err(error) = refresh_local_account(&accounts, &current) {
@@ -408,17 +415,6 @@ fn load_own_profile(ctx: &AppContext) {
                 window.set_profile_has_avatar(has_avatar);
                 window.set_profile_avatar_image(avatar_image.clone().unwrap_or_default());
                 window.set_profile_avatar_initials(initials(&current.username).into());
-                window.set_profile_fields(model(
-                    fields
-                        .fields
-                        .iter()
-                        .map(|field| OwnProfileField {
-                            label: field.label.clone().into(),
-                            value: field.value.clone().into(),
-                        })
-                        .collect(),
-                ));
-
                 window.set_settings_account_avatar_url(
                     current.avatar_url.clone().unwrap_or_default().into(),
                 );
@@ -444,20 +440,8 @@ fn load_own_profile(ctx: &AppContext) {
                 window.set_settings_account_status_custom_ttl_seconds(status_custom_ttl(
                     current.custom_status_expires_at,
                 ));
-                window.set_settings_account_profile_fields(model(
-                    fields
-                        .fields
-                        .into_iter()
-                        .map(|field| SettingsProfileField {
-                            label: field.label.into(),
-                            value: field.value.into(),
-                        })
-                        .collect(),
-                ));
                 window.set_settings_account_username_valid(true);
                 window.set_settings_account_username_error(SharedString::default());
-                window.set_settings_account_error_text(SharedString::default());
-                window.set_settings_account_busy(false);
 
                 window.set_security_totp_enabled(current.totp_enabled);
                 window.set_twofactor_setup_enabled(current.totp_enabled);
@@ -469,12 +453,150 @@ fn load_own_profile(ctx: &AppContext) {
                     current.totp_enabled,
                 );
             }
-            Err(error) => report_core_failure("load own profile", error),
+            Err(error) => {
+                if same_settings_session(&context, &expected_session)
+                    && OWN_PROFILE_LOAD_GENERATION.load(Ordering::SeqCst) == generation
+                {
+                    show_own_profile_load_error(&window, error.user_message());
+                    report_core_failure("load own profile", error);
+                }
+            }
         },
     );
     if let Err(error) = result {
+        let message = error.to_string();
+        let failure_context = ctx.clone();
+        let failure_session = session.clone();
+        ctx.apply_ui(move |window| {
+            if same_settings_session(&failure_context, &failure_session)
+                && OWN_PROFILE_LOAD_GENERATION.load(Ordering::SeqCst) == generation
+            {
+                show_own_profile_load_error(&window, &message);
+            }
+        });
         report_dispatch_failure("load own profile", error);
     }
+
+    if !OWN_PROFILE_FIELDS_DIRTY.load(Ordering::SeqCst) {
+        load_own_profile_fields(ctx);
+    }
+}
+
+fn load_own_profile_fields(ctx: &AppContext) {
+    let generation = OWN_PROFILE_FIELDS_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+    if let Ok(mut loaded_session) = OWN_PROFILE_FIELDS_SESSION
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+    {
+        *loaded_session = None;
+    }
+    let Some(window) = ctx.ui.upgrade() else {
+        return;
+    };
+    window.set_settings_account_profile_fields_loaded(false);
+    window.set_settings_account_profile_fields_loading(true);
+    window.set_settings_account_profile_fields_error(SharedString::default());
+    let Some(session) = ctx.active_session() else {
+        window.set_settings_account_profile_fields_loading(false);
+        return;
+    };
+    let fields_context = ctx.clone();
+    let fields_session = session.clone();
+    let fields_result = call_client(
+        session.core.clone(),
+        ctx.ui.clone(),
+        "friendshub-settings-profile-fields-load",
+        profile::get_profile_fields,
+        move |window, result| {
+            if !same_settings_session(&fields_context, &fields_session)
+                || OWN_PROFILE_FIELDS_GENERATION.load(Ordering::SeqCst) != generation
+            {
+                return;
+            }
+            window.set_settings_account_profile_fields_loading(false);
+            match result {
+                Ok(fields) => {
+                    window.set_profile_fields(model(
+                        fields
+                            .fields
+                            .iter()
+                            .map(|field| OwnProfileField {
+                                label: field.label.clone().into(),
+                                value: field.value.clone().into(),
+                            })
+                            .collect(),
+                    ));
+                    window.set_settings_account_profile_fields(model(
+                        fields
+                            .fields
+                            .into_iter()
+                            .map(|field| SettingsProfileField {
+                                label: field.label.into(),
+                                value: field.value.into(),
+                            })
+                            .collect(),
+                    ));
+                    if let Ok(mut loaded_session) = OWN_PROFILE_FIELDS_SESSION
+                        .get_or_init(|| Mutex::new(None))
+                        .lock()
+                    {
+                        *loaded_session = Some(fields_session);
+                        window.set_settings_account_profile_fields_loaded(true);
+                    } else {
+                        let message = if window.get_language() == "ru" {
+                            "Не удалось подготовить поля профиля. Повторите попытку."
+                        } else {
+                            "Could not prepare profile fields. Please retry."
+                        };
+                        window.set_settings_account_profile_fields_error(message.into());
+                    }
+                }
+                Err(error) => {
+                    let prefix = if window.get_language() == "ru" {
+                        "Не удалось загрузить поля профиля"
+                    } else {
+                        "Could not load profile fields"
+                    };
+                    let message = format!("{prefix}: {}", error.user_message());
+                    window.set_settings_account_profile_fields_error(message.clone().into());
+                    window.set_profile_copy_status_text(message.into());
+                    report_core_failure("load profile fields", error);
+                }
+            }
+        },
+    );
+    if let Err(error) = fields_result {
+        let message = error.to_string();
+        let failure_context = ctx.clone();
+        let failure_session = session.clone();
+        ctx.apply_ui(move |window| {
+            if same_settings_session(&failure_context, &failure_session)
+                && OWN_PROFILE_FIELDS_GENERATION.load(Ordering::SeqCst) == generation
+            {
+                window.set_settings_account_profile_fields_loading(false);
+                let prefix = if window.get_language() == "ru" {
+                    "Не удалось загрузить поля профиля"
+                } else {
+                    "Could not load profile fields"
+                };
+                window.set_settings_account_profile_fields_error(
+                    format!("{prefix}: {message}").into(),
+                );
+            }
+        });
+        report_dispatch_failure("load profile fields", error);
+    }
+}
+
+fn show_own_profile_load_error(window: &MainWindow, message: &str) {
+    let previous = window.get_settings_account_error_text();
+    let text = if previous.is_empty() {
+        message.to_owned()
+    } else {
+        format!("{previous}\n{message}")
+    };
+    window.set_settings_account_error_text(text.clone().into());
+    window.set_profile_copy_status_text(text.into());
 }
 
 fn refresh_local_account(
@@ -635,7 +757,7 @@ fn load_about(ctx: &AppContext) {
     ABOUT_UPDATE_GENERATION.fetch_add(1, Ordering::SeqCst);
     ctx.apply_ui(|window| {
         window.set_about_app_version(env!("CARGO_PKG_VERSION").into());
-        window.set_about_repository_url(WEB_REPOSITORY_URL.into());
+        window.set_about_repository_url(NATIVE_REPOSITORY_URL.into());
         window.set_about_native_releases_url(NATIVE_RELEASES_URL.into());
         window.set_about_core_repository_url(CORE_REPOSITORY_URL.into());
         window.set_about_updater_supported(true);
@@ -970,12 +1092,14 @@ fn load_security(ctx: &AppContext) {
             }
 
             match events {
-                Ok(items) => window.set_security_events(model(
-                    items
+                Ok(items) => {
+                    let language = window.get_language();
+                    let rows = items
                         .into_iter()
                         .map(|event| SecurityEvent {
                             id: event.id.into(),
-                            event_type: event.event_type.into(),
+                            event_type: security_event_label(&event.event_type, language.as_str())
+                                .into(),
                             created_at: format_security_timestamp(event.created_at).into(),
                             detail: [event.ip_address, event.user_agent, event.metadata]
                                 .into_iter()
@@ -985,8 +1109,9 @@ fn load_security(ctx: &AppContext) {
                                 .join(" · ")
                                 .into(),
                         })
-                        .collect(),
-                )),
+                        .collect();
+                    window.set_security_events(model(rows));
+                }
                 Err(error) => {
                     report_core_failure("load security events", error.into());
                     window.set_security_events_error(
@@ -1043,6 +1168,84 @@ fn load_security(ctx: &AppContext) {
             );
         });
     }
+}
+
+fn security_event_label(event_type: &str, language: &str) -> String {
+    let english = language == "en";
+    let label = match event_type {
+        "login_ok" => {
+            if english {
+                "Signed in"
+            } else {
+                "Вход выполнен"
+            }
+        }
+        "login_failed" => {
+            if english {
+                "Failed sign-in"
+            } else {
+                "Неудачный вход"
+            }
+        }
+        "logout" => {
+            if english {
+                "Signed out"
+            } else {
+                "Выход из аккаунта"
+            }
+        }
+        "password_changed" => {
+            if english {
+                "Password changed"
+            } else {
+                "Пароль изменён"
+            }
+        }
+        "totp_enabled" => {
+            if english {
+                "Two-factor enabled"
+            } else {
+                "2FA включена"
+            }
+        }
+        "totp_disabled" => {
+            if english {
+                "Two-factor disabled"
+            } else {
+                "2FA выключена"
+            }
+        }
+        "session_revoked" => {
+            if english {
+                "Session ended"
+            } else {
+                "Сессия завершена"
+            }
+        }
+        "device_added" => {
+            if english {
+                "Device added"
+            } else {
+                "Устройство добавлено"
+            }
+        }
+        "device_revoked" => {
+            if english {
+                "Device revoked"
+            } else {
+                "Устройство отозвано"
+            }
+        }
+        "recovery_codes_regenerated" => {
+            if english {
+                "Backup codes regenerated"
+            } else {
+                "Резервные коды обновлены"
+            }
+        }
+        other => other,
+    };
+    label.to_owned()
 }
 
 fn format_security_timestamp(timestamp: i64) -> String {
@@ -1124,6 +1327,12 @@ fn handle_profile(ctx: &AppContext, action: &str, arg1: &str, _arg2: &str, _arg3
         }
         "block-toggle" => toggle_public_profile_block(ctx),
         "contact-toggle" => toggle_public_profile_contact(ctx),
+        "call" => {
+            let Some(peer_account_id) = user_profile_id() else {
+                return false;
+            };
+            crate::app::media::start_profile_call(ctx, peer_account_id, arg1 == "true")
+        }
         "alias-editor" => {
             let Some(window) = ctx.ui.upgrade() else {
                 return false;
@@ -1699,6 +1908,10 @@ fn handle_account_settings(
             update_profile_field_draft(ctx, action, arg1, arg2)
         }
         "save-profile-fields" => save_profile_fields(ctx),
+        "retry-profile-fields" => {
+            load_own_profile_fields(ctx);
+            true
+        }
         "status-duration" => open_status_duration_editor(ctx),
         "status-duration-choice" => choose_status_duration(ctx, arg1),
         "status-hours-changed" => update_status_duration_fields(ctx, Some(arg1), None),
@@ -2091,9 +2304,9 @@ fn avatar_picker_error_message(error: &PickerError, russian: bool) -> &'static s
     match error {
         PickerError::MissingActivityResultHook => {
             if russian {
-                "На Android пока недоступен выбор файла: приложение не получает результат системного окна."
+                "Не удалось инициализировать системный выбор файла Android."
             } else {
-                "File selection is not available on Android yet because the app cannot receive the system picker result."
+                "The Android system file picker could not be initialized."
             }
         }
         PickerError::Busy => {
@@ -2209,6 +2422,11 @@ fn update_profile_field_draft(ctx: &AppContext, action: &str, index: &str, value
     let action = action.to_owned();
     let value = value.to_owned();
     ctx.apply_ui(move |window| {
+        if !window.get_settings_account_profile_fields_loaded()
+            || window.get_settings_account_busy()
+        {
+            return;
+        }
         let current = window.get_settings_account_profile_fields();
         let mut rows = model_rows(&current);
         match action.as_str() {
@@ -2234,6 +2452,7 @@ fn update_profile_field_draft(ctx: &AppContext, action: &str, index: &str, value
             _ => return,
         }
         window.set_settings_account_profile_fields(model(rows));
+        OWN_PROFILE_FIELDS_DIRTY.store(true, Ordering::SeqCst);
     });
     true
 }
@@ -2248,6 +2467,21 @@ fn save_profile_fields(ctx: &AppContext) -> bool {
     let Some(window) = ctx.ui.upgrade() else {
         return false;
     };
+    let fields_loaded = OWN_PROFILE_FIELDS_SESSION
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .ok()
+        .and_then(|session| session.clone())
+        .is_some_and(|session| same_settings_session(ctx, &session));
+    if !fields_loaded {
+        let message = if window.get_language() == "ru" {
+            "Поля профиля не загружены. Откройте настройки аккаунта заново и повторите попытку."
+        } else {
+            "Profile fields are not loaded. Reopen account settings and try again."
+        };
+        window.set_settings_account_error_text(message.into());
+        return false;
+    }
     let fields = model_rows(&window.get_settings_account_profile_fields())
         .into_iter()
         .map(|field| profile::ProfileField {
@@ -2272,9 +2506,15 @@ fn save_profile_fields(ctx: &AppContext) -> bool {
         move |window, result| {
             window.set_settings_account_busy(false);
             match result {
-                Ok(response) if response.updated => load_own_profile(&context),
+                Ok(response) if response.updated => {
+                    OWN_PROFILE_FIELDS_DIRTY.store(false, Ordering::SeqCst);
+                    load_own_profile(&context);
+                }
                 Ok(_) => {}
-                Err(error) => report_core_failure("save profile fields", error),
+                Err(error) => {
+                    window.set_settings_account_error_text(error.user_message().into());
+                    report_core_failure("save profile fields", error);
+                }
             }
         },
     )
@@ -2932,6 +3172,21 @@ fn load_device_history_page(ctx: &AppContext, conversation_id: &str, older: bool
 /// Invalidate secret-bearing work before clearing account-bound UI state.
 /// Call on the UI thread only after the session transition succeeds.
 pub(super) fn clear_account_transients(window: &MainWindow) {
+    OWN_PROFILE_LOAD_GENERATION.fetch_add(1, Ordering::SeqCst);
+    OWN_PROFILE_FIELDS_GENERATION.fetch_add(1, Ordering::SeqCst);
+    OWN_PROFILE_FIELDS_DIRTY.store(false, Ordering::SeqCst);
+    window.set_settings_account_profile_fields_loaded(false);
+    window.set_settings_account_profile_fields_loading(false);
+    window.set_settings_account_profile_fields_error(SharedString::default());
+    if let Ok(mut loaded_session) = OWN_PROFILE_FIELDS_SESSION
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+    {
+        *loaded_session = None;
+    }
+    window.set_profile_fields(model(Vec::new()));
+    window.set_settings_account_profile_fields(model(Vec::new()));
+    window.set_settings_account_busy(false);
     clear_twofactor_flow(window);
     window.set_profile_copy_status_text(SharedString::default());
     BOT_TOKEN_GENERATION.fetch_add(1, Ordering::SeqCst);
@@ -3845,7 +4100,7 @@ fn handle_about(ctx: &AppContext, action: &str, value: &str, opened: &str) -> bo
             let Some(window) = ctx.ui.upgrade() else {
                 return false;
             };
-            if value != WEB_REPOSITORY_URL
+            if value != NATIVE_REPOSITORY_URL
                 && value != NATIVE_RELEASES_URL
                 && value != CORE_REPOSITORY_URL
             {
@@ -4131,7 +4386,11 @@ where
                         window.set_twofactor_setup_busy(false);
                         window.set_twofactor_setup_error_text(message.into());
                     }
-                    "save profile fields" | "clear custom status" | "update custom status" => {
+                    "save profile fields" => {
+                        window.set_settings_account_busy(false);
+                        window.set_settings_account_error_text(message.into());
+                    }
+                    "clear custom status" | "update custom status" => {
                         window.set_settings_account_busy(false);
                     }
                     "remove own avatar" => {

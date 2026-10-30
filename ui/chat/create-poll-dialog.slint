@@ -1,6 +1,8 @@
 import { Theme } from "../theme.slint";
 import { ChatAction } from "chat-controls.slint";
-import { ScrollView, TextEdit } from "std-widgets.slint";
+import { FHIconButton, FHSecondaryButton, FHTextArea, FHPrimaryButton } from "../components.slint";
+import { IconCheck, IconX } from "../icons.slint";
+import { ScrollView } from "std-widgets.slint";
 
 export struct PollDraftOption {
     id: string,
@@ -75,7 +77,13 @@ export component CreatePollDialog inherits Rectangle {
                         padding-right: 8px;
                         spacing: 8px;
                         Text { text: "Новый опрос"; color: Theme.foreground; font-size: 16px; font-weight: 600; horizontal-stretch: 1; vertical-alignment: center; }
-                        ChatAction { label: "×"; accessible-name: "Закрыть создание опроса"; enabled: !root.busy; clicked => { root.close-requested(); } }
+                        FHIconButton {
+                            button-size: 32px;
+                            label: "Закрыть создание опроса";
+                            enabled: !root.busy;
+                            clicked => { root.close-requested(); }
+                            IconX { width: 16px; height: 16px; x: 8px; y: 8px; stroke: Theme.muted; }
+                        }
                     }
                 }
 
@@ -112,21 +120,12 @@ export component CreatePollDialog inherits Rectangle {
                             Text { text: "Описание"; color: Theme.muted; font-size: 11px; horizontal-stretch: 1; }
                             Text { text: root.description-count-label; color: Theme.muted; font-size: 10px; }
                         }
-                        Rectangle {
-                            height: 66px;
-                            background: Theme.background;
-                            border-width: 1px;
-                            border-color: description-input.has-focus ? Theme.accent : Theme.border;
-                            border-radius: 8px;
-                            description-input := TextEdit {
-                                x: 10px; y: 7px; width: parent.width - 20px; height: parent.height - 14px;
-                                text <=> root.description;
-                                placeholder-text: "Описание (необязательно)";
-                                font-size: 12px;
-                                wrap: word-wrap;
-                                enabled: !root.busy;
-                                edited => { root.description-changed(self.text); }
-                            }
+                        FHTextArea {
+                            placeholder: "Описание (необязательно)";
+                            value <=> root.description;
+                            area-height: 66px;
+                            enabled: !root.busy;
+                            value-edited(value) => { root.description-changed(value); }
                         }
 
                         VerticalLayout {
@@ -156,46 +155,47 @@ export component CreatePollDialog inherits Rectangle {
                                     edited => { root.option-changed(index, self.text); }
                                 }
                             }
-                            if root.is-quiz : ChatAction {
-                                label: option.correct ? "✓" : "○";
-                                accessible-name: "Правильный вариант";
+                            if root.is-quiz : FHIconButton {
+                                button-size: 38px;
+                                label: "Правильный вариант";
                                 active: option.correct;
                                 enabled: !root.busy;
                                 clicked => { root.option-correct-requested(index); }
+                                IconCheck { width: 16px; height: 16px; x: 11px; y: 11px; stroke: option.correct ? Theme.accent : Theme.muted; }
                             }
-                            ChatAction {
-                                label: "×";
-                                accessible-name: "Удалить вариант ответа";
-                                danger: true;
+                            FHIconButton {
+                                button-size: 38px;
+                                label: "Удалить вариант ответа";
                                 enabled: !root.busy && option.can-remove;
                                 clicked => { root.option-remove-requested(index); }
+                                IconX { width: 16px; height: 16px; x: 11px; y: 11px; stroke: Theme.danger; }
                             }
                         }
                         HorizontalLayout {
-                            ChatAction { label: "+ Добавить вариант"; enabled: !root.busy && root.can-add-option; clicked => { root.option-add-requested(); } }
+                            FHSecondaryButton { text: "Добавить вариант"; height: 38px; enabled: !root.busy && root.can-add-option; clicked => { root.option-add-requested(); } }
                             Rectangle { horizontal-stretch: 1; background: transparent; }
                         }
 
                         if !root.is-quiz : ChatAction {
-                            label: root.allows-multiple ? "✓ Несколько вариантов" : "Несколько вариантов";
+                            label: "Несколько вариантов";
                             active: root.allows-multiple;
                             enabled: !root.busy;
                             clicked => { root.multiple-changed(!root.allows-multiple); }
                         }
                         ChatAction {
-                            label: root.allows-revoting ? "✓ Разрешить менять ответ" : "Разрешить менять ответ";
+                            label: "Разрешить менять ответ";
                             active: root.allows-revoting;
                             enabled: !root.busy;
                             clicked => { root.revoting-changed(!root.allows-revoting); }
                         }
                         ChatAction {
-                            label: root.allows-user-options ? "✓ Разрешить предлагать варианты" : "Разрешить предлагать варианты";
+                            label: "Разрешить предлагать варианты";
                             active: root.allows-user-options;
                             enabled: !root.busy;
                             clicked => { root.user-options-changed(!root.allows-user-options); }
                         }
                         ChatAction {
-                            label: root.closes-automatically ? "✓ Завершить по таймеру" : "Завершить по таймеру";
+                            label: "Завершить по таймеру";
                             active: root.closes-automatically;
                             enabled: !root.busy;
                             clicked => { root.auto-close-changed(!root.closes-automatically); }
@@ -217,11 +217,12 @@ export component CreatePollDialog inherits Rectangle {
                         padding-right: 16px;
                         spacing: 8px;
                         Rectangle { horizontal-stretch: 1; background: transparent; }
-                        ChatAction { label: "Отмена"; enabled: !root.busy; clicked => { root.close-requested(); } }
-                        ChatAction {
-                            label: root.busy ? "Создаём…" : "Создать опрос";
-                            active: true;
+                        FHSecondaryButton { text: "Отмена"; height: 36px; enabled: !root.busy; clicked => { root.close-requested(); } }
+                        FHPrimaryButton {
+                            text: "Создать опрос";
+                            height: 36px;
                             enabled: root.can-create && !root.busy;
+                            busy: root.busy;
                             clicked => { root.create-requested(); }
                         }
                     }

@@ -1,5 +1,6 @@
 import { Theme } from "../theme.slint";
-import { ChatAction } from "chat-controls.slint";
+import { FHEmptyState, FHIconButton, FHSecondaryButton, FHSkeleton } from "../components.slint";
+import { IconChevronDown, IconChevronUp, IconMessageSquare, IconSearch, IconX } from "../icons.slint";
 import { ScrollView } from "std-widgets.slint";
 
 export struct ChatSearchResult {
@@ -35,11 +36,21 @@ export component ChatSearchPanel inherits Rectangle {
     VerticalLayout {
         spacing: 0px;
         Rectangle {
-            height: 48px;
+            height: 52px;
             background: Theme.surface;
+
+            Rectangle {
+                y: parent.height - 1px;
+                width: parent.width;
+                height: 1px;
+                background: Theme.border;
+            }
+
             HorizontalLayout {
-                padding: 6px;
+                padding: 8px;
                 spacing: 4px;
+                cross-axis-alignment: center;
+
                 Rectangle {
                     height: 36px;
                     horizontal-stretch: 1;
@@ -47,26 +58,66 @@ export component ChatSearchPanel inherits Rectangle {
                     border-width: 1px;
                     border-color: input.has-focus ? Theme.accent : Theme.border;
                     border-radius: 8px;
-                    input := TextInput {
+
+                    IconSearch {
+                        width: 15px;
+                        height: 15px;
                         x: 10px;
-                        width: parent.width - 20px;
+                        y: (parent.height - self.height) / 2;
+                        stroke: Theme.muted;
+                    }
+
+                    if root.query.is-empty && input.preedit-text.is-empty : Text {
+                        x: 32px;
+                        width: parent.width - 44px;
+                        height: 100%;
+                        text: root.language == "ru" ? "Поиск по сообщениям" : "Search messages";
+                        color: Theme.muted;
+                        font-size: 13px;
+                        vertical-alignment: center;
+                        accessible-role: none;
+                    }
+
+                    input := TextInput {
+                        x: 32px;
+                        width: parent.width - 44px;
                         height: 100%;
                         text <=> root.query;
                         font-size: 13px;
                         color: Theme.foreground;
                         vertical-alignment: center;
+                        accessible-label: root.language == "ru" ? "Поиск по сообщениям" : "Search messages";
                         edited => { root.query-changed(self.text); }
                     }
                 }
-                if !root.query.is-empty : Text {
+
+                if !root.query.is-empty && !root.searching && root.results.length > 0 : Text {
                     text: root.position-label;
                     color: Theme.muted;
                     font-size: 11px;
                     vertical-alignment: center;
                 }
-                ChatAction { label: "↑"; accessible-name: root.language == "ru" ? "Предыдущий результат" : "Previous result"; enabled: root.results.length > 0; clicked => { root.previous-requested(); } }
-                ChatAction { label: "↓"; accessible-name: root.language == "ru" ? "Следующий результат" : "Next result"; enabled: root.results.length > 0; clicked => { root.next-requested(); } }
-                ChatAction { label: "×"; accessible-name: root.language == "ru" ? "Закрыть поиск" : "Close search"; clicked => { root.close-requested(); } }
+
+                FHIconButton {
+                    button-size: 32px;
+                    label: root.language == "ru" ? "Предыдущий результат" : "Previous result";
+                    enabled: !root.query.is-empty && !root.searching && root.results.length > 0;
+                    clicked => { root.previous-requested(); }
+                    IconChevronUp { width: 16px; height: 16px; x: 8px; y: 8px; stroke: Theme.muted; }
+                }
+                FHIconButton {
+                    button-size: 32px;
+                    label: root.language == "ru" ? "Следующий результат" : "Next result";
+                    enabled: !root.query.is-empty && !root.searching && root.results.length > 0;
+                    clicked => { root.next-requested(); }
+                    IconChevronDown { width: 16px; height: 16px; x: 8px; y: 8px; stroke: Theme.muted; }
+                }
+                FHIconButton {
+                    button-size: 32px;
+                    label: root.language == "ru" ? "Закрыть поиск" : "Close search";
+                    clicked => { root.close-requested(); }
+                    IconX { width: 16px; height: 16px; x: 8px; y: 8px; stroke: Theme.muted; }
+                }
             }
         }
 
@@ -74,15 +125,17 @@ export component ChatSearchPanel inherits Rectangle {
             padding: 8px;
             spacing: 4px;
             vertical-stretch: 0;
-            Text {
+            if root.query.is-empty : Text {
                 text: root.language == "ru" ? "Поиск по загруженным на этом устройстве сообщениям." : "Search covers messages loaded on this device.";
                 color: Theme.muted;
                 font-size: 11px;
                 wrap: word-wrap;
             }
-            if root.has-older : ChatAction {
-                label: root.loading-older ? (root.language == "ru" ? "Загружаем…" : "Loading…") : (root.language == "ru" ? "Загрузить более ранние сообщения" : "Load earlier messages");
+            if root.has-older : FHSecondaryButton {
+                text: root.loading-older ? (root.language == "ru" ? "Загрузка" : "Loading") : (root.language == "ru" ? "Загрузить более ранние" : "Load earlier messages");
+                height: 30px;
                 enabled: !root.loading-older && !root.searching;
+                busy: root.loading-older;
                 clicked => { root.load-older-requested(); }
             }
             if !root.error-text.is-empty : Text {
@@ -101,24 +154,32 @@ export component ChatSearchPanel inherits Rectangle {
             vertical-alignment: center;
             vertical-stretch: 1;
         }
-        if root.searching : Text {
-            text: root.language == "ru" ? "Ищем сообщения…" : "Searching messages…";
-            color: Theme.muted;
-            font-size: 12px;
-            horizontal-alignment: center;
-            vertical-alignment: center;
+        if !root.query.is-empty && root.searching : VerticalLayout {
             vertical-stretch: 1;
+            padding: 8px;
+            spacing: 6px;
+
+            for row in 4 : VerticalLayout {
+                spacing: 5px;
+                FHSkeleton { width: 30%; height: 11px; }
+                FHSkeleton { width: 82%; height: 13px; }
+            }
         }
-        if !root.query.is-empty && !root.searching && root.results.length == 0 : Text {
-            text: root.empty-text.is-empty ? (root.language == "ru" ? "В загруженной истории ничего не найдено." : "No matches in loaded history.") : root.empty-text;
-            color: Theme.muted;
-            font-size: 12px;
-            horizontal-alignment: center;
-            vertical-alignment: center;
+        if !root.query.is-empty && !root.searching && root.results.length == 0 : FHEmptyState {
             vertical-stretch: 1;
+            title: root.language == "ru" ? "Ничего не найдено" : "Nothing found";
+            description: root.empty-text.is-empty
+                ? (root.language == "ru" ? "В загруженной истории нет совпадений." : "No matches in loaded history.")
+                : root.empty-text;
+
+            IconMessageSquare {
+                width: 32px;
+                height: 32px;
+                stroke: Theme.muted;
+            }
         }
 
-        if root.results.length > 0 : ScrollView {
+        if !root.query.is-empty && !root.searching && root.results.length > 0 : ScrollView {
             width: 100%;
             vertical-stretch: 1;
             vertical-scrollbar-policy: as-needed;
@@ -127,18 +188,20 @@ export component ChatSearchPanel inherits Rectangle {
                 spacing: 0px;
                 for result[index] in root.results : Rectangle {
                     width: 100%;
-                    height: 66px;
-                    background: root.selected-index == index ? Theme.hover : Theme.surface;
+                    height: max(56px, result-content.preferred-height + 16px);
+                    background: root.selected-index == index ? Theme.hover : (result-area.has-hover ? Theme.hover : Theme.surface);
                     border-width: 0px;
-                    VerticalLayout {
-                        x: 12px; y: 8px; width: parent.width - 24px; spacing: 4px;
+                    animate background { duration: 100ms; }
+                    result-content := VerticalLayout {
+                        x: 12px; y: 8px; width: parent.width - 24px; height: parent.height - 16px; spacing: 4px;
                         HorizontalLayout {
                             Text { text: result.sender; color: Theme.muted; font-size: 11px; horizontal-stretch: 1; overflow: elide; }
                             Text { text: result.timestamp; color: Theme.muted; font-size: 10px; }
                         }
                         Text { text: result.excerpt; color: Theme.foreground; font-size: 13px; wrap: word-wrap; overflow: elide; }
                     }
-                    TouchArea {
+                    result-area := TouchArea {
+                        mouse-cursor: pointer;
                         accessible-role: button;
                         accessible-label: result.sender + " · " + result.excerpt;
                         clicked => { root.result-selected(result.id); }

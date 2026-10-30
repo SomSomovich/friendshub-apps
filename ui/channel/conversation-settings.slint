@@ -1,7 +1,8 @@
 import { Theme } from "../theme.slint";
 import { ChatAction } from "../chat/chat-controls.slint";
-import { FHInput } from "../components.slint";
-import { ScrollView, TextEdit } from "std-widgets.slint";
+import { FHInput, FHSecondaryButton, FHScreenHeader, FHTextArea, FHPrimaryButton } from "../components.slint";
+import { IconCheck } from "../icons.slint";
+import { ScrollView } from "std-widgets.slint";
 
 export struct ConversationMember {
     id: string,
@@ -51,12 +52,13 @@ component MemberRightControl inherits Rectangle {
             border-width: 1px;
             border-color: root.selected ? Theme.accent : Theme.border;
             background: root.selected ? Theme.accent : transparent;
-            Text {
-                text: root.selected ? "✓" : "";
-                color: Theme.accent-foreground;
-                font-size: 12px;
-                horizontal-alignment: center;
-                vertical-alignment: center;
+            if root.selected : IconCheck {
+                width: 14px;
+                height: 14px;
+                x: 2px;
+                y: 2px;
+                stroke: Theme.accent-foreground;
+                stroke-width: 3px;
             }
         }
         Text {
@@ -206,29 +208,18 @@ export component ConversationSettingsScreen inherits Rectangle {
     VerticalLayout {
         spacing: 0px;
 
-        Rectangle {
-            height: 56px;
-            background: Theme.background;
-            HorizontalLayout {
-                padding: 8px;
-                spacing: 8px;
-                ChatAction { label: "←"; width: 36px; clicked => { root.back-requested(); } }
-                VerticalLayout {
-                    alignment: center;
-                    spacing: 2px;
-                    horizontal-stretch: 1;
-                    Text { text: root.title; color: Theme.foreground; font-size: 14px; font-weight: 600; }
-                    if !root.conversation-title.is-empty : Text { text: root.conversation-title; color: Theme.muted; font-size: 11px; }
-                }
-            }
+        FHScreenHeader {
+            title: root.title;
+            subtitle: root.conversation-title;
+            back-requested => { root.back-requested(); }
         }
 
-        if root.loading : Text {
-            text: "Загружаем настройки…";
-            color: Theme.muted;
-            font-size: 12px;
-            horizontal-alignment: center;
+        if root.loading : VerticalLayout {
             vertical-stretch: 1;
+            padding: 16px;
+            spacing: 10px;
+            Rectangle { width: 100%; height: 120px; border-radius: 12px; background: Theme.surface; }
+            Rectangle { width: 100%; height: 120px; border-radius: 12px; background: Theme.surface; }
         }
 
         if !root.loading && root.no-access : VerticalLayout {
@@ -268,19 +259,11 @@ export component ConversationSettingsScreen inherits Rectangle {
                         spacing: 10px;
                         Text { text: "Профиль группы"; color: Theme.foreground; font-size: 14px; font-weight: 600; }
                         FHInput { label: "Название"; value <=> root.title-draft; }
-                        Rectangle {
-                            height: 88px;
-                            background: Theme.background;
-                            border-width: 1px;
-                            border-color: Theme.border;
-                            border-radius: 8px;
-                            TextEdit {
-                                x: 10px; y: 8px; width: parent.width - 20px; height: parent.height - 16px;
-                                text <=> root.description-draft;
-                                placeholder-text: "Описание";
-                                font-size: 13px;
-                                wrap: word-wrap;
-                            }
+                        FHTextArea {
+                            label: "Описание";
+                            placeholder: "Описание";
+                            value <=> root.description-draft;
+                            area-height: 88px;
                         }
                         if root.is-owner : ChatAction {
                             label: "Публичная группа";
@@ -288,10 +271,10 @@ export component ConversationSettingsScreen inherits Rectangle {
                             clicked => { root.public-state-draft = !root.public-state-draft; }
                         }
                         if !root.profile-error-text.is-empty : Text { text: root.profile-error-text; color: Theme.danger; font-size: 11px; wrap: word-wrap; }
-                        ChatAction {
-                            label: root.busy ? "Сохраняем…" : "Сохранить";
-                            active: true;
+                        FHPrimaryButton {
+                            text: "Сохранить";
                             enabled: !root.busy && root.profile-save-enabled;
+                            busy: root.busy;
                             clicked => { root.metadata-save-requested(root.title-draft, root.description-draft, root.public-state-draft); }
                         }
                     }
@@ -360,7 +343,7 @@ export component ConversationSettingsScreen inherits Rectangle {
                             enabled: !root.busy;
                             clicked => { root.public-state-changed(!root.is-public); }
                         }
-                        if !root.public-state-known : HorizontalLayout {
+                        if !root.public-state-known : FlexboxLayout {
                             spacing: 6px;
                             ChatAction { label: "Сделать публичным"; enabled: !root.busy; clicked => { root.public-state-changed(true); } }
                             ChatAction { label: "Сделать приватным"; enabled: !root.busy; clicked => { root.public-state-changed(false); } }
@@ -542,13 +525,13 @@ export component ConversationSettingsScreen inherits Rectangle {
                         padding: 14px; spacing: 8px;
                         Text { text: "Приглашения"; color: Theme.foreground; font-size: 14px; font-weight: 600; }
                         Text { text: "Создайте постоянный или одноразовый код приглашения."; color: Theme.muted; font-size: 12px; wrap: word-wrap; }
-                        HorizontalLayout {
+                        FlexboxLayout {
                             spacing: 6px;
                             ChatAction { label: "Постоянный код"; enabled: !root.busy; clicked => { root.invite-create-requested("permanent"); } }
                             ChatAction { label: "Одноразовый код"; enabled: !root.busy; clicked => { root.invite-create-requested("one_time"); } }
                         }
                         if root.invites.length == 0 : Text { text: "Приглашений пока нет."; color: Theme.muted; font-size: 12px; }
-                        for invite[index] in root.invites : HorizontalLayout {
+                        for invite[index] in root.invites : VerticalLayout {
                             spacing: 6px;
                             Rectangle {
                                 horizontal-stretch: 1;
@@ -563,8 +546,11 @@ export component ConversationSettingsScreen inherits Rectangle {
                                     Text { text: invite.detail; color: Theme.muted; font-size: 10px; }
                                 }
                             }
-                            ChatAction { label: "Копировать код"; enabled: !invite.token.is-empty; clicked => { root.invite-copy-requested(index); } }
-                            ChatAction { label: "Отозвать"; danger: true; enabled: !root.busy; clicked => { root.invite-revoke-requested(index); } }
+                            FlexboxLayout {
+                                spacing: 6px;
+                                ChatAction { label: "Копировать код"; enabled: !invite.token.is-empty; clicked => { root.invite-copy-requested(index); } }
+                                ChatAction { label: "Отозвать"; danger: true; enabled: !root.busy; clicked => { root.invite-revoke-requested(index); } }
+                            }
                         }
                         if !root.invite-copy-status-text.is-empty : Text {
                             text: root.invite-copy-status-text;
@@ -630,7 +616,7 @@ export component ConversationSettingsScreen inherits Rectangle {
                     Text { text: root.confirmation-title; color: Theme.foreground; font-size: 16px; font-weight: 600; }
                     Text { text: root.confirmation-description; color: Theme.muted; font-size: 13px; wrap: word-wrap; }
                     if root.confirmation-show-ban-option : ChatAction {
-                        label: root.confirmation-ban-on-remove ? "☑ Заблокировать при исключении" : "☐ Заблокировать при исключении";
+                        label: "Заблокировать при исключении";
                         active: root.confirmation-ban-on-remove;
                         enabled: !root.busy;
                         clicked => { root.confirmation-ban-on-remove = !root.confirmation-ban-on-remove; }

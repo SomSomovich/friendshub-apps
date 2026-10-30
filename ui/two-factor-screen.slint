@@ -8,6 +8,7 @@ export component TwoFactorScreen inherits Rectangle {
     in property <bool> device-setup: false;
     in property <bool> busy: false;
     in property <string> error-text: "";
+    in property <string> language: "ru";
 
     callback submit-requested(string, bool);
     callback mode-changed(bool);
@@ -45,7 +46,7 @@ export component TwoFactorScreen inherits Rectangle {
                     spacing: 16px;
 
                     Text {
-                        text: "Двухфакторная аутентификация";
+                        text: root.language == "ru" ? "Двухфакторная аутентификация" : "Two-factor authentication";
                         color: Theme.foreground;
                         font-size: 18px;
                         font-weight: 600;
@@ -55,10 +56,16 @@ export component TwoFactorScreen inherits Rectangle {
 
                     Text {
                         text: root.device-setup
-                            ? "Для завершения настройки этого устройства нужен ещё один код. Дождитесь следующего кода в приложении-аутентификаторе или введите другой резервный код."
+                            ? (root.language == "ru"
+                                ? "Для завершения настройки этого устройства нужен ещё один код. Дождитесь следующего кода в приложении-аутентификаторе или введите другой резервный код."
+                                : "One more code is needed to finish setting up this device. Wait for the next code in your authenticator app or enter another backup code.")
                             : root.backup-mode
-                                ? "Введите один из резервных кодов. Каждый код работает один раз."
-                                : "Введите шестизначный код из приложения-аутентификатора.";
+                                ? (root.language == "ru"
+                                    ? "Введите один из резервных кодов. Каждый код работает один раз."
+                                    : "Enter one of your backup codes. Each code can be used once.")
+                                : (root.language == "ru"
+                                    ? "Введите шестизначный код из приложения-аутентификатора."
+                                    : "Enter the six-digit code from your authenticator app.");
                         color: Theme.muted;
                         font-size: 12px;
                         wrap: word-wrap;
@@ -69,7 +76,7 @@ export component TwoFactorScreen inherits Rectangle {
                         spacing: 6px;
 
                         Text {
-                            text: root.backup-mode ? "Резервный код" : "Код";
+                            text: root.backup-mode ? (root.language == "ru" ? "Резервный код" : "Backup code") : (root.language == "ru" ? "Код" : "Code");
                             color: Theme.muted;
                             font-size: 12px;
                             font-weight: 600;
@@ -110,7 +117,7 @@ export component TwoFactorScreen inherits Rectangle {
                                 single-line: true;
                                 horizontal-alignment: root.backup-mode ? left : center;
                                 vertical-alignment: center;
-                                accessible-label: root.backup-mode ? "Резервный код" : "Код из приложения-аутентификатора";
+                                accessible-label: root.backup-mode ? (root.language == "ru" ? "Резервный код" : "Backup code") : (root.language == "ru" ? "Код из приложения-аутентификатора" : "Authenticator code");
                                 accessible-placeholder-text: root.backup-mode ? "ABCD2345EF" : "123456";
 
                                 edited => { root.code-changed(self.text); }
@@ -130,7 +137,8 @@ export component TwoFactorScreen inherits Rectangle {
                     }
 
                     FHPrimaryButton {
-                        text: "Подтвердить";
+                    block: true;
+                        text: root.language == "ru" ? "Подтвердить" : "Confirm";
                         enabled: !root.busy;
                         busy: root.busy;
                         clicked => { root.submit-requested(root.code, root.backup-mode); }
@@ -143,7 +151,7 @@ export component TwoFactorScreen inherits Rectangle {
                             alignment: center;
 
                             FHTextButton {
-                                text: root.backup-mode ? "Использовать код из приложения" : "Использовать резервный код";
+                                text: root.backup-mode ? (root.language == "ru" ? "Использовать код из приложения" : "Use authenticator code") : (root.language == "ru" ? "Использовать резервный код" : "Use a backup code");
                                 enabled: !root.busy;
                                 clicked => {
                                     root.backup-mode = !root.backup-mode;
@@ -158,7 +166,7 @@ export component TwoFactorScreen inherits Rectangle {
                             alignment: center;
 
                             FHTextButton {
-                                text: "Вернуться ко входу";
+                                text: root.language == "ru" ? "Вернуться ко входу" : "Back to sign in";
                                 enabled: !root.busy;
                                 clicked => { root.cancel-requested(); }
                             }

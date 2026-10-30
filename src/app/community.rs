@@ -18,6 +18,7 @@ use slint::{Model, ModelRc, SharedString, VecModel};
 use crate::app::{ActiveSession, AppContext, call_client};
 use crate::features::{
     bots, chat, community as community_api, community_avatar, conversations, discovery_dating,
+    profile_settings,
 };
 use crate::{
     ChannelAnalytic, ChannelPost as UiChannelPost, ChatAttachmentView, ChatReaction,
@@ -238,7 +239,10 @@ fn selected_conversation(window: &MainWindow) -> Option<String> {
     (!id.is_empty()).then_some(id)
 }
 
-fn cached_community_photo_image(account_id: &str, conversation_id: &str) -> Option<slint::Image> {
+pub(crate) fn cached_community_photo_image(
+    account_id: &str,
+    conversation_id: &str,
+) -> Option<slint::Image> {
     let bytes = state()
         .lock()
         .ok()?
@@ -3875,7 +3879,7 @@ fn picker_error_message(error: crate::platform::file_picker::PickerError) -> &'s
 
     match error {
         PickerError::MissingActivityResultHook => {
-            "В текущей сборке Android пока не подключён возврат результата выбора файлов."
+            "Не удалось инициализировать системный выбор файлов Android."
         }
         PickerError::Busy => "Другой выбор файла ещё не завершён. Попробуйте позже.",
         PickerError::Disabled | PickerError::UnsupportedPlatform => {
@@ -4700,6 +4704,55 @@ fn set_invite_copy_error(window: &MainWindow) {
     window.set_conversation_settings_invite_copy_status_error(true);
 }
 
+// The creation endpoints cannot assign a handle atomically. Apply the same
+// client-side handle format as the web client before creating a conversation.
+fn invalid_create_handle(handle: &str) -> Option<&'static str> {
+    if handle.is_empty() {
+        return None;
+    }
+    if !(5..=32).contains(&handle.len())
+        || !handle.as_bytes()[0].is_ascii_alphabetic()
+        || !handle
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'_')
+    {
+        return Some(
+            "Адрес должен содержать 5–32 символа: латинские буквы, цифры или «_», и начинаться с буквы.",
+        );
+    }
+    if matches!(
+        handle,
+        "admin" | "support" | "help" | "system" | "botfather"
+    ) {
+        return Some("Этот адрес занят или зарезервирован.");
+    }
+    if handle.ends_with("bot") {
+        return Some("Адрес группы или канала не может оканчиваться на bot.");
+    }
+    None
+}
+
+fn unavailable_create_handle(client: &Client, handle: &str) -> Option<&'static str> {
+    if handle.is_empty() {
+        return None;
+    }
+    match profile_settings::check_handle_availability(
+        client,
+        &profile_settings::HandleAvailabilityRequest {
+            handle: handle.to_owned(),
+        },
+    ) {
+        Ok(response) if !response.available => Some("Этот адрес занят или зарезервирован."),
+        Ok(_) => None,
+        Err(error) => {
+            // As in WEB, an unavailable check does not decide whether the
+            // server will accept the handle during the subsequent write.
+            eprintln!("handle availability check failed: {error}");
+            None
+        }
+    }
+}
+
 /// Handler for the typed `MainWindow::create_group_requested` callback.
 pub fn create_group_requested(
     ctx: &AppContext,
@@ -4738,6 +4791,11 @@ pub fn create_group_requested(
     let result = ctx.call(
         "friendshub-group-create",
         move |client| {
+            if let Some(message) = invalid_create_handle(&handle)
+                .or_else(|| unavailable_create_handle(client, &handle))
+            {
+                return Ok(Err(message));
+            }
             let created = community_api::create_group(
                 client,
                 &community_api::CreateGroup {
@@ -4751,10 +4809,15 @@ pub fn create_group_requested(
             let handle_set = handle.is_empty()
                 || community_api::set_group_handle(client, &created.conversation_id, &handle)
                     .is_ok();
-            Ok((created, handle_set))
+            Ok(Ok((created, handle_set)))
         },
         move |window, result| match result {
-            Ok((created, handle_set)) => {
+            Ok(Err(message)) => {
+                window.set_create_group_busy(false);
+                window.set_create_group_handle_feedback(message.into());
+                window.set_create_group_handle_feedback_error(true);
+            }
+            Ok(Ok((created, handle_set))) => {
                 window.set_create_group_busy(false);
                 window.set_selected_conversation_id(created.conversation_id.clone().into());
                 window.set_conversation_kind("group".into());
@@ -4822,6 +4885,29 @@ pub fn create_channel_requested(
     let result = ctx.call(
         "friendshub-channel-create",
         move |client| {
+            if let Some(message) = invalid_create_handle(&handle) {
+                return Ok(Err((false, message)));
+            }
+            let new_discussion = discussion_kind == "new" && !discussion_title.is_empty();
+            if new_discussion {
+                if let Some(message) = invalid_create_handle(&discussion_handle) {
+                    return Ok(Err((true, message)));
+                }
+                if !handle.is_empty() && handle == discussion_handle {
+                    return Ok(Err((
+                        true,
+                        "Адреса канала и группы обсуждения должны различаться.",
+                    )));
+                }
+            }
+            if let Some(message) = unavailable_create_handle(client, &handle) {
+                return Ok(Err((false, message)));
+            }
+            if new_discussion {
+                if let Some(message) = unavailable_create_handle(client, &discussion_handle) {
+                    return Ok(Err((true, message)));
+                }
+            }
             let created = community_api::create_channel(
                 client,
                 &community_api::CreateChannel {
@@ -4880,10 +4966,20 @@ pub fn create_channel_requested(
             if link_result.is_err() {
                 follow_up_ok = false;
             }
-            Ok((created, follow_up_ok))
+            Ok(Ok((created, follow_up_ok)))
         },
         move |window, result| match result {
-            Ok((created, follow_up_ok)) => {
+            Ok(Err((discussion, message))) => {
+                window.set_create_channel_busy(false);
+                if discussion {
+                    window.set_create_channel_discussion_handle_feedback(message.into());
+                    window.set_create_channel_discussion_handle_feedback_error(true);
+                } else {
+                    window.set_create_channel_handle_feedback(message.into());
+                    window.set_create_channel_handle_feedback_error(true);
+                }
+            }
+            Ok(Ok((created, follow_up_ok))) => {
                 window.set_create_channel_busy(false);
                 window.set_selected_conversation_id(created.conversation_id.clone().into());
                 window.set_conversation_kind("channel".into());

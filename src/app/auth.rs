@@ -9,10 +9,10 @@ use std::time::{Duration, Instant};
 
 use friendshub_core::{Client, error::Error as CoreError};
 
-use crate::MainWindow;
 use crate::core::{CoreCallFailure, CoreClient};
 use crate::features::auth::{self, LoginResult, MeResponse};
 use crate::platform::accounts::{AccountManifest, AccountStore, LocalAccount};
+use crate::{ConnectStepState, MainWindow};
 
 use super::{ActiveSession, AppContext, call_client, open_client};
 
@@ -51,6 +51,7 @@ struct ControllerState {
     operation: Option<Operation>,
     credentials: Option<Credentials>,
     challenge: Option<PendingChallenge>,
+    pending_offline: Option<ActiveSession>,
 }
 
 struct ControllerInner {
@@ -115,6 +116,14 @@ impl AuthController {
     pub fn register(&self, password: String) {
         if password.is_empty() {
             self.show_error(Operation::Register, "Введите пароль.");
+            return;
+        }
+        let password_length = password.chars().count();
+        if !(8..=128).contains(&password_length) {
+            self.show_error(
+                Operation::Register,
+                "Пароль должен содержать от 8 до 128 символов.",
+            );
             return;
         }
         if !self.begin(
@@ -325,12 +334,26 @@ impl AuthController {
     }
 
     /// Reconcile a restored session's device and prekey state, then open `/app`.
-    /// Without an active core session this returns to the landing screen.
+    /// Without a selected account this opens registration, unless local account
+    /// cleanup needs attention.
     pub fn bootstrap(&self) {
         if !self.begin(Operation::Bootstrap, None) {
             return;
         }
+        let pending_offline = self.lock_state().pending_offline.take();
+        self.inner.ctx.apply_ui(|window| {
+            window.set_connect_error("".into());
+            window.set_connect_offline_available(false);
+            window.set_connect_busy(true);
+            window.set_connect_keys_state(ConnectStepState::Pending);
+            window.set_connect_socket_state(ConnectStepState::Active);
+        });
         if let Some(session) = self.inner.ctx.active_session() {
+            let fh_number = session.account.fh_number.clone();
+            self.inner.ctx.apply_ui(move |window| {
+                window.set_login_fh_number(fh_number.into());
+            });
+            super::navigate(&self.inner.ctx, "/connect");
             self.run_restored_bootstrap(session.core, session.account, true);
             return;
         }
@@ -348,6 +371,10 @@ impl AuthController {
             }
         };
         let Some(account) = manifest.active_account().cloned() else {
+            self.inner.ctx.apply_ui(|window| {
+                window.set_connect_busy(false);
+                window.set_connect_error("".into());
+            });
             self.clear_operation();
             let route = if self
                 .inner
@@ -357,35 +384,119 @@ impl AuthController {
                 .is_ok_and(|accounts| !accounts.is_empty())
             {
                 "/app/settings/accounts"
+            } else if manifest.accounts.is_empty() {
+                "/register"
             } else {
-                "/"
+                if let Some(account) = manifest.accounts.first() {
+                    let fh_number = account.fh_number.clone();
+                    self.inner.ctx.apply_ui(move |window| {
+                        window.set_login_fh_number(fh_number.into());
+                    });
+                }
+                "/login"
             };
             super::navigate(&self.inner.ctx, route);
             return;
         };
 
+        super::navigate(&self.inner.ctx, "/connect");
+        let username = account.username.clone();
+        let fh_number = account.fh_number.clone();
+        self.inner.ctx.apply_ui(move |window| {
+            window.set_connect_username(username.into());
+            window.set_login_fh_number(fh_number.into());
+        });
+        if let Some(session) = pending_offline.filter(|session| {
+            same_account_binding(&account, &session.account) && !session.core.is_shutdown()
+        }) {
+            self.run_restored_bootstrap(session.core, account, false);
+            return;
+        }
         let path = CoreClient::database_path(&self.inner.ctx.data_dir, &account.db_key);
         let controller = self.clone();
+        let completion_account = account.clone();
         if let Err(error) =
             open_client(
                 self.inner.ctx.ui.clone(),
                 path,
                 move |_window, opened| match opened {
-                    Ok(core) => controller.run_restored_bootstrap(Arc::new(core), account, false),
+                    Ok(core) => {
+                        controller.run_restored_bootstrap(Arc::new(core), completion_account, false)
+                    }
+                    Err(error) if error == CoreCallFailure::Network => {
+                        controller.show_bootstrap_failure(
+                            completion_account,
+                            None,
+                            error.user_message(),
+                            ConnectStepState::Failed,
+                        );
+                    }
                     Err(error) => {
                         controller.fail(Operation::Bootstrap, error.user_message(), false);
                         super::navigate(&controller.inner.ctx, "/login");
+                        controller.inner.ctx.apply_ui(move |window| {
+                            window.set_login_error(error.user_message().into());
+                        });
                     }
                 },
             )
         {
-            self.fail(
-                Operation::Bootstrap,
-                &format!("Не удалось открыть хранилище ({})", error.kind()),
-                false,
+            self.show_bootstrap_failure(
+                account,
+                None,
+                &format!(
+                    "Не удалось открыть хранилище ({}). Повторите попытку.",
+                    error.kind()
+                ),
+                ConnectStepState::Failed,
             );
-            super::navigate(&self.inner.ctx, "/login");
         }
+    }
+
+    /// Enter the locally restored account only after the user chooses offline
+    /// access. Merely offering the choice must not create an active session.
+    pub fn continue_offline(&self) {
+        let pending = {
+            let mut state = self.lock_state();
+            if state.operation.is_some() {
+                return;
+            }
+            state.pending_offline.take()
+        };
+        let Some(session) = pending else {
+            return;
+        };
+
+        // A retry, logout, account switch or removal may have changed the
+        // selected account while the connection screen was displayed.
+        let selected = self.inner.ctx.accounts.load().is_ok_and(|manifest| {
+            manifest
+                .active_account()
+                .is_some_and(|account| same_account_binding(account, &session.account))
+        });
+        if !selected
+            || session.core.is_shutdown()
+            || self.inner.ctx.active_session().is_some()
+            || self
+                .inner
+                .ctx
+                .set_active_session(Some(session.clone()))
+                .is_err()
+        {
+            self.show_bootstrap_failure(
+                session.account,
+                None,
+                "Не удалось открыть аккаунт без подключения. Повторите попытку.",
+                ConnectStepState::Failed,
+            );
+            return;
+        }
+        let route = self
+            .inner
+            .ctx
+            .take_pending_route()
+            .unwrap_or_else(|| "/app".to_owned());
+        super::navigate(&self.inner.ctx, &route);
     }
 
     /// Revoke the active server session and return to the login screen. Local
@@ -843,18 +954,36 @@ impl AuthController {
         let completion_core = Arc::clone(&core);
         let store = self.inner.ctx.accounts.clone();
         let original_device_number = account.device_number;
+        let completion_account = account.clone();
+        let spawn_failure_account = account.clone();
         let completion_controller = self.clone();
         if let Err(error) = call_client(
             core,
             self.inner.ctx.ui.clone(),
             "friendshub-auth-bootstrap",
             move |client| {
-                let profile = auth::me(client)?;
-                let actual_device = bootstrap_core(client, original_device_number)?;
-                let mut updated = local_account(profile, actual_device, &account.db_key);
-                // The manifest and this database were selected by account id;
-                // preserve its stable database alias while refreshing profile data.
-                updated.db_key = account.db_key;
+                // `auth::me` reads a nonempty local bearer before network IO.
+                // Only a network error here, or after this call succeeds, is
+                // sufficient to offer the explicitly chosen offline path.
+                let profile = match auth::me(client) {
+                    Ok(profile) => profile,
+                    Err(CoreError::Network(_)) => {
+                        return Ok(BootstrapWorkResult::OfflineNetworkFailure);
+                    }
+                    Err(error) => return Err(error),
+                };
+                let mut updated = local_account(profile, original_device_number, &account.db_key);
+                if !same_account_binding(&updated, &account) {
+                    return Ok(BootstrapWorkResult::AccountMismatch);
+                }
+                let actual_device = match bootstrap_core(client, original_device_number) {
+                    Ok(device) => device,
+                    Err(CoreError::Network(_)) => {
+                        return Ok(BootstrapWorkResult::OfflineNetworkFailure);
+                    }
+                    Err(error) => return Err(error),
+                };
+                updated.device_number = actual_device;
                 if store_account(&store, &updated, true).is_err() {
                     return Ok(BootstrapWorkResult::StorageFailure);
                 }
@@ -866,17 +995,18 @@ impl AuthController {
             move |_window, result| {
                 completion_controller.finish_restored_bootstrap(
                     completion_core,
+                    completion_account,
                     result,
                     was_active,
                 );
             },
         ) {
-            self.fail(
-                Operation::Bootstrap,
-                &format!("Не удалось запустить инициализацию ({})", error.kind()),
-                false,
-            );
             if was_active {
+                self.fail(
+                    Operation::Bootstrap,
+                    &format!("Не удалось запустить инициализацию ({})", error.kind()),
+                    false,
+                );
                 let route = self
                     .inner
                     .ctx
@@ -884,7 +1014,15 @@ impl AuthController {
                     .unwrap_or_else(|| "/app".to_owned());
                 super::navigate(&self.inner.ctx, &route);
             } else {
-                super::navigate(&self.inner.ctx, "/login");
+                self.show_bootstrap_failure(
+                    spawn_failure_account,
+                    None,
+                    &format!(
+                        "Не удалось запустить инициализацию ({}). Повторите попытку.",
+                        error.kind()
+                    ),
+                    ConnectStepState::Failed,
+                );
             }
         }
     }
@@ -892,6 +1030,7 @@ impl AuthController {
     fn finish_restored_bootstrap(
         &self,
         core: Arc<CoreClient>,
+        fallback_account: LocalAccount,
         result: Result<BootstrapWorkResult, CoreCallFailure>,
         was_active: bool,
     ) {
@@ -902,11 +1041,23 @@ impl AuthController {
                     core,
                 };
                 if self.inner.ctx.set_active_session(Some(session)).is_err() {
-                    self.fail(
-                        Operation::Bootstrap,
-                        "Не удалось восстановить активный аккаунт.",
-                        false,
-                    );
+                    let message = "Не удалось восстановить активный аккаунт.";
+                    if was_active {
+                        self.fail(Operation::Bootstrap, message, false);
+                        let route = self
+                            .inner
+                            .ctx
+                            .take_pending_route()
+                            .unwrap_or_else(|| "/app".to_owned());
+                        super::navigate(&self.inner.ctx, &route);
+                    } else {
+                        self.show_bootstrap_failure(
+                            fallback_account,
+                            None,
+                            message,
+                            ConnectStepState::Done,
+                        );
+                    }
                     return;
                 }
                 self.clear_operation();
@@ -930,14 +1081,20 @@ impl AuthController {
                     false,
                 );
                 super::navigate(&self.inner.ctx, "/login");
+                self.inner.ctx.apply_ui(|window| {
+                    window.set_login_error(
+                        "Номер устройства изменился. Повторно войдите в аккаунт, чтобы продолжить."
+                            .into(),
+                    );
+                });
             }
             Ok(BootstrapWorkResult::StorageFailure) => {
-                self.fail(
-                    Operation::Bootstrap,
-                    "Не удалось сохранить настройки аккаунта.",
-                    false,
-                );
                 if was_active {
+                    self.fail(
+                        Operation::Bootstrap,
+                        "Не удалось сохранить настройки аккаунта.",
+                        false,
+                    );
                     let route = self
                         .inner
                         .ctx
@@ -945,7 +1102,40 @@ impl AuthController {
                         .unwrap_or_else(|| "/app".to_owned());
                     super::navigate(&self.inner.ctx, &route);
                 } else {
-                    super::navigate(&self.inner.ctx, "/login");
+                    self.show_bootstrap_failure(
+                        fallback_account,
+                        None,
+                        "Не удалось сохранить настройки аккаунта.",
+                        ConnectStepState::Done,
+                    );
+                }
+            }
+            Ok(BootstrapWorkResult::AccountMismatch) => {
+                if was_active {
+                    let _ = self.inner.ctx.set_active_session(None);
+                }
+                self.show_bootstrap_failure(
+                    fallback_account,
+                    None,
+                    "Данные аккаунта не совпадают с локальным хранилищем.",
+                    ConnectStepState::Done,
+                );
+            }
+            Ok(BootstrapWorkResult::OfflineNetworkFailure) => {
+                if was_active {
+                    self.fail(
+                        Operation::Bootstrap,
+                        CoreCallFailure::Network.user_message(),
+                        false,
+                    );
+                    super::navigate(&self.inner.ctx, "/app");
+                } else {
+                    self.show_bootstrap_failure(
+                        fallback_account,
+                        Some(core),
+                        CoreCallFailure::Network.user_message(),
+                        ConnectStepState::Failed,
+                    );
                 }
             }
             Err(error)
@@ -958,18 +1148,61 @@ impl AuthController {
                 let _ = self.inner.ctx.set_active_session(None);
                 self.fail(Operation::Bootstrap, error.user_message(), false);
                 super::navigate(&self.inner.ctx, "/login");
+                self.inner.ctx.apply_ui(move |window| {
+                    window.set_login_error(error.user_message().into());
+                });
             }
             Err(error) => {
-                self.fail(Operation::Bootstrap, error.user_message(), false);
                 // A restored session remains active when a network bootstrap
-                // operation fails; the user can retry without signing in again.
+                // operation fails. Startup restoration follows the same rule:
+                // keep the local account and offer retry/offline access instead
+                // of sending the user through login or registration.
                 if was_active {
+                    self.fail(Operation::Bootstrap, error.user_message(), false);
                     super::navigate(&self.inner.ctx, "/app");
                 } else {
-                    super::navigate(&self.inner.ctx, "/login");
+                    self.show_bootstrap_failure(
+                        fallback_account,
+                        None,
+                        error.user_message(),
+                        if error == CoreCallFailure::Network {
+                            ConnectStepState::Failed
+                        } else {
+                            ConnectStepState::Done
+                        },
+                    );
                 }
             }
         }
+    }
+
+    fn show_bootstrap_failure(
+        &self,
+        account: LocalAccount,
+        core: Option<Arc<CoreClient>>,
+        message: &str,
+        socket_state: ConnectStepState,
+    ) {
+        let offline_available = core.is_some();
+        self.lock_state().pending_offline = core.map(|core| ActiveSession {
+            account: account.clone(),
+            core,
+        });
+        let username = account.username.clone();
+        let fh_number = account.fh_number.clone();
+        let message = message.to_owned();
+        self.clear_operation();
+        self.inner.ctx.apply_ui(move |window| {
+            window.set_connect_username(username.clone().into());
+            window.set_connect_keys_state(ConnectStepState::Pending);
+            window.set_connect_socket_state(socket_state);
+            window.set_connect_error(message.into());
+            window.set_connect_busy(false);
+            window.set_connect_offline_available(offline_available);
+            window.set_account_username(username.into());
+            window.set_account_fh_number(fh_number.into());
+        });
+        super::navigate(&self.inner.ctx, "/connect");
     }
 
     fn begin(&self, operation: Operation, credentials: Option<Credentials>) -> bool {
@@ -979,6 +1212,9 @@ impl AuthController {
                 false
             } else {
                 state.operation = Some(operation);
+                if operation != Operation::Bootstrap {
+                    state.pending_offline = None;
+                }
                 if operation != Operation::TwoFactor {
                     state.challenge = None;
                 }
@@ -1054,6 +1290,7 @@ impl AuthController {
         let mut state = self.lock_state();
         state.credentials = None;
         state.challenge = None;
+        state.pending_offline = None;
     }
 
     fn credentials_snapshot(&self) -> Option<Credentials> {
@@ -1102,6 +1339,16 @@ enum BootstrapWorkResult {
     Ready(LocalAccount),
     DeviceNumberChanged(LocalAccount),
     StorageFailure,
+    OfflineNetworkFailure,
+    AccountMismatch,
+}
+
+fn same_account_binding(left: &LocalAccount, right: &LocalAccount) -> bool {
+    left.id == right.id
+        && left.fh_number == right.fh_number
+        && left.user_id == right.user_id
+        && left.db_key == right.db_key
+        && left.device_number == right.device_number
 }
 
 fn normalize_fh_number(value: &str) -> String {

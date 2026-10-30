@@ -76,6 +76,7 @@ fn ensure_application_dir(path: PathBuf) -> io::Result<PathBuf> {
     Ok(path)
 }
 
+#[cfg(not(target_os = "android"))]
 fn missing_platform_data_root() -> io::Error {
     io::Error::new(
         io::ErrorKind::NotFound,

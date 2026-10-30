@@ -1,4 +1,6 @@
 import { Theme } from "../theme.slint";
+import { FHScreenHeader } from "../components.slint";
+import { IconChevronRight } from "../icons.slint";
 import { ScrollView } from "std-widgets.slint";
 
 export struct SettingsOption {
@@ -8,6 +10,8 @@ export struct SettingsOption {
 
 export component SettingsFrame inherits Rectangle {
     in property <string> title;
+    in property <string> language: "ru";
+    in property <length> content-spacing: 16px;
     callback back-requested();
 
     width: 100%;
@@ -17,71 +21,10 @@ export component SettingsFrame inherits Rectangle {
     VerticalLayout {
         spacing: 0px;
 
-        HorizontalLayout {
-            height: 48px;
-            padding-left: 12px;
-            padding-right: 12px;
-            spacing: 8px;
-            alignment: start;
-
-            Rectangle {
-                width: 36px;
-                height: 36px;
-                border-radius: 8px;
-                background: back-area.has-hover ? Theme.hover : transparent;
-                forward-focus: back-keyboard-scope;
-                accessible-role: button;
-                accessible-label: "Назад";
-                accessible-action-default => { root.back-requested(); }
-
-                states [
-                    focus when back-keyboard-scope.has-focus : {
-                        border-width: 2px;
-                        border-color: Theme.accent;
-                    }
-                ]
-
-                Text {
-                    text: "←";
-                    color: back-area.has-hover ? Theme.foreground : Theme.muted;
-                    font-size: 18px;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
-                    width: 100%;
-                    height: 100%;
-                }
-
-                back-area := TouchArea {
-                    mouse-cursor: pointer;
-                    clicked => { root.back-requested(); }
-                }
-
-                back-keyboard-scope := FocusScope {
-                    x: 0;
-                    width: 0;
-                    key-pressed(event) => {
-                        if event.text == Key.Space || event.text == Key.Return {
-                            root.back-requested();
-                            return accept;
-                        }
-                        return reject;
-                    }
-                }
-            }
-
-            Text {
-                text: root.title;
-                color: Theme.foreground;
-                font-size: 14px;
-                font-weight: 600;
-                vertical-alignment: center;
-                horizontal-stretch: 1;
-            }
-        }
-
-        Rectangle {
-            height: 1px;
-            background: Theme.border;
+        FHScreenHeader {
+            title: root.title;
+            language: root.language;
+            back-requested => { root.back-requested(); }
         }
 
         ScrollView {
@@ -93,10 +36,9 @@ export component SettingsFrame inherits Rectangle {
                 alignment: center;
 
                 VerticalLayout {
-                    max-width: 608px;
-                    horizontal-stretch: 1;
+                    width: min(parent.width, 608px);
                     padding: 16px;
-                    spacing: 16px;
+                    spacing: root.content-spacing;
                     alignment: start;
 
                     @children
@@ -122,21 +64,26 @@ export component SettingsCard inherits Rectangle {
         spacing: 8px;
         alignment: start;
 
-        Text {
-            text: root.title;
-            color: Theme.foreground;
-            font-size: 14px;
-            font-weight: 600;
-            wrap: word-wrap;
+        VerticalLayout {
+            spacing: 2px;
             width: 100%;
-        }
 
-        if !root.description.is-empty : Text {
-            text: root.description;
-            color: Theme.muted;
-            font-size: 12px;
-            wrap: word-wrap;
-            width: 100%;
+            Text {
+                text: root.title;
+                color: Theme.foreground;
+                font-size: 14px;
+                font-weight: 600;
+                wrap: word-wrap;
+                width: 100%;
+            }
+
+            if !root.description.is-empty : Text {
+                text: root.description;
+                color: Theme.muted;
+                font-size: 12px;
+                wrap: word-wrap;
+                width: 100%;
+            }
         }
 
         @children
@@ -165,9 +112,11 @@ export component SettingsToggle inherits Rectangle {
     }
     forward-focus: keyboard-scope;
 
+    border-width: 2px;
+    border-color: transparent;
+
     states [
         focus when keyboard-scope.has-focus : {
-            root.border-width: 2px;
             root.border-color: Theme.accent;
         }
     ]
@@ -245,6 +194,7 @@ export component SettingsToggle inherits Rectangle {
 export component SettingsChoice inherits VerticalLayout {
     in property <string> label;
     in property <string> description: "";
+    in property <bool> show-label: true;
     in property <[SettingsOption]> options: [];
     in property <string> value;
     in property <bool> enabled: true;
@@ -253,10 +203,10 @@ export component SettingsChoice inherits VerticalLayout {
     spacing: 8px;
     horizontal-stretch: 1;
 
-    Text {
+    if root.show-label : Text {
         text: root.label;
-        color: Theme.foreground;
-        font-size: 13px;
+        color: Theme.muted;
+        font-size: 12px;
         font-weight: 500;
         wrap: word-wrap;
         width: 100%;
@@ -286,9 +236,11 @@ export component SettingsChoice inherits VerticalLayout {
         }
         forward-focus: keyboard-scope;
 
+        border-width: 2px;
+        border-color: transparent;
+
         states [
             focus when keyboard-scope.has-focus : {
-                border-width: 2px;
                 border-color: Theme.accent;
             }
         ]
@@ -298,7 +250,8 @@ export component SettingsChoice inherits VerticalLayout {
             width: parent.width - 16px;
             height: parent.height;
             spacing: 12px;
-            alignment: center;
+            alignment: start;
+            cross-axis-alignment: center;
 
             Rectangle {
                 width: 18px;

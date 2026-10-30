@@ -28,15 +28,19 @@ export component CreateGroupScreen inherits Rectangle {
     callback create-requested();
 
     private property <int> current-step: 0;
+    private property <string> checked-handle: "";
+    private property <bool> show-handle-error: root.handle-feedback-error && root.handle == root.checked-handle;
     private property <bool> title-ready: !root.group-title.replace-all(" ", "").replace-all("\u{9}", "").replace-all("\u{d}", "").replace-all("\n", "").is-empty;
     private property <[CreateSummaryRow]> current-summary-rows: root.expiry-summary.is-empty
         ? [
             { label: "Название", value: root.group-title },
+            { label: "Ссылка-имя (handle)", value: root.handle.is-empty ? "Не задана" : root.handle },
             { label: "Доступ", value: root.is-public ? "Публичная" : "Приватная" },
             { label: "Участники", value: "\{root.selected-contacts.length}" }
         ]
         : [
             { label: "Название", value: root.group-title },
+            { label: "Ссылка-имя (handle)", value: root.handle.is-empty ? "Не задана" : root.handle },
             { label: "Срок действия", value: root.expiry-summary },
             { label: "Доступ", value: root.is-public ? "Публичная" : "Приватная" },
             { label: "Участники", value: "\{root.selected-contacts.length}" }
@@ -63,6 +67,7 @@ export component CreateGroupScreen inherits Rectangle {
             if root.current-step < 2 {
                 root.current-step += 1;
             } else {
+                root.checked-handle = root.handle;
                 root.create-requested();
             }
         }
@@ -74,8 +79,8 @@ export component CreateGroupScreen inherits Rectangle {
             description-value <=> root.description;
             handle-value <=> root.handle;
             is-public <=> root.is-public;
-            handle-feedback: root.handle-feedback;
-            handle-feedback-error: root.handle-feedback-error;
+            handle-feedback: root.handle-feedback-error && !root.show-handle-error ? "" : root.handle-feedback;
+            handle-feedback-error: root.show-handle-error;
         }
         if root.current-step == 1 : Rectangle {
             border-radius: 12px;
@@ -107,6 +112,10 @@ export component CreateGroupScreen inherits Rectangle {
             title: "Проверка";
             rows: root.current-summary-rows;
             note: root.selected-members-note;
+            error-message: root.show-handle-error ? root.handle-feedback : "";
+            error-action-label: "Изменить адрес группы";
+            busy: root.busy;
+            error-edit-requested => { root.current-step = 0; }
         }
     }
 }

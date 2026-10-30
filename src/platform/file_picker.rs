@@ -3,8 +3,8 @@
 //! Call [`pick_files`] on the UI thread after showing the application window.
 //! Completion runs on a worker thread; marshal UI updates through Slint's event
 //! loop. Keep each [`PickedFile`] alive until its consumer finishes reading it.
-//! Android is unavailable until the launcher provides activity-result delivery;
-//! it returns an explicit error without launching an unresolvable request.
+//! Android uses the launcher's Storage Access Framework result bridge and
+//! imports provider-owned descriptors before their temporary grants expire.
 
 use std::ffi::{OsStr, OsString};
 use std::fmt;
@@ -90,7 +90,7 @@ impl fmt::Display for PickerError {
             Self::WrongThread => f.write_str("File selection requires the application UI thread."),
             Self::InvalidRequest(reason) => write!(f, "Invalid file-selection request: {reason}"),
             Self::MissingActivityResultHook => {
-                f.write_str("Android file selection requires a launcher activity-result callback.")
+                f.write_str("The Android file picker bridge is not initialized.")
             }
             Self::UnsupportedPlatform => f.write_str("Native file selection is unavailable."),
             Self::Platform(reason) => write!(f, "Native file selection failed: {reason}"),
@@ -139,8 +139,7 @@ pub fn pick_files(
     }
     #[cfg(all(feature = "native-file-picker", target_os = "android"))]
     {
-        let _ = completion;
-        Err(PickerError::MissingActivityResultHook)
+        android::start(request, Box::new(completion))
     }
     #[cfg(all(
         feature = "native-file-picker",
@@ -159,6 +158,49 @@ pub fn pick_files(
     #[cfg(not(feature = "native-file-picker"))]
     {
         let _ = completion;
+        Err(PickerError::Disabled)
+    }
+}
+
+/// Copy an app-generated audio file into the same private, self-cleaning cache
+/// used for user-selected attachments. The caller must keep the source intact
+/// until this function returns and remove it after a successful copy.
+pub fn import_generated_voice_note(
+    source: &Path,
+    cache_dir: &Path,
+) -> Result<PickedFile, PickerError> {
+    if !source.is_absolute() || !cache_dir.is_absolute() {
+        return Err(PickerError::InvalidRequest(
+            "generated voice note and cache directory must be absolute",
+        ));
+    }
+
+    #[cfg(all(
+        feature = "native-file-picker",
+        any(
+            target_os = "ios",
+            target_os = "android",
+            target_os = "windows",
+            target_os = "macos",
+            target_os = "linux"
+        )
+    ))]
+    {
+        return import::file(source, Some("audio/ogg".to_owned()), cache_dir);
+    }
+
+    #[cfg(not(all(
+        feature = "native-file-picker",
+        any(
+            target_os = "ios",
+            target_os = "android",
+            target_os = "windows",
+            target_os = "macos",
+            target_os = "linux"
+        )
+    )))]
+    {
+        let _ = (source, cache_dir);
         Err(PickerError::Disabled)
     }
 }
@@ -189,7 +231,8 @@ fn validate(request: &PickRequest) -> Result<(), PickerError> {
         target_os = "windows",
         target_os = "macos",
         target_os = "linux",
-        target_os = "ios"
+        target_os = "ios",
+        target_os = "android"
     )
 ))]
 mod import {
@@ -232,16 +275,34 @@ mod import {
                 "selection is not a regular file",
             ));
         }
+        reader(&mut input, file_name, mime_type, cache_dir)
+    }
+
+    pub(super) fn reader(
+        input: &mut impl std::io::Read,
+        file_name: OsString,
+        mime_type: Option<String>,
+        cache_dir: &Path,
+    ) -> Result<PickedFile, PickerError> {
         std::fs::create_dir_all(cache_dir)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(cache_dir, std::fs::Permissions::from_mode(0o700))?;
+        }
         let directory = tempfile::Builder::new()
             .prefix("selected-")
             .tempdir_in(cache_dir)?;
         let path = directory.path().join(&file_name);
-        let mut output = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)?;
-        let size_bytes = std::io::copy(&mut input, &mut output)?;
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut output = options.open(&path)?;
+        let size_bytes = std::io::copy(input, &mut output)?;
         // Errors above remove partially copied files through TempDir's guard.
         drop(output);
         Ok(PickedFile {
@@ -307,3 +368,10 @@ mod desktop {
 #[cfg(all(feature = "native-file-picker", target_os = "ios"))]
 #[path = "file_picker/ios.rs"]
 mod ios;
+
+#[cfg(all(feature = "native-file-picker", target_os = "android"))]
+#[path = "file_picker/android.rs"]
+mod android;
+
+#[cfg(all(feature = "native-file-picker", target_os = "android"))]
+pub use android::{initialize as initialize_android, on_result as android_activity_result};

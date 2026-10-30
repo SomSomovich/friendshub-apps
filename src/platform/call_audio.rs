@@ -7,15 +7,11 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
-#[cfg(not(target_os = "macos"))]
 use std::thread;
-#[cfg(not(target_os = "macos"))]
 use std::time::Duration;
 
 use base64::Engine as _;
-#[cfg(not(target_os = "macos"))]
 use cpal::Sample as _;
-#[cfg(not(target_os = "macos"))]
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use friendshub_core::Client;
 
@@ -39,9 +35,7 @@ pub enum CallAudioFailure {
 struct CallAudioSession {
     stop: Arc<AtomicBool>,
     playback_enabled: Arc<AtomicBool>,
-    #[cfg(not(target_os = "macos"))]
     _input_stream: cpal::Stream,
-    #[cfg(not(target_os = "macos"))]
     _output_stream: cpal::Stream,
 }
 
@@ -74,40 +68,31 @@ fn sessions() -> &'static Mutex<HashMap<String, CallAudioSession>> {
 
 /// Open microphone/speaker streams and start the Opus transfer loops.
 ///
-/// macOS call audio remains disabled until the binary is packaged with
-/// microphone usage metadata. Android permission is checked before opening
+/// The macOS executable embeds its microphone usage metadata so CoreAudio can
+/// request recording permission. Android permission is checked before opening
 /// the AAudio streams.
 pub fn start(
     client: Arc<Client>,
     call_id: String,
     on_failure: impl Fn(CallAudioFailure) + Send + Sync + 'static,
 ) -> Result<(), CallAudioFailure> {
-    #[cfg(target_os = "macos")]
+    #[cfg(target_os = "android")]
+    if crate::platform::notifications::microphone_permission_state()
+        != crate::platform::notifications::MicrophonePermissionState::Granted
     {
         let _ = (client, call_id, on_failure);
         return Err(CallAudioFailure::PermissionRequired);
     }
 
-    #[cfg(not(target_os = "macos"))]
-    {
-        #[cfg(target_os = "android")]
-        if crate::platform::notifications::microphone_permission_state()
-            != crate::platform::notifications::MicrophonePermissionState::Granted
-        {
-            let _ = (client, call_id, on_failure);
-            return Err(CallAudioFailure::PermissionRequired);
-        }
-
-        let mut registry = sessions()
-            .lock()
-            .map_err(|_| CallAudioFailure::CoreTransport)?;
-        if registry.contains_key(&call_id) {
-            return Ok(());
-        }
-        let session = start_supported(client, &call_id, Arc::new(on_failure))?;
-        registry.insert(call_id, session);
-        Ok(())
+    let mut registry = sessions()
+        .lock()
+        .map_err(|_| CallAudioFailure::CoreTransport)?;
+    if registry.contains_key(&call_id) {
+        return Ok(());
     }
+    let session = start_supported(client, &call_id, Arc::new(on_failure))?;
+    registry.insert(call_id, session);
+    Ok(())
 }
 
 /// Stop audio immediately after the call closes. Worker loops use bounded
@@ -132,7 +117,6 @@ pub fn set_playback(call_id: &str, enabled: bool) -> bool {
     true
 }
 
-#[cfg(not(target_os = "macos"))]
 fn start_supported(
     client: Arc<Client>,
     call_id: &str,
@@ -315,7 +299,6 @@ fn start_supported(
     })
 }
 
-#[cfg(not(target_os = "macos"))]
 fn build_input_stream(
     device: &cpal::Device,
     config: cpal::StreamConfig,
@@ -354,7 +337,6 @@ fn build_input_stream(
     }
 }
 
-#[cfg(not(target_os = "macos"))]
 fn build_input_stream_typed<T>(
     device: &cpal::Device,
     config: cpal::StreamConfig,
@@ -398,7 +380,6 @@ where
         .map_err(|_| CallAudioFailure::MicrophoneUnavailable)
 }
 
-#[cfg(not(target_os = "macos"))]
 fn build_output_stream(
     device: &cpal::Device,
     config: cpal::StreamConfig,
@@ -439,7 +420,6 @@ fn build_output_stream(
     }
 }
 
-#[cfg(not(target_os = "macos"))]
 fn build_output_stream_typed<T>(
     device: &cpal::Device,
     config: cpal::StreamConfig,

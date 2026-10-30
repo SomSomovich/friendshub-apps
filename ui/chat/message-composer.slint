@@ -1,6 +1,50 @@
 import { Theme } from "../theme.slint";
-import { ChatAction } from "chat-controls.slint";
-import { TextEdit } from "std-widgets.slint";
+import { FHIconButton, FHSpinner } from "../components.slint";
+import { IconCalendarClock, IconChartColumn, IconFileText, IconImage, IconMic, IconPaperclip, IconSend, IconSmile, IconSquare, IconVideo, IconX } from "../icons.slint";
+import { ScrollView } from "std-widgets.slint";
+
+component ComposerMenuItem inherits Rectangle {
+    in property <string> text;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    width: 100%;
+    height: 36px;
+    background: item-area.has-hover && root.enabled ? Theme.hover : transparent;
+    border-radius: 6px;
+    opacity: root.enabled ? 1 : 0.5;
+    animate background { duration: 100ms; }
+    accessible-role: button;
+    accessible-label: root.text;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.clicked(); } }
+
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 10px;
+        alignment: start;
+        cross-axis-alignment: center;
+
+        @children
+
+        Text {
+            text: root.text;
+            color: Theme.foreground;
+            font-size: 13px;
+            horizontal-stretch: 1;
+            vertical-alignment: center;
+            overflow: elide;
+            accessible-role: none;
+        }
+
+        item-area := TouchArea {
+            enabled: root.enabled;
+            mouse-cursor: pointer;
+            clicked => { root.clicked(); }
+        }
+    }
+}
 
 export component MessageComposer inherits Rectangle {
     in-out property <string> value: "";
@@ -11,10 +55,13 @@ export component MessageComposer inherits Rectangle {
     in property <bool> can-schedule: true;
     in property <string> language: "ru";
     in property <string> error-text: "";
+    in property <bool> voice-recording: false;
+    in property <bool> voice-recording-busy: false;
+    in property <int> voice-recording-seconds: 0;
     callback draft-changed(string);
     callback send-requested(string);
     callback attachment-requested(string);
-    callback emoji-picker-requested();
+    callback emoji-picker-requested(length, length);
     callback poll-requested();
     callback schedule-requested(string);
     callback voice-record-requested();
@@ -23,22 +70,46 @@ export component MessageComposer inherits Rectangle {
 
     background: Theme.surface;
 
+    Rectangle {
+        y: 0px;
+        width: parent.width;
+        height: 1px;
+        background: Theme.border;
+    }
+
     VerticalLayout {
         padding: 8px;
-        spacing: 6px;
+        spacing: 4px;
 
         if root.editing : HorizontalLayout {
-            Text {
-                text: "Редактирование сообщения";
-                color: Theme.accent;
-                font-size: 12px;
-                vertical-alignment: center;
+            spacing: 8px;
+            cross-axis-alignment: center;
+
+            Rectangle {
                 horizontal-stretch: 1;
+                height: 28px;
+                background: Theme.accent.with-alpha(0.12);
+                border-radius: 6px;
+
+                Text {
+                    x: 10px;
+                    width: parent.width - 20px;
+                    height: 100%;
+                    text: root.language == "ru" ? "Редактирование сообщения" : "Editing message";
+                    color: Theme.accent;
+                    font-size: 12px;
+                    font-weight: 500;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
             }
-            ChatAction {
-                label: "Отменить";
+
+            FHIconButton {
+                button-size: 28px;
+                label: root.language == "ru" ? "Отменить редактирование" : "Cancel editing";
                 enabled: !root.busy;
                 clicked => { root.cancel-edit-requested(); }
+                IconX { width: 16px; height: 16px; x: 6px; y: 6px; stroke: Theme.muted; }
             }
         }
 
@@ -47,92 +118,259 @@ export component MessageComposer inherits Rectangle {
             color: Theme.danger;
             font-size: 12px;
             wrap: word-wrap;
-        }
-
-        Rectangle {
-            height: 72px;
-            background: Theme.background;
-            border-width: 1px;
-            border-color: input.has-focus ? Theme.accent : Theme.border;
-            border-radius: 10px;
-
-            input := TextEdit {
-                x: 12px;
-                y: 8px;
-                width: parent.width - 24px;
-                height: parent.height - 16px;
-                text <=> root.value;
-                placeholder-text: "Сообщение";
-                enabled: root.enabled && !root.busy;
-                font-size: 14px;
-                wrap: word-wrap;
-                edited => { root.draft-changed(self.text); }
-                key-pressed(event) => {
-                    if event.text == Key.Return && !event.modifiers.shift && root.enabled && !root.busy && !root.value.is-empty {
-                        root.send-requested(root.value);
-                        return accept;
-                    }
-                    return reject;
-                }
-            }
+            width: 100%;
         }
 
         HorizontalLayout {
             spacing: 4px;
-            if !root.editing : ChatAction {
-                label: "☺";
-                accessible-name: root.language == "ru" ? "Эмодзи" : "Emoji";
+            cross-axis-alignment: end;
+
+            attach-button := FHIconButton {
+                visible: !root.editing;
+                button-size: 40px;
+                label: root.language == "ru" ? "Прикрепить" : "Attach";
                 enabled: root.enabled && !root.busy;
-                clicked => { root.emoji-picker-requested(); }
+                clicked => { attach-popup.show(); }
+
+                IconPaperclip {
+                    width: 18px;
+                    height: 18px;
+                    x: 11px;
+                    y: 11px;
+                    stroke: Theme.muted;
+                }
             }
-            if !root.editing : ChatAction {
-                label: "▣";
-                accessible-name: "Фото";
+
+            if !root.editing : FHIconButton {
+                button-size: 40px;
+                label: root.language == "ru" ? "Эмодзи" : "Emoji";
                 enabled: root.enabled && !root.busy;
-                clicked => { root.attachment-requested("photo"); }
+                clicked => { root.emoji-picker-requested(self.absolute-position.x, self.absolute-position.y); }
+
+                IconSmile {
+                    width: 18px;
+                    height: 18px;
+                    x: 11px;
+                    y: 11px;
+                    stroke: Theme.muted;
+                }
             }
-            if !root.editing : ChatAction {
-                label: "▷";
-                accessible-name: "Видео";
-                enabled: root.enabled && !root.busy;
-                clicked => { root.attachment-requested("video"); }
+
+            Rectangle {
+                horizontal-stretch: 1;
+                min-width: 0px;
+                height: max(40px, min(120px, input.preferred-height + 20px));
+                background: Theme.background;
+                border-width: 1px;
+                border-color: input.has-focus ? Theme.accent : Theme.border;
+                border-radius: 12px;
+                clip: true;
+
+                ContextMenuArea {
+                    enabled: root.enabled && !root.busy;
+                    Menu {
+                        MenuItem { title: root.language == "ru" ? "Вырезать" : "Cut"; enabled: root.enabled && !root.busy; activated => { input.cut(); } }
+                        MenuItem { title: root.language == "ru" ? "Копировать" : "Copy"; enabled: !root.value.is-empty; activated => { input.copy(); } }
+                        MenuItem { title: root.language == "ru" ? "Вставить" : "Paste"; enabled: root.enabled && !root.busy; activated => { input.paste(); } }
+                        MenuItem { title: root.language == "ru" ? "Выделить всё" : "Select all"; enabled: !root.value.is-empty; activated => { input.select-all(); } }
+                    }
+
+                    input-scroll := ScrollView {
+                        x: 12px;
+                        y: 8px;
+                        width: parent.width - 24px;
+                        height: parent.height - 16px;
+                        horizontal-scrollbar-policy: always-off;
+                        content-width: self.visible-width;
+                        content-height: max(self.visible-height, input.preferred-height);
+
+                        input := TextInput {
+                            width: parent.width;
+                            height: max(input-scroll.visible-height, self.preferred-height);
+                            text <=> root.value;
+                            enabled: root.enabled && !root.busy;
+                            color: Theme.foreground;
+                            selection-background-color: Theme.accent;
+                            selection-foreground-color: Theme.accent-foreground;
+                            font-size: 14px;
+                            single-line: false;
+                            wrap: word-wrap;
+                            page-height: input-scroll.visible-height;
+                            accessible-label: root.language == "ru" ? "Сообщение" : "Message";
+                            accessible-placeholder-text: root.language == "ru" ? "Сообщение" : "Message";
+                            edited => { root.draft-changed(self.text); }
+                            cursor-position-changed(position) => {
+                                if position.y + input-scroll.content-y < 0px {
+                                    input-scroll.content-y = min(0px, input-scroll.visible-height - position.y - 20px, max(input-scroll.visible-height - self.height, -position.y));
+                                } else if position.y + input-scroll.content-y > input-scroll.visible-height - 20px {
+                                    input-scroll.content-y = min(0px, max(input-scroll.visible-height - self.height, input-scroll.visible-height - position.y - 20px));
+                                }
+                            }
+                            key-pressed(event) => {
+                                if event.text == Key.Return && !event.modifiers.shift && self.preedit-text.is-empty && root.enabled && !root.busy && !root.value.is-empty {
+                                    root.send-requested(root.value);
+                                    return accept;
+                                }
+                                return reject;
+                            }
+                        }
+                    }
+                }
+
+                if root.value.is-empty && input.preedit-text.is-empty : Text {
+                    x: 12px;
+                    y: 0px;
+                    width: parent.width - 24px;
+                    height: 40px;
+                    text: root.language == "ru" ? "Сообщение" : "Message";
+                    color: Theme.muted;
+                    font-size: 14px;
+                    vertical-alignment: center;
+                    accessible-role: none;
+                }
             }
-            if !root.editing : ChatAction {
-                label: "+";
-                accessible-name: "Файл";
-                enabled: root.enabled && !root.busy;
-                clicked => { root.attachment-requested("file"); }
-            }
-            if !root.editing && root.can-poll : ChatAction {
-                label: "▤";
-                accessible-name: "Опрос";
-                enabled: root.enabled && !root.busy;
-                clicked => { root.poll-requested(); }
-            }
-            if !root.editing && root.can-schedule : ChatAction {
-                label: "◷";
-                accessible-name: "Отложить";
-                enabled: root.enabled && !root.busy && !root.value.is-empty;
-                clicked => { root.schedule-requested(root.value); }
-            }
-            if !root.editing : ChatAction {
-                label: "♪";
-                accessible-name: "Голосовое сообщение";
-                enabled: root.enabled && !root.busy;
+
+            if !root.editing && root.value.is-empty && !root.voice-recording : FHIconButton {
+                button-size: 40px;
+                label: root.language == "ru" ? "Записать голосовое сообщение" : "Record a voice message";
+                enabled: root.enabled && !root.busy && !root.voice-recording-busy;
                 clicked => { root.voice-record-requested(); }
+
+                if root.voice-recording-busy : FHSpinner {
+                    x: 12px;
+                    y: 12px;
+                    size: 16px;
+                    tint: Theme.muted;
+                }
+                if !root.voice-recording-busy : IconMic {
+                    width: 18px;
+                    height: 18px;
+                    x: 11px;
+                    y: 11px;
+                    stroke: Theme.muted;
+                }
             }
-            if !root.editing : ChatAction {
-                label: "◉";
-                accessible-name: "Видеосообщение";
-                enabled: root.enabled && !root.busy;
-                clicked => { root.video-note-requested(); }
+
+            if root.voice-recording : Rectangle {
+                width: 84px;
+                height: 40px;
+                background: Theme.danger.with-alpha(0.14);
+                border-radius: 20px;
+                accessible-role: button;
+                accessible-label: root.language == "ru" ? "Завершить запись" : "Stop recording";
+
+                HorizontalLayout {
+                    padding-left: 10px;
+                    padding-right: 10px;
+                    spacing: 6px;
+                    alignment: center;
+
+                    IconSquare { width: 12px; height: 12px; stroke: Theme.danger; }
+
+                    Text {
+                        text: "\{root.voice-recording-seconds} с";
+                        color: Theme.danger;
+                        font-size: 12px;
+                        font-weight: 500;
+                        vertical-alignment: center;
+                    }
+                }
+
+                TouchArea {
+                    enabled: root.enabled && !root.busy;
+                    mouse-cursor: pointer;
+                    clicked => { root.voice-record-requested(); }
+                }
             }
-            Rectangle { horizontal-stretch: 1; background: transparent; }
-            ChatAction {
-                label: root.busy ? "Отправка…" : (root.editing ? "Сохранить" : "Отправить");
-                enabled: root.enabled && !root.busy && !root.value.is-empty;
-                active: true;
-                clicked => { root.send-requested(root.value); }
+
+            if !root.voice-recording : Rectangle {
+                width: 40px;
+                height: 40px;
+                border-radius: 20px;
+                background: root.enabled && !root.busy && !root.value.is-empty ? Theme.accent : Theme.hover;
+                opacity: root.enabled && !root.busy && !root.value.is-empty ? 1 : 0.55;
+                animate background { duration: 120ms; }
+                accessible-role: button;
+                accessible-label: root.language == "ru" ? "Отправить" : "Send";
+                accessible-enabled: root.enabled && !root.busy && !root.value.is-empty;
+                accessible-action-default => { if root.enabled && !root.busy && !root.value.is-empty { root.send-requested(root.value); } }
+
+                if root.busy : FHSpinner {
+                    x: 12px;
+                    y: 12px;
+                    size: 16px;
+                    tint: Theme.accent-foreground;
+                }
+                if !root.busy : IconSend {
+                    width: 18px;
+                    height: 18px;
+                    x: 11px;
+                    y: 11px;
+                    stroke: root.enabled && !root.value.is-empty ? Theme.accent-foreground : Theme.muted;
+                }
+
+                TouchArea {
+                    enabled: root.enabled && !root.busy && !root.value.is-empty;
+                    mouse-cursor: pointer;
+                    clicked => { root.send-requested(root.value); }
+                }
+            }
+        }
+    }
+
+    attach-popup := PopupWindow {
+        x: attach-button.absolute-position.x;
+        y: max(0px, attach-button.absolute-position.y - 196px);
+        width: 220px;
+        height: 196px;
+        close-policy: close-on-click-outside;
+
+        Rectangle {
+            width: 100%;
+            height: 100%;
+            background: Theme.surface;
+            border-width: 1px;
+            border-color: Theme.border;
+            border-radius: 12px;
+            drop-shadow-color: #66000000;
+            drop-shadow-blur: 24px;
+            drop-shadow-offset-y: 6px;
+            clip: true;
+
+            VerticalLayout {
+                padding: 4px;
+                spacing: 0px;
+
+                ComposerMenuItem {
+                    text: root.language == "ru" ? "Фото" : "Photo";
+                    enabled: root.enabled && !root.busy;
+                    clicked => { attach-popup.close(); root.attachment-requested("photo"); }
+                    IconImage { width: 16px; height: 16px; stroke: Theme.muted; }
+                }
+                ComposerMenuItem {
+                    text: root.language == "ru" ? "Видео" : "Video";
+                    enabled: root.enabled && !root.busy;
+                    clicked => { attach-popup.close(); root.attachment-requested("video"); }
+                    IconVideo { width: 16px; height: 16px; stroke: Theme.muted; }
+                }
+                ComposerMenuItem {
+                    text: root.language == "ru" ? "Файл" : "File";
+                    enabled: root.enabled && !root.busy;
+                    clicked => { attach-popup.close(); root.attachment-requested("file"); }
+                    IconFileText { width: 16px; height: 16px; stroke: Theme.muted; }
+                }
+                if root.can-poll : ComposerMenuItem {
+                    text: root.language == "ru" ? "Опрос" : "Poll";
+                    enabled: root.enabled && !root.busy;
+                    clicked => { attach-popup.close(); root.poll-requested(); }
+                    IconChartColumn { width: 16px; height: 16px; stroke: Theme.muted; }
+                }
+                if root.can-schedule : ComposerMenuItem {
+                    text: root.language == "ru" ? "Отложить" : "Schedule";
+                    enabled: root.enabled && !root.busy && !root.value.is-empty;
+                    clicked => { attach-popup.close(); root.schedule-requested(root.value); }
+                    IconCalendarClock { width: 16px; height: 16px; stroke: Theme.muted; }
+                }
             }
         }
     }

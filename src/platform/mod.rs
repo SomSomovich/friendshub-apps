@@ -8,3 +8,4 @@ pub mod notification_sound;
 pub mod notifications;
 pub mod open_file;
 pub mod storage;
+pub mod voice_recording;

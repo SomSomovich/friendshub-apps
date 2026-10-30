@@ -1,6 +1,7 @@
 import { Theme } from "../theme.slint";
-import { ChatAction } from "../chat/chat-controls.slint";
-import { ScrollView, TextEdit } from "std-widgets.slint";
+import { FHEmptyState, FHSecondaryButton, FHScreenHeader, FHSkeleton } from "../components.slint";
+import { IconBot, IconMessageSquare, IconSend } from "../icons.slint";
+import { ScrollView } from "std-widgets.slint";
 
 export struct BotMessage {
     id: string,
@@ -33,38 +34,31 @@ export component BotChatScreen inherits Rectangle {
     VerticalLayout {
         spacing: 0px;
 
-        Rectangle {
-            height: 56px;
-            background: Theme.background;
-            HorizontalLayout {
-                padding: 8px;
-                spacing: 6px;
-                ChatAction { label: "←"; width: 36px; clicked => { root.back-requested(); } }
-                VerticalLayout {
-                    alignment: center;
-                    spacing: 2px;
-                    horizontal-stretch: 1;
-                    Text { text: root.handle.is-empty ? "Бот" : "@" + root.handle; color: Theme.foreground; font-size: 14px; font-weight: 600; }
-                    Text { text: "Автоматический собеседник"; color: Theme.muted; font-size: 11px; }
-                }
-            }
+        FHScreenHeader {
+            title: root.handle.is-empty ? "Бот" : "@" + root.handle;
+            subtitle: "Автоматический собеседник";
+            avatar-label: "";
+            back-requested => { root.back-requested(); }
         }
 
         ScrollView {
             width: 100%;
             vertical-stretch: 1;
             vertical-scrollbar-policy: as-needed;
+
             VerticalLayout {
                 width: 100%;
-                max-width: 600px;
-                padding: 12px;
+                padding: 16px;
                 spacing: 6px;
 
                 if root.has-older : HorizontalLayout {
                     alignment: center;
-                    ChatAction {
-                        label: root.loading-older ? "Загружаем…" : "Загрузить более ранние сообщения";
+
+                    FHSecondaryButton {
+                        text: root.loading-older ? "Загрузка" : "Загрузить более ранние";
+                        height: 32px;
                         enabled: !root.loading-older;
+                        busy: root.loading-older;
                         clicked => { root.load-older-requested(); }
                     }
                 }
@@ -72,106 +66,169 @@ export component BotChatScreen inherits Rectangle {
                 if !root.error-text.is-empty : VerticalLayout {
                     alignment: center;
                     spacing: 8px;
-                    Text { text: root.error-text; color: Theme.danger; font-size: 12px; wrap: word-wrap; horizontal-alignment: center; }
-                    ChatAction { label: "Повторить"; clicked => { root.retry-requested(); } }
+
+                    Text {
+                        text: root.error-text;
+                        color: Theme.danger;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                        horizontal-alignment: center;
+                    }
+
+                    FHSecondaryButton {
+                        text: "Повторить";
+                        height: 32px;
+                        clicked => { root.retry-requested(); }
+                    }
                 }
 
-                if root.loading && root.messages.length == 0 : Text {
-                    text: "Загружаем сообщения…";
-                    color: Theme.muted;
-                    font-size: 12px;
-                    horizontal-alignment: center;
+                if root.loading && root.messages.length == 0 : VerticalLayout {
+                    spacing: 10px;
+                    for row in 5 : HorizontalLayout {
+                        alignment: Math.mod(row, 2) == 0 ? start : end;
+                        FHSkeleton {
+                            height: row == 2 ? 60px : 42px;
+                            width: row == 2 ? 62% : 44%;
+                            corner-radius: 16px;
+                        }
+                    }
                 }
 
-                if !root.loading && root.error-text.is-empty && root.messages.length == 0 : VerticalLayout {
-                    alignment: center;
-                    spacing: 8px;
-                    Text { text: "Сообщений пока нет"; color: Theme.foreground; font-size: 14px; horizontal-alignment: center; }
-                    Text { text: "Напишите боту первым."; color: Theme.muted; font-size: 12px; horizontal-alignment: center; }
+                if !root.loading && root.error-text.is-empty && root.messages.length == 0 : FHEmptyState {
+                    title: "Сообщений пока нет";
+                    description: "Напишите боту первым.";
+
+                    IconMessageSquare { width: 32px; height: 32px; stroke: Theme.muted; }
                 }
 
                 for message[index] in root.messages : HorizontalLayout {
                     alignment: message.from-bot ? start : end;
+
                     if !message.from-bot : Rectangle { horizontal-stretch: 1; background: transparent; }
+
                     Rectangle {
                         width: min(parent.width * 0.82, 520px);
                         height: bubble-content.preferred-height + 16px;
                         background: message.from-bot ? Theme.surface : Theme.message-bubble;
-                        border-width: 1px;
-                        border-color: Theme.border;
-                        border-radius: 12px;
+                        border-width: message.from-bot ? 0px : 1px;
+                        border-color: Theme.accent.with-alpha(0.30);
+                        border-radius: 16px;
+
                         bubble-content := VerticalLayout {
-                            x: 10px;
+                            x: 12px;
                             y: 8px;
-                            width: parent.width - 20px;
+                            width: parent.width - 24px;
                             spacing: 5px;
-                            if message.from-bot && !root.handle.is-empty : Text {
-                                text: "@" + root.handle;
-                                color: Theme.accent;
-                                font-size: 11px;
-                                font-weight: 600;
+
+                            if message.from-bot && !root.handle.is-empty : HorizontalLayout {
+                                spacing: 6px;
+                                cross-axis-alignment: center;
+
+                                IconBot { width: 14px; height: 14px; stroke: Theme.accent; }
+
+                                Text {
+                                    text: "@" + root.handle;
+                                    color: Theme.accent;
+                                    font-size: 12px;
+                                    font-weight: 500;
+                                }
                             }
+
                             Text {
                                 text: message.deleted ? "Это сообщение удалено" : message.text;
                                 color: message.deleted ? Theme.muted : Theme.foreground;
                                 font-size: 14px;
                                 wrap: word-wrap;
                             }
-                            HorizontalLayout {
-                                alignment: end;
-                                spacing: 6px;
-                                Text { text: message.time-label; color: Theme.muted; font-size: 10px; }
-                            }
+
                             if !message.deleted && message.has-reply-keyboard : Rectangle {
                                 width: 100%;
-                                height: 36px;
+                                height: max(36px, keyboard-content.preferred-height);
                                 background: Theme.hover;
                                 border-width: 1px;
                                 border-color: Theme.border;
                                 border-radius: 8px;
-                                Text {
-                                    x: 8px;
-                                    width: parent.width - 16px;
-                                    height: parent.height;
-                                    text: message.reply-keyboard-labels;
-                                    color: Theme.foreground;
-                                    font-size: 11px;
-                                    wrap: word-wrap;
-                                    vertical-alignment: center;
-                                    accessible-label: "Клавиатура ответа бота";
+
+                                keyboard-content := VerticalLayout {
+                                    padding-left: 10px;
+                                    padding-right: 10px;
+                                    padding-top: 7px;
+                                    padding-bottom: 7px;
+
+                                    Text {
+                                        text: message.reply-keyboard-labels;
+                                        color: Theme.foreground;
+                                        font-size: 12px;
+                                        wrap: word-wrap;
+                                        vertical-alignment: center;
+                                        accessible-label: "Клавиатура ответа бота";
+                                    }
                                 }
+                            }
+
+                            HorizontalLayout {
+                                alignment: end;
+                                spacing: 6px;
+                                Text { text: message.time-label; color: Theme.muted; font-size: 11px; }
                             }
                         }
                     }
+
                     if message.from-bot : Rectangle { horizontal-stretch: 1; background: transparent; }
                 }
             }
         }
 
         Rectangle {
-            height: 104px;
+            height: 64px;
             background: Theme.surface;
-            border-color: Theme.border;
-            border-width: 1px;
-            VerticalLayout {
+
+            Rectangle {
+                y: 0px;
+                width: parent.width;
+                height: 1px;
+                background: Theme.border;
+            }
+
+            HorizontalLayout {
                 padding: 8px;
                 spacing: 6px;
+                cross-axis-alignment: end;
+
                 Rectangle {
-                    vertical-stretch: 1;
+                    horizontal-stretch: 1;
+                    min-width: 0px;
+                    height: 44px;
                     background: Theme.background;
                     border-width: 1px;
                     border-color: input.has-focus ? Theme.accent : Theme.border;
-                    border-radius: 10px;
-                    input := TextEdit {
+                    border-radius: 12px;
+                    clip: true;
+
+                    if root.draft.is-empty && input.preedit-text.is-empty : Text {
                         x: 12px;
-                        y: 8px;
                         width: parent.width - 24px;
-                        height: parent.height - 16px;
+                        height: parent.height;
+                        text: "Сообщение боту";
+                        color: Theme.muted;
+                        font-size: 14px;
+                        vertical-alignment: center;
+                        accessible-role: none;
+                    }
+
+                    input := TextInput {
+                        x: 12px;
+                        y: 0px;
+                        width: parent.width - 24px;
+                        height: parent.height;
                         text <=> root.draft;
                         enabled: !root.loading;
-                        placeholder-text: "Сообщение боту";
+                        color: Theme.foreground;
+                        selection-background-color: Theme.accent;
+                        selection-foreground-color: Theme.accent-foreground;
                         font-size: 14px;
-                        wrap: word-wrap;
+                        vertical-alignment: center;
+                        accessible-label: "Сообщение боту";
                         edited => { root.draft-changed(self.text); }
                         key-pressed(event) => {
                             if event.text == Key.Return && !event.modifiers.shift && !root.loading && !root.busy && !root.draft.is-empty {
@@ -182,12 +239,31 @@ export component BotChatScreen inherits Rectangle {
                         }
                     }
                 }
-                HorizontalLayout {
-                    alignment: end;
-                    ChatAction {
-                        label: root.busy ? "Отправка…" : "Отправить";
-                        active: true;
-                enabled: !root.loading && !root.busy && !root.draft.is-empty;
+
+                Rectangle {
+                    width: 44px;
+                    height: 44px;
+                    border-radius: 22px;
+                    background: !root.loading && !root.busy && !root.draft.is-empty ? Theme.accent : Theme.hover;
+                    opacity: !root.loading && !root.busy && !root.draft.is-empty ? 1 : 0.55;
+                    accessible-role: button;
+                    accessible-label: "Отправить";
+                    accessible-enabled: !root.loading && !root.busy && !root.draft.is-empty;
+                    accessible-action-default => {
+                        if !root.loading && !root.busy && !root.draft.is-empty { root.send-requested(root.draft); }
+                    }
+
+                    IconSend {
+                        width: 18px;
+                        height: 18px;
+                        x: 13px;
+                        y: 13px;
+                        stroke: !root.loading && !root.draft.is-empty ? Theme.accent-foreground : Theme.muted;
+                    }
+
+                    TouchArea {
+                        enabled: !root.loading && !root.busy && !root.draft.is-empty;
+                        mouse-cursor: pointer;
                         clicked => { root.send-requested(root.draft); }
                     }
                 }

@@ -1,5 +1,6 @@
 import { Theme } from "../theme.slint";
-import { FHInput, FHTextButton, FHPrimaryButton } from "../components.slint";
+import { FHEmptyState, FHIconButton, FHInput, FHSecondaryButton, FHSkeleton, FHTextButton, FHPrimaryButton } from "../components.slint";
+import { IconX } from "../icons.slint";
 import { ScrollView } from "std-widgets.slint";
 import { AvatarViewerDialog } from "avatar-viewer-dialog.slint";
 
@@ -74,7 +75,7 @@ export component UserProfileModal inherits Rectangle {
     VerticalLayout {
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
-        width: min(parent.width - 24px, 448px);
+        width: min(parent.width - 24px, 384px);
         height: min(modal-content.preferred-height, parent.height - 32px);
         max-height: parent.height - 32px;
         alignment: center;
@@ -87,6 +88,8 @@ export component UserProfileModal inherits Rectangle {
             border-color: Theme.border;
             border-radius: 16px;
             clip: true;
+
+            TouchArea { }
 
             modal-content := VerticalLayout {
                 spacing: 0px;
@@ -109,9 +112,11 @@ export component UserProfileModal inherits Rectangle {
                         clicked => { root.alias-editor-requested(); }
                     }
 
-                    FHTextButton {
-                        text: "Закрыть";
+                    FHIconButton {
+                        button-size: 32px;
+                        label: "Закрыть";
                         clicked => { root.close-requested(); }
+                        IconX { width: 16px; height: 16px; x: 8px; y: 8px; stroke: Theme.muted; }
                     }
                 }
 
@@ -145,10 +150,18 @@ export component UserProfileModal inherits Rectangle {
                             padding: 16px;
                             spacing: 14px;
 
-                            Text { text: "Загружаем профиль…"; color: Theme.muted; font-size: 14px; }
-                            Rectangle { height: 14px; background: Theme.surface; border-radius: 7px; }
-                            Rectangle { width: 60%; height: 12px; background: Theme.surface; border-radius: 6px; }
-                            Rectangle { height: 40px; background: Theme.surface; border-radius: 8px; }
+                            HorizontalLayout {
+                                spacing: 12px;
+                                FHSkeleton { width: 80px; height: 80px; corner-radius: 40px; }
+                                VerticalLayout {
+                                    horizontal-stretch: 1;
+                                    spacing: 7px;
+                                    FHSkeleton { width: 45%; height: 16px; }
+                                    FHSkeleton { width: 30%; height: 12px; }
+                                }
+                            }
+                            FHSkeleton { width: 100%; height: 40px; corner-radius: 8px; }
+                            FHSkeleton { width: 100%; height: 40px; corner-radius: 8px; }
                         }
 
                         if root.unavailable : VerticalLayout {
@@ -164,10 +177,10 @@ export component UserProfileModal inherits Rectangle {
                                 spacing: 12px;
 
                                 Rectangle {
-                                    width: 64px;
-                                    height: 64px;
+                                    width: 80px;
+                                    height: 80px;
                                     background: Theme.hover;
-                                    border-radius: 32px;
+                                    border-radius: 40px;
                                     clip: true;
 
                                     if root.has-avatar : Image {
@@ -188,9 +201,29 @@ export component UserProfileModal inherits Rectangle {
                                         height: 100%;
                                     }
 
-                                    if root.has-avatar : TouchArea {
-                                        mouse-cursor: pointer;
-                                        clicked => { root.avatar-viewer-open = true; }
+                                    if root.has-avatar : Rectangle {
+                                        background: transparent;
+                                        accessible-role: button;
+                                        accessible-label: "Открыть аватар " + root.username;
+                                        accessible-action-default => { root.avatar-viewer-open = true; }
+                                        forward-focus: avatar-keyboard;
+
+                                        TouchArea {
+                                            mouse-cursor: pointer;
+                                            clicked => { root.avatar-viewer-open = true; }
+                                        }
+
+                                        avatar-keyboard := FocusScope {
+                                            x: 0;
+                                            width: 0;
+                                            key-pressed(event) => {
+                                                if event.text == Key.Space || event.text == Key.Return {
+                                                    root.avatar-viewer-open = true;
+                                                    return accept;
+                                                }
+                                                return reject;
+                                            }
+                                        }
                                     }
                                 }
 
@@ -198,7 +231,7 @@ export component UserProfileModal inherits Rectangle {
                                     spacing: 3px;
                                     vertical-stretch: 0;
 
-                                    if !root.alias.is-empty : Text {
+                                    if !root.alias.is-empty && root.alias != root.username : Text {
                                         text: root.alias;
                                         color: Theme.foreground;
                                         font-size: 16px;
@@ -261,18 +294,22 @@ export component UserProfileModal inherits Rectangle {
 
                             HorizontalLayout {
                                 spacing: 8px;
+                                alignment: start;
+
                                 FHPrimaryButton {
                                     text: "Написать";
                                     enabled: !root.busy;
                                     clicked => { root.write-requested(); }
                                 }
-                                FHTextButton {
+                                FHSecondaryButton {
                                     text: "Аудиозвонок";
+                                    height: 40px;
                                     enabled: !root.busy;
                                     clicked => { root.call-requested(false); }
                                 }
-                                FHTextButton {
+                                FHSecondaryButton {
                                     text: "Видеозвонок";
+                                    height: 40px;
                                     enabled: !root.busy;
                                     clicked => { root.call-requested(true); }
                                 }
@@ -287,14 +324,17 @@ export component UserProfileModal inherits Rectangle {
                     padding: 12px;
                     spacing: 8px;
 
-                    FHTextButton {
+                    FHSecondaryButton {
                         text: root.is-contact ? "Убрать из друзей" : "Добавить в друзья";
+                        height: 36px;
                         enabled: !root.busy;
                         clicked => { root.contact-toggle-requested(); }
                     }
 
-                    FHTextButton {
+                    FHSecondaryButton {
                         text: root.is-blocked ? "Разблокировать" : "Заблокировать";
+                        height: 36px;
+                        danger: !root.is-blocked;
                         enabled: !root.busy;
                         clicked => { root.block-toggle-requested(); }
                     }
@@ -327,6 +367,8 @@ export component UserProfileModal inherits Rectangle {
         border-width: 1px;
         border-color: Theme.border;
         border-radius: 12px;
+
+        TouchArea { }
 
         alias-content := VerticalLayout {
             padding: 16px;

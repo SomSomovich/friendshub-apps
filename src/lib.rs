@@ -35,6 +35,39 @@ pub fn run_with_data_dir(data_dir: PathBuf) -> Result<(), Box<dyn Error>> {
     let data_dir = prepare_data_dir(data_dir)?;
     let accounts = AccountStore::new(&data_dir)?;
     let main_window = MainWindow::new()?;
+    main_window.set_ui_font_family(default_ui_font_family().into());
+    let startup_route = match accounts.load() {
+        Ok(manifest) if manifest.active_account().is_some() => {
+            if let Some(account) = manifest.active_account() {
+                main_window.set_connect_username(account.username.clone().into());
+                main_window.set_login_fh_number(account.fh_number.clone().into());
+            }
+            "/connect"
+        }
+        Ok(_manifest)
+            if accounts
+                .pending_removals()
+                .is_ok_and(|pending| !pending.is_empty()) =>
+        {
+            "/app/settings/accounts"
+        }
+        Ok(manifest) if !manifest.accounts.is_empty() => {
+            if let Some(account) = manifest.accounts.first() {
+                main_window.set_login_fh_number(account.fh_number.clone().into());
+            }
+            "/login"
+        }
+        Ok(_) => "/register",
+        Err(_) => "/login",
+    };
+    let startup_screen = match startup_route {
+        "/connect" => "connect",
+        "/app/settings/accounts" => "settings_accounts",
+        "/register" => "register",
+        _ => "login",
+    };
+    main_window.set_route(startup_route.into());
+    main_window.set_screen(startup_screen.into());
     let context = AppContext::new(main_window.as_weak(), data_dir, accounts, None);
     let auth = AuthController::new(context.clone());
 
@@ -142,6 +175,36 @@ pub fn run_with_data_dir(data_dir: PathBuf) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// The system UI font that best matches the web client on each platform.
+fn default_ui_font_family() -> &'static str {
+    #[cfg(target_os = "linux")]
+    {
+        "Noto Sans"
+    }
+    #[cfg(target_os = "windows")]
+    {
+        "Segoe UI"
+    }
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    {
+        "SF Pro Text"
+    }
+    #[cfg(target_os = "android")]
+    {
+        "Roboto"
+    }
+    #[cfg(not(any(
+        target_os = "linux",
+        target_os = "windows",
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "android"
+    )))]
+    {
+        "sans-serif"
+    }
+}
+
 fn prepare_data_dir(data_dir: PathBuf) -> std::io::Result<PathBuf> {
     #[cfg(target_os = "android")]
     {
@@ -170,48 +233,6 @@ fn dispatch_ui_action(
     arg2: &str,
     arg3: &str,
 ) {
-    if namespace == "landing" {
-        match action {
-            "theme-toggle" => {
-                if let Some(window) = context.ui.upgrade() {
-                    let next = if window.get_light_mode() {
-                        "dark"
-                    } else {
-                        "light"
-                    };
-                    let _ = settings_controller::handle(
-                        context,
-                        "appearance",
-                        "set-theme",
-                        next,
-                        "",
-                        "",
-                    );
-                }
-                return;
-            }
-            "language-toggle" => {
-                if let Some(window) = context.ui.upgrade() {
-                    let next = if window.get_language() == "ru" {
-                        "en"
-                    } else {
-                        "ru"
-                    };
-                    let _ = settings_controller::handle(
-                        context,
-                        "appearance",
-                        "set-language",
-                        next,
-                        "",
-                        "",
-                    );
-                }
-                return;
-            }
-            _ => {}
-        }
-    }
-
     if namespace == "auth" && action == "logout" {
         auth.logout();
         return;
@@ -219,11 +240,7 @@ fn dispatch_ui_action(
     if namespace == "connect" {
         match action {
             "retry" => auth.bootstrap(),
-            "continue-offline" => {
-                if context.active_session().is_some() {
-                    navigate(context, "/app");
-                }
-            }
+            "continue-offline" => auth.continue_offline(),
             _ => {}
         }
         return;

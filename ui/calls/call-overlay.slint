@@ -1,17 +1,17 @@
 import { Theme } from "../theme.slint";
+import { IconPhone, IconPhoneOff, IconRotateCw, IconVideo, IconVideoOff, IconVolume2, IconVolumeX } from "../icons.slint";
 
 component CallControl inherits Rectangle {
     in property <string> label;
-    in property <string> symbol;
     in property <string> tone: "neutral";
     in property <bool> active: false;
     in property <bool> wide: false;
     callback clicked();
 
-    width: wide ? 144px : 56px;
+    width: wide ? 152px : 56px;
     height: 56px;
     border-radius: 28px;
-    background: tone == "danger" ? Theme.danger : (tone == "accept" ? #22c55e : (active ? Theme.foreground : Theme.hover));
+    background: tone == "danger" ? Theme.danger : (tone == "accept" ? Theme.success : (active ? Theme.foreground : Theme.hover));
     accessible-role: button;
     accessible-label: label;
     accessible-action-default => { root.clicked(); }
@@ -20,18 +20,14 @@ component CallControl inherits Rectangle {
     HorizontalLayout {
         alignment: center;
         spacing: 8px;
-        Text {
-            text: root.symbol;
-            color: root.active ? Theme.background : #ffffff;
-            font-size: 22px;
-            horizontal-alignment: center;
-            vertical-alignment: center;
-        }
+
+        @children
+
         if root.wide : Text {
             text: root.label;
-            color: #ffffff;
+            color: root.tone == "neutral" && !root.active ? Theme.foreground : (root.tone == "neutral" ? Theme.background : #ffffff);
             font-size: 14px;
-            font-weight: 600;
+            font-weight: 500;
             vertical-alignment: center;
         }
     }
@@ -104,6 +100,8 @@ export component CallOverlay inherits Rectangle {
                 spacing: 4px;
                 Text { text: root.peer-name; color: Theme.foreground; font-size: 20px; font-weight: 600; horizontal-alignment: center; wrap: word-wrap; }
                 Text { text: root.with-video ? "Видеозвонок" : "Аудиозвонок"; color: Theme.muted; font-size: 14px; horizontal-alignment: center; }
+                if !root.status-text.is-empty : Text { text: root.status-text; color: Theme.muted; font-size: 14px; horizontal-alignment: center; wrap: word-wrap; }
+                if !root.error-text.is-empty : Text { text: root.error-text; color: Theme.danger; font-size: 14px; horizontal-alignment: center; wrap: word-wrap; }
             }
 
             HorizontalLayout {
@@ -111,15 +109,15 @@ export component CallOverlay inherits Rectangle {
                 spacing: 40px;
                 CallControl {
                     label: "Отклонить";
-                    symbol: "☎";
                     tone: "danger";
                     clicked => { root.decline-requested(); }
+                    IconPhoneOff { width: 24px; height: 24px; stroke: #ffffff; }
                 }
                 CallControl {
                     label: "Принять";
-                    symbol: "☎";
                     tone: "accept";
                     clicked => { root.accept-requested(); }
+                    IconPhone { width: 24px; height: 24px; stroke: #ffffff; }
                 }
             }
         }
@@ -214,30 +212,32 @@ export component CallOverlay inherits Rectangle {
 
                 if root.with-video : CallControl {
                     label: "Сменить камеру";
-                    symbol: "↻";
                     clicked => { root.switch-camera-requested(); }
+                    IconRotateCw { width: 22px; height: 22px; stroke: Theme.foreground; }
                 }
 
                 CallControl {
                     label: root.speaker-on ? "Динамик включён" : "Динамик выключен";
-                    symbol: "◖";
                     active: root.speaker-on;
                     clicked => { root.speaker-toggle-requested(); }
+                    if root.speaker-on : IconVolume2 { width: 22px; height: 22px; stroke: Theme.background; }
+                    if !root.speaker-on : IconVolumeX { width: 22px; height: 22px; stroke: Theme.foreground; }
                 }
 
                 if root.with-video : CallControl {
                     label: root.camera-off ? "Включить видео" : "Выключить видео";
-                    symbol: root.camera-off ? "◉" : "◎";
                     active: !root.camera-off;
                     clicked => { root.camera-toggle-requested(); }
+                    if root.camera-off : IconVideoOff { width: 22px; height: 22px; stroke: Theme.foreground; }
+                    if !root.camera-off : IconVideo { width: 22px; height: 22px; stroke: Theme.background; }
                 }
 
                 CallControl {
                     label: "Завершить";
-                    symbol: "☎";
                     tone: "danger";
                     wide: true;
                     clicked => { root.hang-up-requested(); }
+                    IconPhoneOff { width: 22px; height: 22px; stroke: #ffffff; }
                 }
             }
         }

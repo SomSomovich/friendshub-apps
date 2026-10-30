@@ -1,5 +1,6 @@
 import { Theme } from "../theme.slint";
-import { FHTextButton, FHPrimaryButton } from "../components.slint";
+import { FHSecondaryButton, FHScreenHeader } from "../components.slint";
+import { IconCopy, IconPencil } from "../icons.slint";
 import { ScrollView } from "std-widgets.slint";
 import { AvatarViewerDialog } from "avatar-viewer-dialog.slint";
 
@@ -34,31 +35,9 @@ export component ProfileScreen inherits Rectangle {
     VerticalLayout {
         spacing: 0px;
 
-        Rectangle {
-            height: 48px;
-            background: Theme.background;
-            border-width: 0px;
-            border-color: Theme.border;
-
-            HorizontalLayout {
-                padding-left: 16px;
-                padding-right: 16px;
-                spacing: 12px;
-
-                FHTextButton {
-                    text: "‹  Назад";
-                    clicked => { root.back-requested(); }
-                }
-
-                Text {
-                    text: "Профиль";
-                    color: Theme.foreground;
-                    font-size: 14px;
-                    font-weight: 600;
-                    vertical-alignment: center;
-                    horizontal-stretch: 1;
-                }
-            }
+        FHScreenHeader {
+            title: "Профиль";
+            back-requested => { root.back-requested(); }
         }
 
         ScrollView {
@@ -87,10 +66,10 @@ export component ProfileScreen inherits Rectangle {
                                 spacing: 16px;
 
                                 Rectangle {
-                                    width: 72px;
-                                    height: 72px;
+                                    width: 80px;
+                                    height: 80px;
                                     background: Theme.hover;
-                                    border-radius: 36px;
+                                    border-radius: 40px;
                                     clip: true;
 
                                     if root.has-avatar : Image {
@@ -102,8 +81,8 @@ export component ProfileScreen inherits Rectangle {
 
                                     if !root.has-avatar : Text {
                                         text: root.avatar-initials;
-                                        color: Theme.foreground;
-                                        font-size: 22px;
+                                        color: Theme.muted;
+                                        font-size: 24px;
                                         font-weight: 600;
                                         horizontal-alignment: center;
                                         vertical-alignment: center;
@@ -111,9 +90,29 @@ export component ProfileScreen inherits Rectangle {
                                         height: 100%;
                                     }
 
-                                    if root.has-avatar : TouchArea {
-                                        mouse-cursor: pointer;
-                                        clicked => { root.avatar-viewer-open = true; }
+                                    if root.has-avatar : Rectangle {
+                                        background: transparent;
+                                        accessible-role: button;
+                                        accessible-label: "Открыть аватар " + root.username;
+                                        accessible-action-default => { root.avatar-viewer-open = true; }
+                                        forward-focus: avatar-keyboard;
+
+                                        TouchArea {
+                                            mouse-cursor: pointer;
+                                            clicked => { root.avatar-viewer-open = true; }
+                                        }
+
+                                        avatar-keyboard := FocusScope {
+                                            x: 0;
+                                            width: 0;
+                                            key-pressed(event) => {
+                                                if event.text == Key.Space || event.text == Key.Return {
+                                                    root.avatar-viewer-open = true;
+                                                    return accept;
+                                                }
+                                                return reject;
+                                            }
+                                        }
                                     }
                                 }
 
@@ -152,14 +151,17 @@ export component ProfileScreen inherits Rectangle {
 
                             HorizontalLayout {
                                 spacing: 8px;
+                                alignment: start;
 
-                                FHTextButton {
+                                FHSecondaryButton {
                                     text: "Изменить";
+                                    height: 32px;
                                     clicked => { root.edit-requested(); }
                                 }
 
-                                FHTextButton {
+                                FHSecondaryButton {
                                     text: "Скопировать FH-номер";
+                                    height: 32px;
                                     clicked => { root.share-requested(root.fh-number); }
                                 }
                             }
@@ -228,7 +230,7 @@ export component ProfileScreen inherits Rectangle {
                                 text: "FH-номер";
                                 color: Theme.foreground;
                                 font-size: 14px;
-                                font-weight: 600;
+                                font-weight: 500;
                             }
 
                             Text {
@@ -247,8 +249,9 @@ export component ProfileScreen inherits Rectangle {
                                     horizontal-stretch: 1;
                                 }
 
-                                FHPrimaryButton {
+                                FHSecondaryButton {
                                     text: "Копировать";
+                                    height: 32px;
                                     clicked => { root.share-requested(root.fh-number); }
                                 }
                             }

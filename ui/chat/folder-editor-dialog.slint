@@ -2,6 +2,7 @@ import { Theme } from "../theme.slint";
 import { ScrollView } from "std-widgets.slint";
 import { FHTextButton, FHPrimaryButton } from "../components.slint";
 import { FolderConversationOption } from "../conversation-list.slint";
+import { IconCheck } from "../icons.slint";
 
 export component FolderEditorDialog inherits Rectangle {
     in property <bool> open: false;
@@ -144,14 +145,13 @@ export component FolderEditorDialog inherits Rectangle {
                                         border-width: 1px;
                                         border-color: option.selected ? Theme.accent : Theme.border;
                                         background: option.selected ? Theme.accent : transparent;
-                                        Text {
-                                            text: option.selected ? "✓" : "";
-                                            color: Theme.accent-foreground;
-                                            font-size: 12px;
-                                            horizontal-alignment: center;
-                                            vertical-alignment: center;
-                                            width: 100%;
-                                            height: 100%;
+                                        if option.selected : IconCheck {
+                                            width: 14px;
+                                            height: 14px;
+                                            x: 2px;
+                                            y: 2px;
+                                            stroke: Theme.accent-foreground;
+                                            stroke-width: 3px;
                                         }
                                     }
                                 }

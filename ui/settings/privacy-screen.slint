@@ -1,5 +1,5 @@
 import { Theme } from "../theme.slint";
-import { FHPrimaryButton, FHTextButton } from "../components.slint";
+import { FHSecondaryButton, FHPrimaryButton } from "../components.slint";
 import { SettingsCard, SettingsChoice, SettingsDivider, SettingsFrame, SettingsToggle } from "common.slint";
 
 export struct SettingsContact {
@@ -20,11 +20,12 @@ component ContactChoiceRow inherits Rectangle {
     callback selected(string);
 
     width: 100%;
-    height: 38px;
+    height: max(36px, contact-name.preferred-height + 12px);
     border-radius: 8px;
-    border-width: 1px;
-    border-color: root.account-id == root.selected-id ? Theme.accent : Theme.border;
-    background: root.account-id == root.selected-id ? Theme.hover : transparent;
+    border-width: 2px;
+    border-color: transparent;
+    background: root.account-id == root.selected-id ? Theme.accent.with-alpha(0.12) : (choice-area.has-hover ? Theme.hover : transparent);
+    animate background { duration: 120ms; }
     accessible-role: radio-button;
     accessible-label: root.name;
     accessible-checkable: true;
@@ -34,23 +35,42 @@ component ContactChoiceRow inherits Rectangle {
 
     states [
         focus when keyboard-scope.has-focus : {
-            root.border-width: 2px;
             root.border-color: Theme.accent;
         }
     ]
 
-    Text {
-        x: 12px;
-        width: parent.width - 24px;
+    Rectangle {
+        x: 10px;
+        y: (parent.height - self.height) / 2;
+        width: 16px;
+        height: 16px;
+        border-radius: 8px;
+        border-width: 1px;
+        border-color: root.account-id == root.selected-id ? Theme.accent : Theme.border;
+        background: root.account-id == root.selected-id ? Theme.accent : transparent;
+
+        if root.account-id == root.selected-id : Rectangle {
+            x: 4px;
+            y: 4px;
+            width: 8px;
+            height: 8px;
+            border-radius: 4px;
+            background: Theme.accent-foreground;
+        }
+    }
+
+    contact-name := Text {
+        x: 34px;
+        width: parent.width - 46px;
         height: parent.height;
         text: root.name;
         color: Theme.foreground;
         font-size: 13px;
         vertical-alignment: center;
-        wrap: word-wrap;
+        overflow: elide;
     }
 
-    TouchArea {
+    choice-area := TouchArea {
         mouse-cursor: pointer;
         clicked => { root.selected(root.account-id); }
     }
@@ -110,8 +130,9 @@ component ExceptionRow inherits Rectangle {
         }
         }
 
-        FHTextButton {
+        FHSecondaryButton {
             text: root.remove-label;
+            height: 30px;
             enabled: root.enabled;
             clicked => { root.remove(root.item-id); }
         }
@@ -119,6 +140,7 @@ component ExceptionRow inherits Rectangle {
 }
 
 export component PrivacySettingsScreen inherits Rectangle {
+    in property <string> language: "ru";
     in property <string> dm-policy: "everyone";
     in property <string> group-add-policy: "everyone";
     in property <bool> invisible: false;
@@ -158,20 +180,21 @@ export component PrivacySettingsScreen inherits Rectangle {
     background: Theme.background;
 
     SettingsFrame {
-        title: "Приватность";
+        language: root.language;
+        title: (root.language == "ru" ? "Приватность" : "Privacy");
         back-requested => { root.back-requested(); }
 
         SettingsCard {
-            title: "Кто может писать вам";
-            description: "Знакомые — люди, с которыми у вас уже есть общий личный или групповой чат. Это не только сохранённые контакты.";
+            title: (root.language == "ru" ? "Кто может писать вам" : "Who can message you");
+            description: (root.language == "ru" ? "Знакомые — люди, с которыми у вас уже есть общий личный или групповой чат. Это не только сохранённые контакты." : "Known people share a direct or group chat with you. This includes more than saved contacts.");
 
             SettingsChoice {
-                label: "Кто может писать вам";
+                label: (root.language == "ru" ? "Кто может писать вам" : "Who can message you");
                 value: root.dm-policy;
                 enabled: !root.busy;
                 options: [
-                    { value: "everyone", label: "Все" },
-                    { value: "contacts_only", label: "Только знакомые" },
+                    { value: "everyone", label: (root.language == "ru" ? "Все" : "Everyone") },
+                    { value: "contacts_only", label: (root.language == "ru" ? "Только знакомые" : "Only known people") },
                 ];
                 changed(value) => {
                     root.dm-policy-changed(value);
@@ -180,16 +203,16 @@ export component PrivacySettingsScreen inherits Rectangle {
         }
 
         SettingsCard {
-            title: "Кто может добавлять вас в группы";
-            description: "Разрешение на прямое добавление в группу.";
+            title: (root.language == "ru" ? "Кто может добавлять вас в группы" : "Who can add you to groups");
+            description: (root.language == "ru" ? "Разрешение на прямое добавление в группу." : "Permission to add you directly to a group.");
 
             SettingsChoice {
-                label: "Кто может добавлять вас в группы";
+                label: (root.language == "ru" ? "Кто может добавлять вас в группы" : "Who can add you to groups");
                 value: root.group-add-policy;
                 enabled: !root.busy;
                 options: [
-                    { value: "everyone", label: "Все" },
-                    { value: "nobody", label: "Только люди из исключений" },
+                    { value: "everyone", label: (root.language == "ru" ? "Все" : "Everyone") },
+                    { value: "nobody", label: (root.language == "ru" ? "Только люди из исключений" : "Only people in exceptions") },
                 ];
                 changed(value) => {
                     root.group-add-policy-changed(value);
@@ -204,7 +227,7 @@ export component PrivacySettingsScreen inherits Rectangle {
                     spacing: 8px;
 
                     Text {
-                        text: "Эти люди могут добавлять вас в группы, когда выбраны только исключения.";
+                        text: (root.language == "ru" ? "Эти люди могут добавлять вас в группы, когда выбраны только исключения." : "These people can add you to groups when only exceptions are allowed.");
                         color: Theme.muted;
                         font-size: 12px;
                         wrap: word-wrap;
@@ -212,22 +235,22 @@ export component PrivacySettingsScreen inherits Rectangle {
                     }
 
                     if root.group-add-exceptions.length == 0 : Text {
-                        text: "Исключений пока нет.";
+                        text: (root.language == "ru" ? "Исключений пока нет." : "No exceptions yet.");
                         color: Theme.muted;
                         font-size: 12px;
                     }
 
                     for exception in root.group-add-exceptions : ExceptionRow {
                         name: exception.name;
-                        detail: "Может добавлять вас в группы";
-                        remove-label: "Убрать";
+                        detail: (root.language == "ru" ? "Может добавлять вас в группы" : "Can add you to groups");
+                        remove-label: (root.language == "ru" ? "Убрать" : "Remove");
                         item-id: exception.id;
                         enabled: !root.busy;
                         remove(id) => { root.group-add-exception-removed(id); }
                     }
 
                     Text {
-                        text: "Добавить друга";
+                        text: (root.language == "ru" ? "Добавить друга" : "Add a friend");
                         color: Theme.muted;
                         font-size: 12px;
                     }
@@ -240,7 +263,7 @@ export component PrivacySettingsScreen inherits Rectangle {
                     }
 
                     FHPrimaryButton {
-                        text: "Добавить в исключения";
+                        text: (root.language == "ru" ? "Добавить в исключения" : "Add to exceptions");
                         enabled: !root.busy && !root.group-contact-id.is-empty;
                         busy: root.busy;
                         clicked => { root.group-add-exception-added(root.group-contact-id); }
@@ -250,12 +273,12 @@ export component PrivacySettingsScreen inherits Rectangle {
         }
 
         SettingsCard {
-            title: "Невидимка";
-            description: "Скрывает ваш онлайн-статус и время последнего визита. Текущее состояние синхронизируется с сервером.";
+            title: (root.language == "ru" ? "Невидимка" : "Invisible mode");
+            description: (root.language == "ru" ? "Скрывает ваш онлайн-статус и время последнего визита. Текущее состояние синхронизируется с сервером." : "Hides your online status and last-seen time. The current setting is synchronized with the server.");
 
             SettingsToggle {
-                label: "Невидимка";
-                description: "Скрыть онлайн-статус и время последнего визита";
+                label: (root.language == "ru" ? "Невидимка" : "Invisible mode");
+                description: (root.language == "ru" ? "Скрыть онлайн-статус и время последнего визита" : "Hide online status and last-seen time");
                 checked: root.invisible;
                 enabled: !root.busy;
                 changed(value) => { root.invisible-changed(value); }
@@ -263,11 +286,11 @@ export component PrivacySettingsScreen inherits Rectangle {
         }
 
         SettingsCard {
-            title: "Разрешить встряхивания";
-            description: "Собеседники смогут отправлять вам короткий сигнал со встряхиванием интерфейса.";
+            title: (root.language == "ru" ? "Разрешить встряхивания" : "Allow nudges");
+            description: (root.language == "ru" ? "Собеседники смогут отправлять вам короткий сигнал со встряхиванием интерфейса." : "People you chat with can send a brief signal that shakes the interface.");
 
             SettingsToggle {
-                label: "Разрешить встряхивания";
+                label: (root.language == "ru" ? "Разрешить встряхивания" : "Allow nudges");
                 checked: root.allow-nudges;
                 enabled: !root.busy;
                 changed(value) => { root.nudges-changed(value); }
@@ -275,20 +298,20 @@ export component PrivacySettingsScreen inherits Rectangle {
         }
 
         SettingsCard {
-            title: "Видимость профиля";
-            description: "Отдельно управляйте доступом к профилю и показом в глобальном поиске.";
+            title: (root.language == "ru" ? "Видимость профиля" : "Profile visibility");
+            description: (root.language == "ru" ? "Отдельно управляйте доступом к профилю и показом в глобальном поиске." : "Control profile access and global search visibility separately.");
 
             SettingsToggle {
-                label: "Скрыть профиль от незнакомцев";
-                description: "Профиль будет недоступен тем, кого нет в исключениях.";
+                label: (root.language == "ru" ? "Скрыть профиль от незнакомцев" : "Hide profile from strangers");
+                description: (root.language == "ru" ? "Профиль будет недоступен тем, кого нет в исключениях." : "People outside your exceptions will not be able to open your profile.");
                 checked: root.profile-hidden;
                 enabled: !root.busy;
                 changed(value) => { root.profile-hidden-changed(value); }
             }
 
             SettingsToggle {
-                label: "Не показывать в поиске";
-                description: "Профиль не появится в результатах глобального поиска.";
+                label: (root.language == "ru" ? "Не показывать в поиске" : "Hide from search");
+                description: (root.language == "ru" ? "Профиль не появится в результатах глобального поиска." : "Your profile will not appear in global search results.");
                 checked: root.hidden-from-search;
                 enabled: !root.busy;
                 changed(value) => { root.hidden-from-search-changed(value); }
@@ -297,14 +320,14 @@ export component PrivacySettingsScreen inherits Rectangle {
             SettingsDivider {}
 
             Text {
-                text: "Кому профиль всё равно виден";
+                text: (root.language == "ru" ? "Кому профиль всё равно виден" : "People who can still see your profile");
                 color: Theme.foreground;
                 font-size: 13px;
                 font-weight: 500;
             }
 
             Text {
-                text: "Эти друзья смогут открыть ваш профиль, даже если он скрыт.";
+                text: (root.language == "ru" ? "Эти друзья смогут открыть ваш профиль, даже если он скрыт." : "These friends can open your profile even while it is hidden.");
                 color: Theme.muted;
                 font-size: 12px;
                 wrap: word-wrap;
@@ -312,22 +335,22 @@ export component PrivacySettingsScreen inherits Rectangle {
             }
 
             if root.profile-exceptions.length == 0 : Text {
-                text: "Исключений пока нет.";
+                text: (root.language == "ru" ? "Исключений пока нет." : "No exceptions yet.");
                 color: Theme.muted;
                 font-size: 12px;
             }
 
             for exception in root.profile-exceptions : ExceptionRow {
                 name: exception.name;
-                detail: "Видит ваш профиль";
-                remove-label: "Убрать";
+                detail: (root.language == "ru" ? "Видит ваш профиль" : "Can see your profile");
+                remove-label: (root.language == "ru" ? "Убрать" : "Remove");
                 item-id: exception.id;
                 enabled: !root.busy;
                 remove(id) => { root.profile-exception-removed(id); }
             }
 
             Text {
-                text: "Добавить друга";
+                text: (root.language == "ru" ? "Добавить друга" : "Add a friend");
                 color: Theme.muted;
                 font-size: 12px;
             }
@@ -340,7 +363,7 @@ export component PrivacySettingsScreen inherits Rectangle {
             }
 
             FHPrimaryButton {
-                text: "Добавить в исключения профиля";
+                text: (root.language == "ru" ? "Добавить в исключения профиля" : "Add to profile exceptions");
                 enabled: !root.busy && !root.profile-contact-id.is-empty;
                 busy: root.busy;
                 clicked => { root.profile-exception-added(root.profile-contact-id); }
@@ -348,37 +371,37 @@ export component PrivacySettingsScreen inherits Rectangle {
         }
 
         SettingsCard {
-            title: "Исключения для присутствия";
-            description: "Кому видно ваше присутствие независимо от режима.";
+            title: (root.language == "ru" ? "Исключения для присутствия" : "Presence exceptions");
+            description: (root.language == "ru" ? "Кому видно ваше присутствие независимо от режима." : "Who sees your presence regardless of the mode.");
 
             if root.presence-exceptions.length == 0 : Text {
-                text: "Исключений пока нет.";
+                text: (root.language == "ru" ? "Исключений пока нет." : "No exceptions yet.");
                 color: Theme.muted;
                 font-size: 12px;
             }
 
             for exception in root.presence-exceptions : ExceptionRow {
                 name: exception.name;
-                detail: exception.kind == "always_visible" ? "Всегда видит" : "Никогда не видит";
-                remove-label: "Убрать";
+                detail: exception.kind == "always_visible" ? (root.language == "ru" ? "Всегда видит" : "Always sees") : (root.language == "ru" ? "Никогда не видит" : "Never sees");
+                remove-label: (root.language == "ru" ? "Убрать" : "Remove");
                 item-id: exception.id;
                 enabled: !root.busy;
                 remove(id) => { root.presence-exception-removed(id, exception.kind); }
             }
 
             SettingsChoice {
-                label: "Правило";
+                label: (root.language == "ru" ? "Правило" : "Rule");
                 value: root.presence-kind;
                 enabled: !root.busy;
                 options: [
-                    { value: "always_visible", label: "Всегда видит" },
-                    { value: "always_invisible", label: "Никогда не видит" },
+                    { value: "always_visible", label: (root.language == "ru" ? "Всегда видит" : "Always sees") },
+                    { value: "always_invisible", label: (root.language == "ru" ? "Никогда не видит" : "Never sees") },
                 ];
                 changed(value) => { root.presence-kind = value; }
             }
 
             Text {
-                text: "Выберите контакт";
+                text: (root.language == "ru" ? "Выберите контакт" : "Pick a contact");
                 color: Theme.muted;
                 font-size: 12px;
             }
@@ -391,7 +414,7 @@ export component PrivacySettingsScreen inherits Rectangle {
             }
 
             FHPrimaryButton {
-                text: "Добавить исключение";
+                text: (root.language == "ru" ? "Добавить исключение" : "Add an exception");
                 enabled: !root.busy && !root.presence-contact-id.is-empty;
                 busy: root.busy;
                 clicked => { root.presence-exception-added(root.presence-contact-id, root.presence-kind); }
@@ -399,11 +422,11 @@ export component PrivacySettingsScreen inherits Rectangle {
         }
 
         SettingsCard {
-            title: "Заблокированные";
-            description: "Сообщения от них не доходят ни в одну сторону.";
+            title: (root.language == "ru" ? "Заблокированные" : "Blocked accounts");
+            description: (root.language == "ru" ? "Сообщения от них не доходят ни в одну сторону." : "Messages to and from them are dropped in both directions.");
 
             if root.blocked-accounts.length == 0 : Text {
-                text: "Заблокированных нет.";
+                text: (root.language == "ru" ? "Заблокированных нет." : "Nobody is blocked.");
                 color: Theme.muted;
                 font-size: 12px;
             }
@@ -411,7 +434,7 @@ export component PrivacySettingsScreen inherits Rectangle {
             for account in root.blocked-accounts : ExceptionRow {
                 name: account.name;
                 detail: account.id;
-                remove-label: "Разблокировать";
+                remove-label: (root.language == "ru" ? "Разблокировать" : "Unblock");
                 item-id: account.id;
                 enabled: !root.busy;
                 remove(id) => { root.account-unblocked(id); }
@@ -420,7 +443,7 @@ export component PrivacySettingsScreen inherits Rectangle {
             SettingsDivider {}
 
             Text {
-                text: "Выберите контакт, чтобы заблокировать его";
+                text: (root.language == "ru" ? "Выберите контакт, чтобы заблокировать его" : "Pick a contact to block");
                 color: Theme.muted;
                 font-size: 12px;
             }
@@ -433,7 +456,8 @@ export component PrivacySettingsScreen inherits Rectangle {
             }
 
             FHPrimaryButton {
-                text: "Заблокировать";
+                danger: true;
+                text: (root.language == "ru" ? "Заблокировать" : "Block");
                 enabled: !root.busy && !root.block-contact-id.is-empty;
                 busy: root.busy;
                 clicked => { root.account-blocked(root.block-contact-id); }

@@ -1,5 +1,6 @@
 import { Theme } from "../theme.slint";
 import { SettingsFrame } from "common.slint";
+import { IconBot, IconChevronRight, IconInfo, IconPalette, IconShieldCheck, IconUserRound, IconUserRoundCog, IconUsers, IconBell } from "../icons.slint";
 
 component SettingsNavigationRow inherits Rectangle {
     in property <string> title;
@@ -31,7 +32,16 @@ component SettingsNavigationRow inherits Rectangle {
         padding-top: 10px;
         padding-bottom: 10px;
         spacing: 12px;
-        alignment: center;
+        cross-axis-alignment: center;
+
+        if root.section == "account" : IconUserRound { width: 20px; height: 20px; stroke: Theme.muted; }
+        if root.section == "appearance" : IconPalette { width: 20px; height: 20px; stroke: Theme.muted; }
+        if root.section == "privacy" : IconUsers { width: 20px; height: 20px; stroke: Theme.muted; }
+        if root.section == "security" : IconShieldCheck { width: 20px; height: 20px; stroke: Theme.muted; }
+        if root.section == "notifications" : IconBell { width: 20px; height: 20px; stroke: Theme.muted; }
+        if root.section == "accounts" : IconUserRoundCog { width: 20px; height: 20px; stroke: Theme.muted; }
+        if root.section == "bots" : IconBot { width: 20px; height: 20px; stroke: Theme.muted; }
+        if root.section == "about" : IconInfo { width: 20px; height: 20px; stroke: Theme.muted; }
 
         VerticalLayout {
             spacing: 2px;
@@ -56,11 +66,10 @@ component SettingsNavigationRow inherits Rectangle {
             }
         }
 
-        Text {
-            text: "›";
-            color: Theme.muted;
-            font-size: 20px;
-            vertical-alignment: center;
+        IconChevronRight {
+            width: 16px;
+            height: 16px;
+            stroke: Theme.muted;
         }
     }
 
@@ -83,6 +92,7 @@ component SettingsNavigationRow inherits Rectangle {
 }
 
 export component SettingsIndexScreen inherits Rectangle {
+    in property <string> language: "ru";
     callback back-requested();
     callback open-section(string);
 
@@ -91,54 +101,56 @@ export component SettingsIndexScreen inherits Rectangle {
     background: Theme.background;
 
     SettingsFrame {
-        title: "Настройки";
+        language: root.language;
+        content-spacing: 8px;
+        title: root.language == "ru" ? "Настройки" : "Settings";
         back-requested => { root.back-requested(); }
 
         SettingsNavigationRow {
-            title: "Аккаунт";
-            description: "Аватар, имя и статус";
+            title: root.language == "ru" ? "Аккаунт" : "Account";
+            description: root.language == "ru" ? "Аватар, имя и статус" : "Avatar, name and status";
             section: "account";
             open-section(section) => { root.open-section(section); }
         }
         SettingsNavigationRow {
-            title: "Оформление";
-            description: "Тема и язык";
+            title: root.language == "ru" ? "Оформление" : "Appearance";
+            description: root.language == "ru" ? "Тема и язык" : "Theme and language";
             section: "appearance";
             open-section(section) => { root.open-section(section); }
         }
         SettingsNavigationRow {
-            title: "Приватность";
-            description: "Невидимка, исключения и блокировки";
+            title: root.language == "ru" ? "Приватность" : "Privacy";
+            description: root.language == "ru" ? "Невидимка, исключения и блокировки" : "Invisible mode, exceptions and blocks";
             section: "privacy";
             open-section(section) => { root.open-section(section); }
         }
         SettingsNavigationRow {
-            title: "Безопасность";
-            description: "2FA, сессии и устройства";
+            title: root.language == "ru" ? "Безопасность" : "Security";
+            description: root.language == "ru" ? "2FA, сессии и устройства" : "2FA, sessions and devices";
             section: "security";
             open-section(section) => { root.open-section(section); }
         }
         SettingsNavigationRow {
-            title: "Уведомления";
-            description: "Звук и разрешение на уведомления";
+            title: root.language == "ru" ? "Уведомления" : "Notifications";
+            description: root.language == "ru" ? "Звук и разрешение на уведомления" : "Sound and notification permission";
             section: "notifications";
             open-section(section) => { root.open-section(section); }
         }
         SettingsNavigationRow {
-            title: "Аккаунты";
-            description: "Аккаунты на этом устройстве";
+            title: root.language == "ru" ? "Аккаунты" : "Accounts";
+            description: root.language == "ru" ? "Аккаунты на этом устройстве" : "Accounts on this device";
             section: "accounts";
             open-section(section) => { root.open-section(section); }
         }
         SettingsNavigationRow {
-            title: "Мои боты";
-            description: "Создание, адреса и токены ботов.";
+            title: root.language == "ru" ? "Мои боты" : "My bots";
+            description: root.language == "ru" ? "Создание, адреса и токены ботов." : "Create bots, manage handles and tokens.";
             section: "bots";
             open-section(section) => { root.open-section(section); }
         }
         SettingsNavigationRow {
-            title: "О приложении";
-            description: "Версия, лицензия и выход";
+            title: root.language == "ru" ? "О приложении" : "About";
+            description: root.language == "ru" ? "Версия, лицензия и выход" : "Version, licence and sign out";
             section: "about";
             open-section(section) => { root.open-section(section); }
         }

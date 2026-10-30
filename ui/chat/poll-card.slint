@@ -1,5 +1,6 @@
 import { Theme } from "../theme.slint";
-import { ChatAction } from "chat-controls.slint";
+import { FHIconButton, FHSecondaryButton, FHPrimaryButton } from "../components.slint";
+import { IconCheck, IconX } from "../icons.slint";
 
 export struct PollOptionView {
     id: string,
@@ -82,13 +83,15 @@ export component PollCard inherits Rectangle {
             }
             if root.poll.owner : VerticalLayout {
                 spacing: 4px;
-                if !root.poll.closed : ChatAction {
-                    label: root.poll.stop-label;
+                if !root.poll.closed : FHSecondaryButton {
+                    text: root.poll.stop-label;
+                    height: 28px;
                     enabled: !root.poll.busy;
                     clicked => { root.stop-requested(root.poll.id); }
                 }
-                ChatAction {
-                    label: root.poll.delete-label;
+                FHSecondaryButton {
+                    text: root.poll.delete-label;
+                    height: 28px;
                     danger: true;
                     enabled: !root.poll.busy;
                     clicked => { root.confirm-delete-visible = true; }
@@ -113,24 +116,95 @@ export component PollCard inherits Rectangle {
                 border-color: Theme.border;
                 border-radius: 8px;
                 if root.poll.show-results : Rectangle {
+                    x: 0px;
+                    y: 0px;
                     width: parent.width * min(max(option.percentage, 0), 100) / 100;
                     height: parent.height;
-                    background: Theme.hover;
+                    background: Theme.accent.with-alpha(0.10);
                     border-radius: 8px;
                 }
                 option-row := HorizontalLayout {
                     padding-left: 9px;
                     padding-right: 6px;
                     spacing: 6px;
-                    ChatAction {
-                        label: (root.poll.can-vote
-                            ? (root.poll.allows-multiple ? (option.selected ? "☑ " : "☐ ") : (option.selected ? "● " : "○ "))
-                            : (option.correct ? "✓ " : "")) + (option.text.is-empty ? root.poll.option-unavailable-label : option.text);
-                        active: option.selected;
-                        accessible-name: option.correct && !root.poll.can-vote ? root.poll.correct-label + ": " + option.text : option.text;
-                        enabled: root.poll.can-vote && !root.poll.busy && !option.text.is-empty;
+                    Rectangle {
+                        property <bool> enabled: root.poll.can-vote && !root.poll.busy && !option.text.is-empty;
                         horizontal-stretch: 1;
-                        clicked => { root.option-selection-requested(option.id); }
+                        height: 32px;
+                        background: option.selected ? Theme.hover : transparent;
+                        border-width: option.selected ? 1px : 0px;
+                        border-color: Theme.accent;
+                        border-radius: 8px;
+                        accessible-role: button;
+                        accessible-label: option.text.is-empty ? root.poll.option-unavailable-label : (option.correct && !root.poll.can-vote ? root.poll.correct-label + ": " + option.text : option.text);
+                        accessible-enabled: self.enabled;
+                        accessible-action-default => { if self.enabled { root.option-selection-requested(option.id); } }
+                        forward-focus: option-focus;
+                        if root.poll.can-vote : Rectangle {
+                            x: 10px;
+                            y: (parent.height - self.height) / 2;
+                            width: 16px;
+                            height: 16px;
+                            border-radius: root.poll.allows-multiple ? 4px : 8px;
+                            border-width: 1px;
+                            border-color: option.selected ? Theme.accent : Theme.border;
+                            background: option.selected ? Theme.accent : transparent;
+
+                            if option.selected && root.poll.allows-multiple : IconCheck {
+                                width: 12px;
+                                height: 12px;
+                                x: 2px;
+                                y: 2px;
+                                stroke: Theme.accent-foreground;
+                                stroke-width: 3px;
+                            }
+                            if option.selected && !root.poll.allows-multiple : Rectangle {
+                                x: 4px;
+                                y: 4px;
+                                width: 8px;
+                                height: 8px;
+                                border-radius: 4px;
+                                background: Theme.accent-foreground;
+                            }
+                        }
+                        if !root.poll.can-vote && option.correct : IconCheck {
+                            x: 10px;
+                            y: (parent.height - self.height) / 2;
+                            width: 14px;
+                            height: 14px;
+                            stroke: Theme.success;
+                            stroke-width: 3px;
+                        }
+                        Text {
+                            x: root.poll.can-vote || option.correct ? 34px : 10px;
+                            width: parent.width - (root.poll.can-vote || option.correct ? 38px : 14px);
+                            height: 100%;
+                            text: option.text.is-empty ? root.poll.option-unavailable-label : option.text;
+                            color: option.selected ? Theme.accent : Theme.foreground;
+                            font-size: 12px;
+                            font-weight: 500;
+                            horizontal-alignment: left;
+                            vertical-alignment: center;
+                            overflow: elide;
+                            accessible-role: none;
+                        }
+                        TouchArea {
+                            enabled: parent.enabled;
+                            mouse-cursor: pointer;
+                            clicked => { root.option-selection-requested(option.id); }
+                        }
+                        option-focus := FocusScope {
+                            x: 0;
+                            width: 0;
+                            enabled: parent.enabled;
+                            key-pressed(event) => {
+                                if event.text == Key.Space || event.text == Key.Return {
+                                    root.option-selection-requested(option.id);
+                                    return accept;
+                                }
+                                return reject;
+                            }
+                        }
                     }
                     if root.poll.show-results : Text {
                         text: option.percent-label + " · " + option.count-label;
@@ -138,12 +212,13 @@ export component PollCard inherits Rectangle {
                         font-size: 11px;
                         vertical-alignment: center;
                     }
-                    if root.poll.owner && option.user-proposed && option.can-remove && !root.poll.closed : ChatAction {
-                        label: "×";
-                        accessible-name: "Удалить предложенный вариант";
-                        danger: true;
+                    if root.poll.owner && option.user-proposed && option.can-remove && !root.poll.closed : FHIconButton {
+                        button-size: 26px;
+                        label: "Удалить предложенный вариант";
                         enabled: !root.poll.busy;
                         clicked => { root.remove-option-requested(root.poll.id, option.id); }
+
+                        IconX { width: 14px; height: 14px; x: 6px; y: 6px; stroke: Theme.danger; }
                     }
                 }
             }
@@ -152,9 +227,9 @@ export component PollCard inherits Rectangle {
         HorizontalLayout {
             spacing: 8px;
             Text { text: root.poll.total-voters-label; color: Theme.muted; font-size: 11px; vertical-alignment: center; horizontal-stretch: 1; }
-            if root.poll.can-vote : ChatAction {
-                label: root.poll.vote-label;
-                active: true;
+            if root.poll.can-vote : FHSecondaryButton {
+                text: root.poll.vote-label;
+                height: 32px;
                 enabled: !root.poll.busy && root.poll.can-submit-vote;
                 clicked => { root.vote-requested(root.poll.id); }
             }
@@ -185,8 +260,9 @@ export component PollCard inherits Rectangle {
                     edited => { root.proposal-changed(self.text); }
                 }
             }
-            ChatAction {
-                label: root.poll.add-option-label;
+            FHSecondaryButton {
+                text: root.poll.add-option-label;
+                height: 34px;
                 enabled: !root.poll.busy && root.poll.proposal-valid;
                 clicked => { root.propose-option-requested(root.poll.id, root.proposal); }
             }
@@ -225,10 +301,11 @@ export component PollCard inherits Rectangle {
                 HorizontalLayout {
                     alignment: end;
                     spacing: 8px;
-                    ChatAction { label: "Отмена"; clicked => { root.confirm-delete-visible = false; } }
-                    ChatAction {
-                        label: root.poll.delete-label;
+                    FHSecondaryButton { text: "Отмена"; height: 36px; clicked => { root.confirm-delete-visible = false; } }
+                    FHPrimaryButton {
                         danger: true;
+                        text: root.poll.delete-label;
+                        height: 36px;
                         enabled: !root.poll.busy;
                         clicked => {
                             root.confirm-delete-visible = false;

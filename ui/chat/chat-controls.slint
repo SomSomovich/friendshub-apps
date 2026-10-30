@@ -26,19 +26,27 @@ export component ChatAction inherits Rectangle {
     callback clicked();
 
     min-width: 32px;
+    preferred-width: max(32px, action-label.preferred-width + 16px);
     height: 32px;
-    background: root.active ? Theme.hover : transparent;
-    border-width: root.active ? 1px : 0px;
-    border-color: root.active ? Theme.accent : Theme.border;
+    background: root.active ? Theme.hover : (hit-area.has-hover && root.enabled ? Theme.hover : transparent);
+    border-width: 2px;
+    border-color: root.active ? Theme.accent : transparent;
     border-radius: 8px;
     opacity: root.enabled ? 1 : 0.5;
+    animate background { duration: 120ms; }
     accessible-role: button;
     accessible-label: root.accessible-name.is-empty ? root.label : root.accessible-name;
     accessible-enabled: root.enabled;
     accessible-action-default => { if root.enabled { root.clicked(); } }
     forward-focus: key-scope;
 
-    Text {
+    states [
+        focus when key-scope.has-focus && root.enabled : {
+            root.border-color: Theme.accent;
+        }
+    ]
+
+    action-label := Text {
         text: root.label;
         color: root.danger ? Theme.danger : (root.active ? Theme.accent : Theme.muted);
         font-size: root.label-font-size;

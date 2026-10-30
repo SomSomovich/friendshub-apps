@@ -1,5 +1,6 @@
 import { Theme } from "../theme.slint";
-import { FHPrimaryButton, FHTextButton } from "../components.slint";
+import { FHBadge, FHIconButton, FHSecondaryButton, FHPrimaryButton } from "../components.slint";
+import { IconUserMinus, IconUserPlus } from "../icons.slint";
 import { SettingsCard, SettingsFrame } from "common.slint";
 
 export struct SettingsAccount {
@@ -12,6 +13,7 @@ export struct SettingsAccount {
 }
 
 component AccountRow inherits Rectangle {
+    in property <string> language: "ru";
     in property <string> account-id;
     in property <string> username;
     in property <string> fh-number;
@@ -32,8 +34,8 @@ component AccountRow inherits Rectangle {
 
     content := HorizontalLayout {
         padding: 10px;
-        spacing: 8px;
-        alignment: center;
+        spacing: 10px;
+        cross-axis-alignment: center;
 
         Rectangle {
             width: 40px;
@@ -46,6 +48,8 @@ component AccountRow inherits Rectangle {
                 width: 100%;
                 height: 100%;
                 source: root.avatar;
+                image-fit: cover;
+                accessible-role: none;
             }
             if !root.has-avatar : Text {
                 text: "FH";
@@ -55,51 +59,55 @@ component AccountRow inherits Rectangle {
                 vertical-alignment: center;
                 width: 100%;
                 height: 100%;
+                accessible-role: none;
             }
         }
 
         VerticalLayout {
-            spacing: 3px;
+            spacing: 2px;
             horizontal-stretch: 1;
-            vertical-stretch: 0;
+            min-width: 0px;
 
             Text {
                 text: root.username;
                 color: Theme.foreground;
-                font-size: 13px;
-                width: 100%;
-                wrap: word-wrap;
+                font-size: 14px;
+                overflow: elide;
             }
             Text {
                 text: root.fh-number;
                 color: Theme.muted;
-                font-size: 11px;
-                width: 100%;
-                wrap: word-wrap;
+                font-size: 12px;
+                overflow: elide;
             }
         }
 
-        if root.active && !root.pending-removal : Text {
-            text: "активный";
-            color: Theme.accent;
-            font-size: 11px;
-            font-weight: 600;
+        if root.active && !root.pending-removal : FHBadge {
+            text: root.language == "ru" ? "активный" : "active";
         }
-        if !root.active && !root.pending-removal : FHTextButton {
-            text: "Переключить";
+
+        if !root.active && !root.pending-removal : FHSecondaryButton {
+            text: root.language == "ru" ? "Переключить" : "Switch";
+            height: 32px;
             enabled: root.enabled;
             clicked => { root.switch-account(root.account-id); }
         }
 
-        FHTextButton {
-            text: root.pending-removal ? "Повторить очистку" : "Удалить";
+        FHIconButton {
+            button-size: 32px;
+            label: root.pending-removal
+                ? (root.language == "ru" ? "Повторить очистку" : "Retry cleanup")
+                : (root.language == "ru" ? "Удалить" : "Remove");
             enabled: root.enabled;
             clicked => { root.remove-account(root.account-id); }
+
+            IconUserMinus { width: 16px; height: 16px; x: 8px; y: 8px; stroke: Theme.muted; }
         }
     }
 }
 
 export component AccountsSettingsScreen inherits Rectangle {
+    in property <string> language: "ru";
     in property <[SettingsAccount]> accounts: [];
     in property <string> active-account-id: "";
     in property <string> busy-account-id: "";
@@ -119,12 +127,13 @@ export component AccountsSettingsScreen inherits Rectangle {
     background: Theme.background;
 
     SettingsFrame {
-        title: "Аккаунты";
+        language: root.language;
+        title: root.language == "ru" ? "Аккаунты" : "Accounts";
         back-requested => { root.back-requested(); }
 
         SettingsCard {
-            title: "Аккаунты";
-            description: "До пяти аккаунтов на этом устройстве, полностью изолированных.";
+            title: root.language == "ru" ? "Аккаунты" : "Accounts";
+            description: root.language == "ru" ? "До пяти аккаунтов на этом устройстве, полностью изолированных." : "Up to five fully isolated accounts on this device.";
 
             if !root.error-text.is-empty : Text {
                 text: root.error-text;
@@ -135,12 +144,13 @@ export component AccountsSettingsScreen inherits Rectangle {
             }
 
             if root.accounts.length == 0 && root.error-text.is-empty : Text {
-                text: "Пока ни одного аккаунта.";
+                text: root.language == "ru" ? "Пока ни одного аккаунта." : "No accounts yet.";
                 color: Theme.muted;
                 font-size: 12px;
             }
 
             for account in root.accounts : AccountRow {
+                language: root.language;
                 account-id: account.id;
                 username: account.username;
                 fh-number: account.fh-number;
@@ -167,7 +177,7 @@ export component AccountsSettingsScreen inherits Rectangle {
                     spacing: 8px;
 
                     Text {
-                        text: "Аккаунт выйдет из приложения, а его сообщения и ключи будут удалены с устройства. На сервере аккаунт останется.";
+                        text: root.language == "ru" ? "Аккаунт выйдет из приложения, а его сообщения и ключи будут удалены с устройства. На сервере аккаунт останется." : "The account will be signed out and its messages and keys removed from this device. The account will remain on the server.";
                         color: Theme.foreground;
                         font-size: 12px;
                         wrap: word-wrap;
@@ -177,7 +187,8 @@ export component AccountsSettingsScreen inherits Rectangle {
                     HorizontalLayout {
                         spacing: 8px;
                         FHPrimaryButton {
-                            text: "Удалить аккаунт";
+                            danger: true;
+                            text: root.language == "ru" ? "Удалить аккаунт" : "Remove account";
                             enabled: !root.busy;
                             busy: root.busy;
                             clicked => {
@@ -185,8 +196,9 @@ export component AccountsSettingsScreen inherits Rectangle {
                                 root.pending-remove-id = "";
                             }
                         }
-                        FHTextButton {
-                            text: "Отмена";
+                        FHSecondaryButton {
+                            text: root.language == "ru" ? "Отмена" : "Cancel";
+                            height: 40px;
                             enabled: !root.busy;
                             clicked => { root.pending-remove-id = ""; }
                         }
@@ -194,14 +206,15 @@ export component AccountsSettingsScreen inherits Rectangle {
                 }
             }
 
-            if root.accounts.length < 5 : FHPrimaryButton {
-                text: "Добавить аккаунт";
+            if root.accounts.length < 5 : FHSecondaryButton {
+                text: root.language == "ru" ? "Добавить аккаунт" : "Add account";
                 enabled: !root.busy;
                 clicked => { root.add-account-requested(); }
             }
 
-            if !root.error-text.is-empty : FHTextButton {
-                text: "Повторить загрузку";
+            if !root.error-text.is-empty : FHSecondaryButton {
+                text: root.language == "ru" ? "Повторить загрузку" : "Retry loading";
+                height: 32px;
                 clicked => { root.retry-requested(); }
             }
         }

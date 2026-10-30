@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>com.somuch-system.friendshub</string>
+    <key>CFBundleName</key>
+    <string>FriendsHub</string>
+    <key>CFBundleDisplayName</key>
+    <string>FriendsHub</string>
+    <key>CFBundleExecutable</key>
+    <string>friendshub-macos</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>FriendsHub использует микрофон для аудиозвонков и голосовых сообщений.</string>
+</dict>
+</plist>
