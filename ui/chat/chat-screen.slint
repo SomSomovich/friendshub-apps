@@ -82,6 +82,9 @@ export component ChatScreen inherits Rectangle {
     in property <bool> attachment-composer-send-enabled: false;
     in property <string> attachment-composer-error-text: "";
     in property <[PendingAttachmentView]> pending-attachments;
+    in property <bool> voice-recording: false;
+    in property <bool> voice-recording-busy: false;
+    in property <int> voice-recording-seconds: 0;
     in-out property <string> attachment-caption: "";
     private property <bool> emoji-picker-open: false;
     private property <string> emoji-picker-category-id: "smileys";
@@ -134,6 +137,7 @@ export component ChatScreen inherits Rectangle {
     callback attachment-requested(string);
     callback attachment-caption-changed(string);
     callback attachment-compress-toggle-requested(string, bool);
+    callback attachment-voice-preview-requested(string);
     callback attachment-remove-requested(string);
     callback attachment-send-requested();
     callback attachment-close-requested();
@@ -318,6 +322,9 @@ export component ChatScreen inherits Rectangle {
             can-poll: root.can-poll;
             can-schedule: root.can-schedule;
             language: root.language;
+            voice-recording: root.voice-recording;
+            voice-recording-busy: root.voice-recording-busy;
+            voice-recording-seconds: root.voice-recording-seconds;
             draft-changed(text) => { root.draft-changed(text); }
             send-requested(text) => { root.send-requested(text); }
             attachment-requested(kind) => { root.attachment-requested(kind); }
@@ -493,6 +500,7 @@ export component ChatScreen inherits Rectangle {
         caption <=> root.attachment-caption;
         caption-changed(value) => { root.attachment-caption-changed(value); }
         compress-toggle-requested(id, enabled) => { root.attachment-compress-toggle-requested(id, enabled); }
+        voice-preview-requested(id) => { root.attachment-voice-preview-requested(id); }
         remove-requested(id) => { root.attachment-remove-requested(id); }
         send-requested => { root.attachment-send-requested(); }
         close-requested => { root.attachment-close-requested(); }

@@ -1124,6 +1124,12 @@ fn handle_profile(ctx: &AppContext, action: &str, arg1: &str, _arg2: &str, _arg3
         }
         "block-toggle" => toggle_public_profile_block(ctx),
         "contact-toggle" => toggle_public_profile_contact(ctx),
+        "call" => {
+            let Some(peer_account_id) = user_profile_id() else {
+                return false;
+            };
+            crate::app::media::start_profile_call(ctx, peer_account_id, arg1 == "true")
+        }
         "alias-editor" => {
             let Some(window) = ctx.ui.upgrade() else {
                 return false;
@@ -2091,9 +2097,9 @@ fn avatar_picker_error_message(error: &PickerError, russian: bool) -> &'static s
     match error {
         PickerError::MissingActivityResultHook => {
             if russian {
-                "На Android пока недоступен выбор файла: приложение не получает результат системного окна."
+                "Не удалось инициализировать системный выбор файла Android."
             } else {
-                "File selection is not available on Android yet because the app cannot receive the system picker result."
+                "The Android system file picker could not be initialized."
             }
         }
         PickerError::Busy => {

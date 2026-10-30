@@ -185,6 +185,9 @@ export component MainWindow inherits Window {
     in property <bool> chat-attachment-composer-send-enabled: false;
     in property <string> chat-attachment-composer-error-text: "";
     in property <[PendingAttachmentView]> chat-pending-attachments: [];
+    in property <bool> chat-voice-recording: false;
+    in property <bool> chat-voice-recording-busy: false;
+    in property <int> chat-voice-recording-seconds: 0;
     in-out property <string> chat-attachment-caption: "";
     in property <bool> scheduled-dialog-open: false;
     in property <bool> scheduled-dialog-loading: false;
@@ -741,6 +744,9 @@ export component MainWindow inherits Window {
             attachment-composer-send-enabled: root.chat-attachment-composer-send-enabled;
             attachment-composer-error-text: root.chat-attachment-composer-error-text;
             pending-attachments: root.chat-pending-attachments;
+            voice-recording: root.chat-voice-recording;
+            voice-recording-busy: root.chat-voice-recording-busy;
+            voice-recording-seconds: root.chat-voice-recording-seconds;
             attachment-caption <=> root.chat-attachment-caption;
             back-requested => { root.navigate-requested("/app"); }
             profile-requested => { root.ui-action("profile", "open-conversation", root.selected-conversation-id, "", ""); }
@@ -765,6 +771,7 @@ export component MainWindow inherits Window {
             delete-confirm-requested => { root.ui-action("chat", "delete-confirm", "", "", ""); }
             delete-cancel-requested => { root.ui-action("chat", "delete-cancel", "", "", ""); }
             attachment-open-requested(index, id) => { root.ui-action("attachments", "open-message", "\{index}", id, ""); }
+            attachment-voice-preview-requested(id) => { root.ui-action("attachments", "preview-voice", id, "", ""); }
             reaction-requested(index, emoji) => { root.ui-action("chat", "reaction", "\{index}", emoji, ""); }
             polls-retry-requested => { root.ui-action("polls", "retry", "", "", ""); }
             polls-load-older-requested => { root.ui-action("polls", "load-older", "", "", ""); }
@@ -1094,7 +1101,7 @@ export component MainWindow inherits Window {
             close-requested => { root.ui-action("profile", "close-modal", "", "", ""); }
             avatar-open-requested => { root.ui-action("profile", "avatar-open", "", "", ""); }
             write-requested => { root.ui-action("profile", "message", "", "", ""); }
-            call-requested(video) => { root.ui-action("calls", "profile-call", video ? "true" : "false", "", ""); }
+            call-requested(video) => { root.ui-action("profile", "call", video ? "true" : "false", "", ""); }
             contact-toggle-requested => { root.ui-action("profile", "contact-toggle", "", "", ""); }
             block-toggle-requested => { root.ui-action("profile", "block-toggle", "", "", ""); }
             alias-editor-requested => { root.ui-action("profile", "alias-editor", "", "", ""); }

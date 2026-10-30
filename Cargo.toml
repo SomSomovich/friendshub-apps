@@ -15,6 +15,7 @@ native-clipboard = [
 ]
 
 native-file-picker = [
+    "dep:jni",
     "dep:native-dialog",
     "dep:mime_guess",
     "dep:tempfile",
@@ -56,9 +57,11 @@ arboard = { version = "3.7.0", default-features = false, features = ["wayland-da
 [target.'cfg(target_os = "android")'.dependencies]
 jni = { version = "0.21.1", default-features = false, optional = true }
 
-[target.'cfg(any(target_os = "windows", target_os = "linux", target_os = "ios", target_os = "android"))'.dependencies]
+[target.'cfg(any(target_os = "windows", target_os = "macos", target_os = "linux", target_os = "ios", target_os = "android"))'.dependencies]
 cpal = "0.18.2"
+ogg = "=0.8.0"
 opus = "0.4.0"
+webp = { version = "=0.3.1", default-features = false }
 
 [workspace]
 members = [

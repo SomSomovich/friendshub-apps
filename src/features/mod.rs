@@ -1,5 +1,6 @@
 //! Typed application workflows backed by `friendshub-core`.
 
+pub mod attachment_image;
 pub mod auth;
 pub mod bots;
 pub mod calls_attachments;

@@ -6,7 +6,7 @@
 
 use std::fmt;
 use std::fs::{self, OpenOptions};
-use std::io;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -86,6 +86,47 @@ pub fn create_download_path(data_dir: &Path, account_id: &str) -> Result<PathBuf
     }
 }
 
+/// Copy a generated Ogg voice note into the account-scoped cache used by
+/// external players. The temporary file keeps the `.ogg` extension so the
+/// platform can choose an audio-capable application.
+pub fn copy_voice_preview(
+    source: &Path,
+    data_dir: &Path,
+    account_id: &str,
+) -> Result<PathBuf, OpenFileError> {
+    if !source.is_absolute() || !source.is_file() {
+        return Err(OpenFileError::InvalidPath);
+    }
+    let mut input = fs::File::open(source).map_err(OpenFileError::Cache)?;
+    let mut signature = [0u8; 4];
+    input
+        .read_exact(&mut signature)
+        .map_err(OpenFileError::Cache)?;
+    if &signature != b"OggS" {
+        return Err(OpenFileError::InvalidPath);
+    }
+
+    let path = create_download_path(data_dir, account_id)?;
+    if let Err(error) = fs::copy(source, &path) {
+        let _ = fs::remove_file(&path);
+        return Err(OpenFileError::Cache(error));
+    }
+    let mut preview_path = path.clone();
+    preview_path.set_extension("ogg");
+    if preview_path.exists() {
+        let _ = fs::remove_file(&path);
+        return Err(OpenFileError::Cache(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "voice preview path already exists",
+        )));
+    }
+    if let Err(error) = fs::rename(&path, &preview_path) {
+        let _ = fs::remove_file(&path);
+        return Err(OpenFileError::Cache(error));
+    }
+    Ok(preview_path)
+}
+
 /// Hand the already decrypted local path to the platform's default opener.
 pub fn open_downloaded_file(path: &Path, _window: &MainWindow) -> Result<(), OpenFileError> {
     if !path.is_absolute() || !path.is_file() {
@@ -108,11 +149,12 @@ pub fn open_downloaded_file(path: &Path, _window: &MainWindow) -> Result<(), Ope
         Err(OpenFileError::UnsupportedPlatform)
     }
 
-    // Android needs a manifest-registered ContentProvider (normally AndroidX
-    // FileProvider) to grant another app temporary access to an app-private
-    // file. This NativeActivity build has no provider registration/package hook;
-    // a file:// URI or public Downloads copy would not preserve file isolation.
-    #[cfg(target_os = "android")]
+    #[cfg(all(target_os = "android", feature = "native-file-picker"))]
+    {
+        android::open_file(path)
+    }
+
+    #[cfg(all(target_os = "android", not(feature = "native-file-picker")))]
     {
         let _ = path;
         Err(OpenFileError::UnsupportedPlatform)
@@ -128,6 +170,233 @@ pub fn open_downloaded_file(path: &Path, _window: &MainWindow) -> Result<(), Ope
     {
         let _ = path;
         Err(OpenFileError::UnsupportedPlatform)
+    }
+}
+
+/// Retain the current Android launcher for temporary attachment URI grants.
+///
+/// Call this after Slint has initialized its Android activity. Re-registering a
+/// recreated activity from the same JVM replaces the retained activity.
+///
+/// # Safety
+/// `java_vm` must be this process's JavaVM pointer. `activity` must be a live
+/// global JNI reference owned by AndroidApp for the duration of this call.
+#[cfg(target_os = "android")]
+pub unsafe fn initialize_android(
+    java_vm: *mut std::ffi::c_void,
+    activity: *mut std::ffi::c_void,
+) -> Result<(), OpenFileError> {
+    #[cfg(feature = "native-file-picker")]
+    {
+        // SAFETY: the caller supplies the initialized AndroidApp pointers.
+        unsafe { android::initialize(java_vm, activity) }
+    }
+    #[cfg(not(feature = "native-file-picker"))]
+    {
+        let _ = (java_vm, activity);
+        Err(OpenFileError::UnsupportedPlatform)
+    }
+}
+
+#[cfg(all(target_os = "android", feature = "native-file-picker"))]
+mod android {
+    use std::ffi::c_void;
+    use std::path::Path;
+    use std::sync::{Mutex, OnceLock};
+
+    use jni::objects::{GlobalRef, JClass, JObject, JValue};
+    use jni::{JavaVM, errors::Error as JniError};
+
+    use super::OpenFileError;
+
+    const PROVIDER_CLASS: &str = "com.somuchsystem.friendshub.AttachmentProvider";
+    const URI_METHOD: &str = "uriForFile";
+    const URI_SIGNATURE: &str = "(Landroid/content/Context;Ljava/lang/String;)Landroid/net/Uri;";
+    const FLAG_GRANT_READ_URI_PERMISSION: i32 = 1;
+
+    struct AndroidContext {
+        vm: JavaVM,
+        activity: GlobalRef,
+        provider: GlobalRef,
+    }
+
+    static CONTEXT: OnceLock<Mutex<AndroidContext>> = OnceLock::new();
+
+    pub(super) unsafe fn initialize(
+        java_vm: *mut c_void,
+        activity: *mut c_void,
+    ) -> Result<(), OpenFileError> {
+        if java_vm.is_null() || activity.is_null() {
+            return Err(initialization_error());
+        }
+        // SAFETY: the initialized AndroidApp provides the process JVM.
+        let vm = unsafe { JavaVM::from_raw(java_vm.cast()) }.map_err(|_| initialization_error())?;
+        let mut env = vm
+            .attach_current_thread()
+            .map_err(|_| initialization_error())?;
+        if env.exception_check().map_err(|_| initialization_error())? {
+            return Err(initialization_error());
+        }
+        let result = env.with_local_frame(12, |env| {
+            // SAFETY: this borrows AndroidApp's global reference; only the new
+            // GlobalRefs below are owned by this service.
+            let activity = unsafe { JObject::from_raw(activity.cast()) };
+            let loader = env
+                .call_method(
+                    &activity,
+                    "getClassLoader",
+                    "()Ljava/lang/ClassLoader;",
+                    &[],
+                )?
+                .l()?;
+            let name = env.new_string(PROVIDER_CLASS)?;
+            let class = JClass::from(
+                env.call_method(
+                    loader,
+                    "loadClass",
+                    "(Ljava/lang/String;)Ljava/lang/Class;",
+                    &[JValue::Object(name.as_ref())],
+                )?
+                .l()?,
+            );
+            env.get_static_method_id(&class, URI_METHOD, URI_SIGNATURE)?;
+            Ok::<_, JniError>((env.new_global_ref(&activity)?, env.new_global_ref(class)?))
+        });
+        if result.is_err() {
+            let _ = env.exception_clear();
+        }
+        let (activity, provider) = result.map_err(|_| initialization_error())?;
+        drop(env);
+
+        if let Some(context) = CONTEXT.get() {
+            let mut context = context.lock().map_err(|_| initialization_error())?;
+            if context.vm.get_java_vm_pointer() != vm.get_java_vm_pointer() {
+                return Err(initialization_error());
+            }
+            context.activity = activity;
+            context.provider = provider;
+            return Ok(());
+        }
+        CONTEXT
+            .set(Mutex::new(AndroidContext {
+                vm,
+                activity,
+                provider,
+            }))
+            .map_err(|_| initialization_error())
+    }
+
+    pub(super) fn open_file(path: &Path) -> Result<(), OpenFileError> {
+        let path = path.to_str().ok_or(OpenFileError::PathEncoding)?;
+        let context = CONTEXT.get().ok_or_else(initialization_error)?;
+        let (vm_pointer, activity, provider) = {
+            let context = context.lock().map_err(|_| initialization_error())?;
+            (
+                context.vm.get_java_vm_pointer(),
+                context.activity.clone(),
+                context.provider.clone(),
+            )
+        };
+        // SAFETY: CONTEXT retains the process JVM and both global references.
+        let vm = unsafe { JavaVM::from_raw(vm_pointer) }.map_err(|_| initialization_error())?;
+        let mut env = vm
+            .attach_current_thread()
+            .map_err(|_| initialization_error())?;
+        if env.exception_check().map_err(|_| initialization_error())? {
+            return Err(initialization_error());
+        }
+        let result = env.with_local_frame(24, |env| {
+            let path = env.new_string(path)?;
+            let provider: &JClass<'_> = provider.as_obj().into();
+            let uri = env
+                .call_static_method(
+                    provider,
+                    URI_METHOD,
+                    URI_SIGNATURE,
+                    &[
+                        JValue::Object(activity.as_obj()),
+                        JValue::Object(path.as_ref()),
+                    ],
+                )?
+                .l()?;
+            if uri.is_null() {
+                return Err(JniError::NullPtr("attachment content URI"));
+            }
+            let resolver = env
+                .call_method(
+                    activity.as_obj(),
+                    "getContentResolver",
+                    "()Landroid/content/ContentResolver;",
+                    &[],
+                )?
+                .l()?;
+            let mut mime_type = env
+                .call_method(
+                    resolver,
+                    "getType",
+                    "(Landroid/net/Uri;)Ljava/lang/String;",
+                    &[JValue::Object(&uri)],
+                )?
+                .l()?;
+            if mime_type.is_null() {
+                mime_type = env.new_string("application/octet-stream")?.into();
+            }
+            let action = env.new_string("android.intent.action.VIEW")?;
+            let intent = env.new_object(
+                "android/content/Intent",
+                "(Ljava/lang/String;)V",
+                &[JValue::Object(action.as_ref())],
+            )?;
+            env.call_method(
+                &intent,
+                "setDataAndType",
+                "(Landroid/net/Uri;Ljava/lang/String;)Landroid/content/Intent;",
+                &[JValue::Object(&uri), JValue::Object(&mime_type)],
+            )?
+            .l()?;
+            env.call_method(
+                &intent,
+                "addFlags",
+                "(I)Landroid/content/Intent;",
+                &[JValue::Int(FLAG_GRANT_READ_URI_PERMISSION)],
+            )?
+            .l()?;
+            let label = env.new_string("FriendsHub attachment")?;
+            let clip = env
+                .call_static_method(
+                    "android/content/ClipData",
+                    "newRawUri",
+                    "(Ljava/lang/CharSequence;Landroid/net/Uri;)Landroid/content/ClipData;",
+                    &[JValue::Object(label.as_ref()), JValue::Object(&uri)],
+                )?
+                .l()?;
+            env.call_method(
+                &intent,
+                "setClipData",
+                "(Landroid/content/ClipData;)V",
+                &[JValue::Object(&clip)],
+            )?
+            .v()?;
+            env.call_method(
+                activity.as_obj(),
+                "startActivity",
+                "(Landroid/content/Intent;)V",
+                &[JValue::Object(&intent)],
+            )?
+            .v()
+        });
+        if result.is_err() {
+            // Avoid leaking file paths or Java exception data in diagnostics,
+            // and leave no pending exception on the attached application thread.
+            let _ = env.exception_clear();
+        }
+        result.map_err(|_| {
+            OpenFileError::Platform("Android could not open a viewer for this attachment.".into())
+        })
+    }
+
+    fn initialization_error() -> OpenFileError {
+        OpenFileError::Platform("Android attachment sharing has not been initialized.".into())
     }
 }
 
@@ -197,8 +466,8 @@ fn open_with_system_handler(path: &Path) -> Result<(), OpenFileError> {
 
 #[cfg(all(target_os = "ios", feature = "native-file-picker"))]
 mod ios {
-    use objc2::MainThreadMarker;
     use objc2::rc::Retained;
+    use objc2::{MainThreadMarker, MainThreadOnly};
     use objc2_foundation::{NSArray, NSString, NSURL};
     use objc2_ui_kit::{
         UIActivityViewController, UIApplication, UISceneActivationState, UIViewController,

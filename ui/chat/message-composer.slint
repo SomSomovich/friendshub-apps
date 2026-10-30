@@ -11,6 +11,9 @@ export component MessageComposer inherits Rectangle {
     in property <bool> can-schedule: true;
     in property <string> language: "ru";
     in property <string> error-text: "";
+    in property <bool> voice-recording: false;
+    in property <bool> voice-recording-busy: false;
+    in property <int> voice-recording-seconds: 0;
     callback draft-changed(string);
     callback send-requested(string);
     callback attachment-requested(string);
@@ -116,9 +119,10 @@ export component MessageComposer inherits Rectangle {
                 clicked => { root.schedule-requested(root.value); }
             }
             if !root.editing : ChatAction {
-                label: "♪";
-                accessible-name: "Голосовое сообщение";
-                enabled: root.enabled && !root.busy;
+                label: root.voice-recording-busy ? "…" : (root.voice-recording ? "⏹ \{root.voice-recording-seconds}" : "♪");
+                accessible-name: root.voice-recording-busy ? "Подготовка голосового сообщения" : (root.voice-recording ? "Завершить запись голосового сообщения" : "Записать голосовое сообщение");
+                active: root.voice-recording;
+                enabled: root.enabled && !root.busy && !root.voice-recording-busy;
                 clicked => { root.voice-record-requested(); }
             }
             if !root.editing : ChatAction {

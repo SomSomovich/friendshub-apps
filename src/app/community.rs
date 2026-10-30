@@ -3875,7 +3875,7 @@ fn picker_error_message(error: crate::platform::file_picker::PickerError) -> &'s
 
     match error {
         PickerError::MissingActivityResultHook => {
-            "В текущей сборке Android пока не подключён возврат результата выбора файлов."
+            "Не удалось инициализировать системный выбор файлов Android."
         }
         PickerError::Busy => "Другой выбор файла ещё не завершён. Попробуйте позже.",
         PickerError::Disabled | PickerError::UnsupportedPlatform => {
